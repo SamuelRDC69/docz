@@ -37,6 +37,8 @@ services:
     # loopback-only: the TLS reverse proxy (Caddy) is the public entrance
     ports:
       - "127.0.0.1:8787:8787"
+    volumes:
+      - ${EASTBROOK_MEDIA_DIR:-./media-cache}:/app/dist/media
 
 volumes:
   eastbrook_pgdata:

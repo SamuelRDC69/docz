@@ -10,6 +10,11 @@ describe('cacheControlFor', () => {
     expect(cacheControlFor('/assets/admin-BH042pF_.js')).toBe('public, max-age=31536000, immutable');
   });
 
+  it('marks generated content-hashed media as immutable for a year', () => {
+    expect(cacheControlFor('/media/models/chars/knight.8f31c2aa91bd.glb')).toBe('public, max-age=31536000, immutable');
+    expect(cacheControlFor('/media/env/vale_day_1k.3bd7220a9f01.hdr')).toBe('public, max-age=31536000, immutable');
+  });
+
   it('requires revalidation for unhashed assets and html shells', () => {
     expect(cacheControlFor('/models/kaykit/knight.glb')).toBe('no-cache');
     expect(cacheControlFor('/textures/atlas.png')).toBe('no-cache');
@@ -20,6 +25,7 @@ describe('cacheControlFor', () => {
   it('does not treat nested or partial matches as the hashed assets dir', () => {
     expect(cacheControlFor('/models/assets/thing.glb')).toBe('no-cache');
     expect(cacheControlFor('/assetsx/file.js')).toBe('no-cache');
+    expect(cacheControlFor('/mediax/file.glb')).toBe('no-cache');
   });
 });
 

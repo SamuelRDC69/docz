@@ -1,14 +1,15 @@
 // HTTP caching policy for the static file server. Vite content-hashes
-// everything under /assets/, so those URLs never change content and can be
-// cached forever. Everything else (models, textures, HDRIs, HTML shells,
-// loading art) keeps its URL across deploys, so clients must revalidate —
-// a 304 costs one round-trip of headers instead of re-downloading the bytes.
+// everything under /assets/, and the media build step content-hashes files
+// under /media/, so those URLs never change content and can be cached forever.
+// Everything else (legacy model/texture/HDR paths, HTML shells, loading art)
+// keeps its URL across deploys, so clients must revalidate — a 304 costs one
+// round-trip of headers instead of re-downloading the bytes.
 import type { Stats } from 'node:fs';
 
-const IMMUTABLE_PREFIX = '/assets/';
+const IMMUTABLE_PREFIXES = ['/assets/', '/media/'];
 
 export function cacheControlFor(urlPath: string): string {
-  return urlPath.startsWith(IMMUTABLE_PREFIX)
+  return IMMUTABLE_PREFIXES.some((prefix) => urlPath.startsWith(prefix))
     ? 'public, max-age=31536000, immutable'
     : 'no-cache';
 }
