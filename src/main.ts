@@ -272,6 +272,14 @@ async function prepareWorldEntry(): Promise<boolean> {
   return beginWorldEntry();
 }
 
+function mountGameUi(): void {
+  if (document.getElementById('ui')) return;
+  const template = document.getElementById('game-ui-template') as HTMLTemplateElement | null;
+  const startScreen = document.getElementById('start-screen');
+  if (!template || !startScreen) throw new Error('Game UI shell is missing.');
+  document.body.insertBefore(template.content.cloneNode(true), startScreen);
+}
+
 // ---------------------------------------------------------------------------
 // Shared game wiring (used by both offline sim and online world)
 // ---------------------------------------------------------------------------
@@ -292,6 +300,7 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
     return;
   }
   setLoadingStatus('Entering the world…');
+  mountGameUi();
 
   const canvas = $('#game-canvas') as unknown as HTMLCanvasElement;
   const nameplates = $('#nameplates') as HTMLDivElement;
