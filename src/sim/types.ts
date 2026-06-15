@@ -387,6 +387,21 @@ export function emptyZoneProps(): ZonePropsDef {
   };
 }
 
+// A hand-placed terrain bump or pit layered on top of the analytic heightfield.
+// `delta` is the peak height change in world units (positive raises, negative
+// sinks); the effect fades to zero at `radius` with a smoothstep falloff.
+// `hardness` (0..1) is the fraction of the radius that stays at full delta
+// before the falloff begins — 0 is a soft dome, ~0.7 a flat-topped mesa/pit.
+// Authored via tools/map_editor.html; sampled by terrainHeight so sim collision
+// and the rendered mesh stay in sync automatically.
+export interface TerrainEditDef {
+  x: number;
+  z: number;
+  radius: number;
+  delta: number;
+  hardness?: number;
+}
+
 export interface QuestObjective {
   type: 'kill' | 'collect';
   targetMobId?: string; // for kill
