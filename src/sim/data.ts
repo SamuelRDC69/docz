@@ -86,6 +86,7 @@ import {
   ZONE3_ZONE,
 } from './content/zone3';
 import { DUNGEON_WALL_HW } from './dungeon_layout';
+import { TERRAIN_EDITS } from './content/terrain_edits';
 
 export type { DelveShopEntry, DelveShopGate, DelveShopOffer } from './content/delves';
 // Delve affix/companion catalogs are consumed by the Sim delve engine; re-export
@@ -187,6 +188,9 @@ export const CAMPS: CampDef[] = [
   ...ZONE1_CHAPEL_CAMPS,
   { mobId: 'grix_the_tunnelking', center: { x: -95, z: -78 }, radius: 4, count: 1 },
 ];
+
+// Hand-placed terrain bumps/pits (sim/world.ts layers these onto the heightfield).
+export { TERRAIN_EDITS };
 
 export const GROUND_OBJECTS: GroundObjectDef[] = [
   ...ZONE1_OBJECTS,

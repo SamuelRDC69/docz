@@ -10,6 +10,7 @@ import { loadBrowserslistFloors } from './scripts/browserslist_targets.mjs';
 // Untyped zero-dep build helper (same convention as the other scripts/*.mjs tools).
 // vite.config.ts is outside tsconfig `include`, so this import is never type-checked.
 import { templateModulepreload } from './scripts/i18n_modulepreload.mjs';
+import { mapEditorPlugin } from './tools/vite-map-editor-plugin.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 
@@ -160,6 +161,7 @@ export default defineConfig({
     ...(process.env.VITEST ? [svelteTesting()] : []),
     staticPageAliasPlugin(),
     i18nModulepreloadPlugin(),
+    mapEditorPlugin(),
   ],
   resolve: { alias: { '#bot-detector': botDetectorImpl } },
   define: {

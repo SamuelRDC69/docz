@@ -1,0 +1,685 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>World of Claudecraft — Map Editor</title>
+<!--
+  Standalone, dependency-free top-down map editor for World of Claudecraft.
+
+  Open directly (double-click) or via http://localhost:5173/tools/map_editor.html
+  while `npm run dev` is running. It mirrors the game's terrain math
+  (src/sim/rng.ts + src/sim/world.ts) so the shaded heightfield matches the
+  world, and plots the real layout from src/sim/content/zone*.ts.
+
+  Tools:
+    • Select  — click a town/lake/camp/building to copy its coordinate.
+    • Move    — drag towns, lakes, camps, graveyards, player start. Terrain
+                re-flattens around hubs/lakes/camps when you drop them.
+    • Brush   — raise/sink terrain (radius / strength / hardness).
+    • Build   — place houses/inns/chapels; click one to select, then resize /
+                rotate / delete it.
+
+  Export gives paste-ready TS, grouped per zone, for everything you changed:
+  TERRAIN_EDITS, the zone hub+lakes, ZONE{N}_CAMPS, ZONE{N}_PROPS.buildings,
+  and PLAYER_START. The embedded layout below is a SNAPSHOT of the zone files —
+  update it if you change those in code; the exports round-trip.
+-->
+<style>
+  :root { --bg:#0f1116; --panel:#171a22; --line:#2a2f3a; --fg:#dce1ea; --mut:#8b93a4; --accent:#6fb1ff; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:13px/1.4 ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif; }
+  #app { display:flex; height:100vh; }
+  #side { width:288px; flex:none; background:var(--panel); border-right:1px solid var(--line);
+    padding:12px; overflow:auto; }
+  #stage { flex:1; position:relative; }
+  #cv, #cv3d { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  .viewtoggle { position:absolute; top:10px; right:10px; display:flex; gap:6px; z-index:5; }
+  h1 { font-size:14px; margin:0 0 8px; }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--mut);
+    margin:14px 0 6px; border-top:1px solid var(--line); padding-top:9px; }
+  .row { display:flex; align-items:center; gap:8px; margin:6px 0; flex-wrap:wrap; }
+  .row label { color:var(--mut); }
+  .grow { flex:1; }
+  button { background:#222836; color:var(--fg); border:1px solid var(--line); border-radius:6px;
+    padding:6px 10px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.on { background:var(--accent); color:#06223f; border-color:var(--accent); font-weight:600; }
+  input[type=range] { width:118px; }
+  input[type=number], select { background:#0d1017; color:var(--fg); border:1px solid var(--line);
+    border-radius:5px; padding:3px 6px; }
+  input[type=number] { width:60px; }
+  textarea { width:100%; height:150px; background:#0d1017; color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:6px; font:11px ui-monospace,Menlo,monospace; resize:vertical; }
+  .readout { position:absolute; left:10px; bottom:10px; background:rgba(10,12,18,.85);
+    border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:12px ui-monospace,monospace;
+    pointer-events:none; }
+  .hint { color:var(--mut); font-size:11px; }
+  .legend { display:flex; flex-wrap:wrap; gap:6px 12px; font-size:11px; color:var(--mut); }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+  .count { color:var(--accent); }
+  #selPanel { display:none; }
+  /* Narrow viewports (e.g. an embedded preview panel): stack so the canvas
+     always gets full width instead of being squeezed to zero by the sidebar. */
+  @media (max-width: 760px) {
+    #app { flex-direction:column; }
+    #side { width:100%; flex:none; max-height:46%; border-right:none; border-bottom:1px solid var(--line); }
+    #stage { flex:1; min-height:300px; }
+  }
+</style>
+
+<div id="app">
+  <div id="side">
+    <h1>🗺 Map Editor</h1>
+    <div class="hint">Top-down. North (+z) is down. x ∈ [-180,180].</div>
+    <div class="hint" id="liveBadge">snapshot — open via <code>npm run dev</code> for live data + save</div>
+
+    <h2>Tool</h2>
+    <div class="row">
+      <button id="toolSelect" class="on">Select</button>
+      <button id="toolMove">Move</button>
+      <button id="toolBrush">Brush</button>
+      <button id="toolBuild">Build</button>
+    </div>
+
+    <div id="brushPanel">
+      <h2>Brush — terrain</h2>
+      <div class="row"><button id="modeRaise" class="on">Raise ▲</button><button id="modeSink">Sink ▼</button></div>
+      <div class="row"><label>Radius</label><input id="bRadius" type="range" min="3" max="80" value="18"><span id="bRadiusV">18</span></div>
+      <div class="row"><label>Strength</label><input id="bStrength" type="range" min="1" max="40" value="8"><span id="bStrengthV">8</span></div>
+      <div class="row"><label>Hardness</label><input id="bHard" type="range" min="0" max="95" value="20"><span id="bHardV">0.20</span></div>
+      <div class="row hint">Click to place. Edits: <span id="editCount" class="count">0</span></div>
+      <div class="row"><button id="undo">Undo</button><button id="clear">Clear</button></div>
+    </div>
+
+    <div id="buildPanel" style="display:none">
+      <h2>Build — place</h2>
+      <div class="row"><label>Kind</label>
+        <select id="bKind"><option>house</option><option>inn</option><option>chapel</option></select></div>
+      <div class="row"><label>W</label><input id="bW" type="number" value="6" min="2" max="20" step="0.5">
+        <label>D</label><input id="bD" type="number" value="6" min="2" max="20" step="0.5"></div>
+      <div class="row"><label>Rot</label><input id="bRot" type="range" min="-314" max="314" value="0"><span id="bRotV">0.00</span></div>
+      <div class="row hint">Click empty ground to place. Click a building to select it.</div>
+    </div>
+
+    <div id="selPanel">
+      <h2>Selected building</h2>
+      <div class="row"><label>Kind</label>
+        <select id="sKind"><option>house</option><option>inn</option><option>chapel</option></select></div>
+      <div class="row"><label>W</label><input id="sW" type="number" min="2" max="20" step="0.5">
+        <label>D</label><input id="sD" type="number" min="2" max="20" step="0.5"></div>
+      <div class="row"><label>Rot</label><input id="sRot" type="range" min="-314" max="314"><span id="sRotV">0.00</span></div>
+      <div class="row"><button id="delBuilding">Delete (Del)</button><span class="hint">R rotates 15°</span></div>
+    </div>
+
+    <h2>View</h2>
+    <div class="row"><label>Seed</label><input id="seed" type="number" value="20061"></div>
+    <div class="row"><button id="fit">Fit</button><button id="toggleShade">Relief</button><button id="revert" style="display:none">↺ Default</button></div>
+    <div class="legend">
+      <span><span class="sw" style="background:#2a6cc4"></span>water</span>
+      <span><span class="sw" style="background:#3f7d3a"></span>low</span>
+      <span><span class="sw" style="background:#8a7a4a"></span>hills</span>
+      <span><span class="sw" style="background:#e8e8ee"></span>peaks</span>
+      <span><span class="sw" style="background:#ff5a5a"></span>raise</span>
+      <span><span class="sw" style="background:#5ab0ff"></span>sink</span>
+      <span><span class="sw" style="background:#d8b46a"></span>building</span>
+    </div>
+
+    <h2>Dungeons</h2>
+    <div class="row" id="sceneBtns"></div>
+    <div class="hint">View-only (defined in code). Entrances ⬣ show on the map.</div>
+
+    <h2>Export — paste into the noted files</h2>
+    <textarea id="exportTxt" readonly></textarea>
+    <div class="row"><button id="copy">Copy</button><button id="save" style="display:none">💾 Save to repo</button></div>
+    <div class="hint">Copy = paste manually. Save = write back to source (dev only).</div>
+  </div>
+
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <canvas id="cv3d" style="display:none"></canvas>
+    <div class="viewtoggle"><button id="v2d" class="on">2D map</button><button id="v3d">3D view</button></div>
+    <div class="readout" id="readout">—</div>
+  </div>
+</div>
+
+<script type="module">
+// ===========================================================================
+// 1) Terrain math — ported verbatim from src/sim/rng.ts and src/sim/world.ts.
+// ===========================================================================
+function hash2(x,y,seed){let h=seed>>>0;h=Math.imul(h^(x*374761393),668265263);h=Math.imul(h^(y*1274126177),461845907);h^=h>>>13;h=Math.imul(h,1274126177);h^=h>>>16;return(h>>>0)/4294967296;}
+function smooth(t){return t*t*(3-2*t);}
+function noise2(x,y,seed){const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;const a=hash2(xi,yi,seed),b=hash2(xi+1,yi,seed),c=hash2(xi,yi+1,seed),d=hash2(xi+1,yi+1,seed),u=smooth(xf),v=smooth(yf);return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;}
+function fbm2(x,y,seed,oct=4){let sum=0,amp=0.5,freq=1,tot=0;for(let i=0;i<oct;i++){sum+=noise2(x*freq,y*freq,seed+i*1013)*amp;tot+=amp;amp*=0.5;freq*=2;}return sum/tot;}
+function smoothstep(e0,e1,x){const t=Math.max(0,Math.min(1,(x-e0)/(e1-e0)));return t*t*(3-2*t);}
+function lerp(a,b,t){return a+(b-a)*t;}
+
+const HILL_SCALE=0.013, DETAIL_SCALE=0.05, WATER_LEVEL=-4.5;
+const BIOME_SHAPE={vale:{hill:26,base:0,hubHeight:1.5},marsh:{hill:11,base:-1.0,hubHeight:1.2},peaks:{hill:34,base:7,hubHeight:9}};
+const RIDGE_HEIGHT=22, RIDGE_SIGMA=18, PASS_HALF_WIDTH=10, PASS_SHOULDER=34;
+
+// ===========================================================================
+// 2) Layout snapshot — from src/sim/content/zone{1,2,3}.ts (and data.ts).
+// ===========================================================================
+let ZONES = [
+  { i:0, biome:'vale',  zMin:-180, zMax:180, hub:{x:0,z:0,radius:26,name:'Eastbrook'},  graveyard:{x:-12,z:-14}, lakes:[{x:-92,z:88,radius:30}] },
+  { i:1, biome:'marsh', zMin:180,  zMax:540, hub:{x:0,z:300,radius:20,name:'Fenbridge'}, graveyard:{x:-18,z:286}, lakes:[{x:-110,z:310,radius:35},{x:60,z:380,radius:25},{x:-40,z:450,radius:20}] },
+  { i:2, biome:'peaks', zMin:540,  zMax:900, hub:{x:0,z:660,radius:20,name:'Highwatch'}, graveyard:{x:15,z:645},  lakes:[{x:-70,z:760,radius:18}] },
+];
+let WORLD = { minX:-180, maxX:180, minZ:ZONES[0].zMin, maxZ:ZONES[ZONES.length-1].zMax };
+let PLAYER_START = { x:2, z:-2 };
+let ROADS = [
+  [{x:0,z:8},{x:-8,z:30},{x:-15,z:55},{x:-2,z:78}],[{x:8,z:2},{x:30,z:8},{x:55,z:12}],
+  [{x:6,z:-6},{x:30,z:-30},{x:50,z:-50},{x:65,z:-65}],[{x:-8,z:6},{x:-35,z:25},{x:-58,z:48},{x:-66,z:58}],
+  [{x:-6,z:-6},{x:-30,z:-28},{x:-55,z:-45},{x:-70,z:-55}],[{x:6,z:8},{x:35,z:35},{x:60,z:60},{x:78,z:74}],
+  [{x:0,z:80},{x:0,z:180},{x:-8,z:240},{x:0,z:300}],[{x:4,z:308},{x:45,z:336},{x:92,z:350},{x:102,z:392},{x:90,z:420}],
+  [{x:-6,z:308},{x:-40,z:370},{x:-80,z:420}],[{x:2,z:312},{x:10,z:400},{x:20,z:470},{x:45,z:515}],
+  [{x:0,z:320},{x:10,z:450},{x:0,z:540},{x:0,z:660}],[{x:-6,z:666},{x:-60,z:700},{x:-110,z:735}],
+  [{x:6,z:668},{x:70,z:720},{x:110,z:760}],[{x:0,z:676},{x:0,z:780},{x:0,z:860}],
+];
+// [mobId, x, z, radius, count]
+let CAMPS = [
+  ['forest_wolf',-15,55,22,7],['forest_wolf',20,70,20,6],['old_greyjaw',0,95,8,1],['wild_boar',55,12,22,6],
+  ['wild_boar',80,-15,18,5],['elder_bristleback',104,24,4,1],['mogger',118,-26,5,1],['webwood_spider',-60,5,22,7],
+  ['sableweb_matriarch',-72,28,5,1],['mudfin_murloc',-75,57,14,8],['tunnel_rat',-82,-62,20,9],['vale_bandit',65,-65,24,7],
+  ['vale_bandit',90,-90,16,5],['gorrak',92,-92,2,1],['restless_bones',80,78,18,8],
+  ['mire_prowler',-40,230,22,7],['mire_prowler',35,225,20,6],['deepfen_murloc',-82,273,15,8],['deepfen_murloc',-120,350,13,6],
+  ['mirejaw_the_ravenous',-132,333,5,1],['mire_widow',70,300,20,7],['mire_widow',95,340,16,6],['mirefen_broodmother',98,348,3,1],
+  ['drowned_dead',90,420,20,8],['drowned_dead',115,450,16,6],['fen_troll',-80,420,22,7],['fen_troll',-105,455,18,6],
+  ['grubjaw',-120,480,8,1],['gravecaller_cultist',15,470,20,7],['gravecaller_cultist',-25,490,16,6],['gravecaller_summoner',-5,500,12,4],
+  ['sister_nhalia',24,492,5,1],['deacon_voss',0,510,2,1],
+  ['ridge_stalker',-50,590,22,7],['ridge_stalker',45,600,20,6],['deeprock_kobold',75,625,18,8],['deeprock_kobold',105,600,14,6],
+  ['ironvein_foreman',100,617,5,1],['thornpeak_ogre',-90,700,22,7],['thornpeak_ogre',-60,730,18,6],['ogre_crusher',-125,740,18,8],
+  ['warlord_drogmar',-132,748,2,1],['stormcrag_elemental',110,760,20,8],['stormcrag_elemental',135,795,16,6],['shardlord_kazzix',145,815,8,1],
+  ['wyrmcult_zealot',55,820,20,8],['wyrmcult_zealot',25,845,16,6],['wyrmcult_necromancer',40,855,14,5],['boneclad_revenant',-40,830,20,8],
+  ['boneclad_revenant',-15,860,16,6],['marrowlord_varkas',-34,842,5,1],
+].map(c=>({mobId:c[0],x:c[1],z:c[2],radius:c[3],count:c[4]}));
+// buildings (with originating zone index)
+let BUILDINGS = [
+  {zid:0,kind:'house',x:10,z:12,w:7,d:6,rot:-0.4},{zid:0,kind:'house',x:-10,z:10,w:6,d:5,rot:0.5},
+  {zid:0,kind:'inn',x:12,z:-6,w:6,d:7,rot:2.4},{zid:0,kind:'chapel',x:-16,z:-8,w:5,d:7,rot:0.9},
+  {zid:1,kind:'inn',x:13,z:306,w:6,d:7,rot:-1.0},{zid:1,kind:'house',x:-13,z:308,w:7,d:6,rot:0.5},
+  {zid:1,kind:'house',x:-12,z:291,w:6,d:5,rot:2.6},{zid:1,kind:'house',x:11,z:316,w:6,d:5,rot:0.3},
+  {zid:2,kind:'house',x:14,z:671,w:7,d:6,rot:-0.5},{zid:2,kind:'house',x:8,z:650,w:6,d:5,rot:0.4},
+  {zid:2,kind:'house',x:18,z:660,w:6,d:5,rot:1.2},{zid:2,kind:'inn',x:-15,z:666,w:6,d:7,rot:0.6},
+  {zid:2,kind:'chapel',x:-16,z:650,w:5,d:7,rot:0.9},
+];
+const zoneIdxAt = z => { for (const zn of ZONES) if (z < zn.zMax) return zn.i; return ZONES.length-1; };
+let ZONE_RIDGES = [];
+function recompute(){
+  WORLD = { minX:-180, maxX:180, minZ:ZONES[0].zMin, maxZ:ZONES[ZONES.length-1].zMax };
+  ZONE_RIDGES = [];
+  for (let i=0;i+1<ZONES.length;i++) ZONE_RIDGES.push({z:ZONES[i].zMax,passX:0});
+  CAMPS.forEach(c => c.zid = zoneIdxAt(c.z));
+}
+recompute();
+
+// ----- Dungeons (instance interiors) from dungeon_layout.ts + content/dungeons.ts -----
+const DWALL_X=23, DWALL_HW=1, DEND_HW=24, DPILLAR_R=1.0, DTOMB_HW=1.1, DTOMB_HD=2.1, DWALL_H=8;
+function dgrid(zFrom,zTo,zStep,xs){const o=[];for(let z=zFrom;z<=zTo;z+=zStep)for(const x of xs)o.push({x,z});return o;}
+const LAYOUTS={
+  crypt:{ zMin:-19,zMax:112,sideWallZ:47,sideWallHd:66, pillars:dgrid(10,100,15,[-14,14]), tombs:dgrid(16,92,19,[-19,19]), stubs:[], dais:{x:0,z:96,r:9.5} },
+  sanctum:(()=>{ const pillars=[]; for(const z of [10,25,40,55,85,100,125,140]) for(const x of [-14,14]) pillars.push({x,z});
+    const stubs=[]; for(const sx of [-14,14]){ stubs.push({x:sx,z:67,hw:9,hd:5}); stubs.push({x:sx,z:115,hw:9,hd:3}); }
+    return { zMin:-19,zMax:158,sideWallZ:69.5,sideWallHd:89, pillars, tombs:[], stubs, dais:{x:0,z:146,r:11.5} }; })(),
+};
+const mkSpawns=a=>a.map(s=>({mobId:s[0],x:s[1],z:s[2]}));
+const DUNGEONS=[
+  {id:'hollow_crypt',name:'The Hollow Crypt',interior:'crypt',doorPos:{x:80,z:90},entry:{x:0,z:4},spawns:mkSpawns([
+    ['crypt_shambler',-3,18],['crypt_shambler',3,19],['crypt_shambler',-9,38],['hollow_acolyte',-5,39],['crypt_shambler',9,54],['hollow_acolyte',5,55],
+    ['bonechill_widow',-5,68],['bonechill_widow',-1,70],['sexton_marrow',-4,82],['hollow_acolyte',1,83],['morthen',0,98],['crypt_shambler',-4,96],['crypt_shambler',4,96]])},
+  {id:'sunken_bastion',name:'The Sunken Bastion',interior:'crypt',doorPos:{x:45,z:515},entry:{x:0,z:4},spawns:mkSpawns([
+    ['bastion_revenant',-3,18],['bastion_revenant',3,19],['bastion_revenant',-9,38],['tidebound_acolyte',-5,39],['tidebound_acolyte',9,54],['bastion_revenant',5,55],
+    ['bastion_revenant',-5,68],['tidebound_acolyte',-1,70],['knight_commander_olen',-4,82],['bastion_revenant',1,83],['vael_the_mistcaller',0,98],['tidebound_acolyte',-4,96],['bastion_revenant',4,96]])},
+  {id:'gravewyrm_sanctum',name:'Gravewyrm Sanctum',interior:'sanctum',doorPos:{x:0,z:880},entry:{x:0,z:4},spawns:mkSpawns([
+    ['sanctum_boneguard',-3,16],['sanctum_boneguard',3,17],['sanctum_boneguard',-8,30],['sanctum_drakonid',-4,31],['sanctum_drakonid',7,44],['sanctum_boneguard',3,45],
+    ['sanctum_boneguard',-6,58],['sanctum_drakonid',-2,59],['korgath_the_bound',0,72],['sanctum_drakonid',-7,86],['sanctum_boneguard',-3,87],['sanctum_boneguard',6,100],['sanctum_drakonid',2,101],
+    ['grand_necromancer_velkhar',0,114],['sanctum_boneguard',-4,112],['sanctum_boneguard',4,112],['sanctum_drakonid',-5,130],['sanctum_drakonid',-1,132],['korzul_the_gravewyrm',0,146],['sanctum_drakonid',-5,144],['sanctum_drakonid',5,144]])},
+];
+
+function shapeAt(z){let hill=BIOME_SHAPE[ZONES[0].biome].hill,base=BIOME_SHAPE[ZONES[0].biome].base;for(let i=0;i+1<ZONES.length;i++){const t=smoothstep(ZONES[i].zMax-30,ZONES[i].zMax+35,z);const n=BIOME_SHAPE[ZONES[i+1].biome];hill=lerp(hill,n.hill,t);base=lerp(base,n.base,t);}return{hill,base};}
+function baseHeight(x,z,seed){
+  const s=shapeAt(z);
+  let h=(fbm2(x*HILL_SCALE+100,z*HILL_SCALE+100,seed,4)-0.5)*s.hill+s.base;
+  h+=(fbm2(x*DETAIL_SCALE,z*DETAIL_SCALE,seed+7,2)-0.5)*2.2;
+  for(const zone of ZONES){const d=Math.hypot(x-zone.hub.x,z-zone.hub.z);if(d<zone.hub.radius*1.6){const b=smoothstep(zone.hub.radius*0.7,zone.hub.radius*1.6,d);h=h*b+BIOME_SHAPE[zone.biome].hubHeight*(1-b);}}
+  const minLand=WATER_LEVEL+1.4; if(h<minLand)h=minLand-(minLand-h)*0.12;
+  for(const zone of ZONES)for(const lake of zone.lakes){const d=Math.hypot(x-lake.x,z-lake.z);if(d<lake.radius*1.6){const b=smoothstep(lake.radius*0.55,lake.radius*1.6,d);h=h*b+(WATER_LEVEL-4)*(1-b);}}
+  return h;
+}
+function terrainHeight(x,z,seed,edits){
+  let h=baseHeight(x,z,seed);
+  for(const c of CAMPS){const d=Math.hypot(x-c.x,z-c.z);if(d<c.radius*1.8){const ch=baseHeight(c.x,c.z,seed);const b=smoothstep(c.radius*0.8,c.radius*1.8,d);h=h*b+ch*(1-b);}}
+  for(const e of edits){const d=Math.hypot(x-e.x,z-e.z);if(d<e.radius)h+=e.delta*(1-smoothstep((e.hardness||0)*e.radius,e.radius,d));}
+  for(const r of ZONE_RIDGES){const dz=Math.abs(z-r.z);if(dz<RIDGE_SIGMA*3){const p=Math.exp(-(dz*dz)/(2*RIDGE_SIGMA*RIDGE_SIGMA));const pass=smoothstep(PASS_HALF_WIDTH,PASS_SHOULDER,Math.abs(x-r.passX));const crest=1+(fbm2(x*0.03,r.z*0.03,seed+19,2)-0.5)*0.7;h+=RIDGE_HEIGHT*crest*p*pass;}}
+  const rim=Math.max(smoothstep(WORLD.maxX-30,WORLD.maxX,Math.abs(x)),smoothstep(WORLD.minZ+30,WORLD.minZ,z),smoothstep(WORLD.maxZ-30,WORLD.maxZ,z));
+  return h+rim*40;
+}
+
+// ===========================================================================
+// 3) Editor state + rendering
+// ===========================================================================
+const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+let edits=[], tool='select', brushMode='raise', shade=true, seed=20061;
+let brush={radius:18,strength:8,hardness:0.20};
+let place={kind:'house',w:6,d:6,rot:0};
+let selBuilding=null, dirtyZones=new Set(), playerDirty=false;
+let curScene='world', dGroup=null, worldViewSaved=null; // 'world' or a dungeon id
+const view={cx:0,cz:(WORLD.minZ+WORLD.maxZ)/2,scale:0.5};
+
+let relief=null; const CELL=2.5;
+function heightColor(h){
+  if(h<WATER_LEVEL){const t=Math.min(1,(WATER_LEVEL-h)/12);return[42-20*t|0,108-50*t|0,196-70*t|0];}
+  if(h<6){const t=h/6;return[58+30*t|0,122-10*t|0,58-6*t|0];}
+  if(h<22){const t=(h-6)/16;return[110+40*t|0,122-10*t|0,74-10*t|0];}
+  const t=Math.min(1,(h-22)/30);return[150+95*t|0,120+110*t|0,84+150*t|0];
+}
+function buildRelief(){
+  const w=Math.ceil((WORLD.maxX-WORLD.minX)/CELL), hpx=Math.ceil((WORLD.maxZ-WORLD.minZ)/CELL);
+  if(!relief)relief=document.createElement('canvas');
+  relief.width=w; relief.height=hpx;
+  const rc=relief.getContext('2d'), img=rc.createImageData(w,hpx);
+  for(let j=0;j<hpx;j++)for(let i=0;i<w;i++){
+    const x=WORLD.minX+(i+0.5)*CELL, z=WORLD.minZ+(j+0.5)*CELL, c=heightColor(terrainHeight(x,z,seed,edits)), k=(j*w+i)*4;
+    img.data[k]=c[0];img.data[k+1]=c[1];img.data[k+2]=c[2];img.data[k+3]=255;
+  }
+  rc.putImageData(img,0,0);
+}
+const W2S=(x,z)=>[(x-view.cx)*view.scale+cv.width/2,(z-view.cz)*view.scale+cv.height/2];
+const S2W=(sx,sz)=>[(sx-cv.width/2)/view.scale+view.cx,(sz-cv.height/2)/view.scale+view.cz];
+
+function draw(){
+  cv.width=cv.clientWidth||cv.parentElement.clientWidth||800; cv.height=cv.clientHeight||600;
+  ctx.fillStyle='#0b0d12'; ctx.fillRect(0,0,cv.width,cv.height);
+  if(curScene!=='world'){ drawDungeon2D(); return; }
+  if(shade&&relief){const[x0,z0]=W2S(WORLD.minX,WORLD.minZ);ctx.imageSmoothingEnabled=true;ctx.drawImage(relief,x0,z0,(WORLD.maxX-WORLD.minX)*view.scale,(WORLD.maxZ-WORLD.minZ)*view.scale);}
+  ctx.lineWidth=1; ctx.font='12px ui-monospace,monospace';
+  for(const zn of ZONES){const[lx,tz]=W2S(WORLD.minX,zn.zMin),[rx,bz]=W2S(WORLD.maxX,zn.zMax);ctx.strokeStyle='rgba(255,255,255,.18)';ctx.strokeRect(lx,tz,rx-lx,bz-tz);ctx.fillStyle='rgba(255,255,255,.5)';ctx.fillText(`${zn.biome}  z ${zn.zMin}..${zn.zMax}`,lx+6,tz+16);}
+  ctx.strokeStyle='rgba(225,205,150,.8)';ctx.lineWidth=2;
+  for(const road of ROADS){ctx.beginPath();road.forEach((p,i)=>{const[s,t]=W2S(p.x,p.z);i?ctx.lineTo(s,t):ctx.moveTo(s,t);});ctx.stroke();}
+  for(const zn of ZONES)for(const lk of zn.lakes)circle(lk.x,lk.z,lk.radius,'rgba(60,150,230,.35)','rgba(120,190,255,.7)');
+  for(const c of CAMPS){circle(c.x,c.z,c.radius,'rgba(220,90,70,.12)','rgba(230,120,90,.6)');label(c.x,c.z,`${c.mobId}×${c.count}`,'rgba(240,170,150,.85)');}
+  for(const b of BUILDINGS)drawBuilding(b, b===selBuilding);
+  for(const zn of ZONES){marker(zn.graveyard.x,zn.graveyard.z,'#c9c9d6','✝');const[hx,hz]=W2S(zn.hub.x,zn.hub.z);circle(zn.hub.x,zn.hub.z,zn.hub.radius,'rgba(255,220,120,.18)','rgba(255,220,120,.9)');ctx.fillStyle='#ffe08a';ctx.font='bold 13px ui-monospace';ctx.fillText('★ '+zn.hub.name,hx+6,hz-6);}
+  marker(PLAYER_START.x,PLAYER_START.z,'#7CFF9B','◎');
+  for(const d of DUNGEONS){ marker(d.doorPos.x,d.doorPos.z,'#c98bff','⬣');
+    if(view.scale>=0.45){ const[s,t]=W2S(d.doorPos.x,d.doorPos.z); ctx.fillStyle='#d8b6ff'; ctx.font='10px ui-monospace'; ctx.fillText('⛓ '+d.name,s+6,t-4); } }
+  for(const e of edits)circle(e.x,e.z,e.radius,e.delta>=0?'rgba(255,90,90,.18)':'rgba(90,176,255,.18)',e.delta>=0?'rgba(255,90,90,.9)':'rgba(90,176,255,.9)');
+  if(tool==='brush'&&lastWorld)circle(lastWorld[0],lastWorld[1],brush.radius,'rgba(255,255,255,.06)','rgba(255,255,255,.5)');
+}
+function circle(x,z,r,fill,stroke){const[s,t]=W2S(x,z);ctx.beginPath();ctx.arc(s,t,r*view.scale,0,7);ctx.fillStyle=fill;ctx.fill();ctx.strokeStyle=stroke;ctx.lineWidth=1.5;ctx.stroke();}
+function marker(x,z,col,glyph){const[s,t]=W2S(x,z);ctx.fillStyle=col;ctx.font='14px ui-monospace';ctx.fillText(glyph,s-5,t+5);}
+function label(x,z,txt,col){if(view.scale<0.5)return;const[s,t]=W2S(x,z);ctx.fillStyle=col;ctx.font='10px ui-monospace';ctx.fillText(txt,s+4,t+3);}
+function drawBuilding(b,sel){
+  const[s,t]=W2S(b.x,b.z);ctx.save();ctx.translate(s,t);ctx.rotate(b.rot);
+  const w=b.w*view.scale,d=b.d*view.scale;
+  ctx.fillStyle=b.kind==='inn'?'rgba(216,180,106,.85)':b.kind==='chapel'?'rgba(200,160,210,.85)':'rgba(180,150,110,.8)';
+  ctx.strokeStyle=sel?'#fff':'rgba(60,40,20,.9)';ctx.lineWidth=sel?2.5:1.2;
+  ctx.fillRect(-w/2,-d/2,w,d);ctx.strokeRect(-w/2,-d/2,w,d);
+  ctx.strokeStyle='rgba(60,40,20,.6)';ctx.beginPath();ctx.moveTo(0,-d/2);ctx.lineTo(0,d/2*0.1);ctx.stroke(); // facing tick
+  ctx.restore();
+  if(view.scale>=0.5){ctx.fillStyle='rgba(255,235,200,.9)';ctx.font='10px ui-monospace';ctx.fillText(b.kind,s+ w/2+3,t);}
+}
+
+// ===========================================================================
+// 4) Draggable handles (Move tool)
+// ===========================================================================
+function handles(){
+  const out=[];
+  for(const zn of ZONES){
+    out.push({o:zn.hub,type:'hub',zid:zn.i});
+    out.push({o:zn.graveyard,type:'graveyard',zid:zn.i});
+    zn.lakes.forEach(l=>out.push({o:l,type:'lake',zid:zn.i}));
+  }
+  CAMPS.forEach(c=>out.push({o:c,type:'camp',zid:c.zid}));
+  out.push({o:PLAYER_START,type:'player',zid:-1});
+  return out;
+}
+function pickHandle(wx,wz){ // screen-space threshold
+  let best=null,bd=14;
+  for(const h of handles()){const[s,t]=W2S(h.o.x,h.o.z),[ms,mt]=W2S(wx,wz);const d=Math.hypot(s-ms,t-mt);if(d<bd){bd=d;best=h;}}
+  return best;
+}
+function pickBuilding(wx,wz){let best=null,bd=1e9;for(const b of BUILDINGS){const d=Math.hypot(b.x-wx,b.z-wz);const r=Math.max(b.w,b.d)*0.7;if(d<r&&d<bd){bd=d;best=b;}}return best;}
+function markTerrainDirty(type,zid){if(type==='hub'||type==='lake'||type==='camp')buildRelief();if(type==='player')playerDirty=true;else if(zid>=0)dirtyZones.add(zid);}
+
+// ===========================================================================
+// 5) Interaction
+// ===========================================================================
+let dragging=false,dragStart=null,dragHandle=null,dragBuilding=null,lastWorld=null;
+cv.addEventListener('mousedown',e=>{
+  const[wx,wz]=S2W(e.offsetX,e.offsetY); lastWorld=[wx,wz];
+  const inWorld = curScene==='world';
+  if(tool==='brush'&&e.button===0&&inWorld){edits.push({x:Math.round(wx),z:Math.round(wz),radius:brush.radius,delta:(brushMode==='raise'?1:-1)*brush.strength,hardness:+brush.hardness.toFixed(2)});refresh();return;}
+  if(tool==='build'&&e.button===0&&inWorld){const hit=pickBuilding(wx,wz);if(hit){selectBuilding(hit);}else{const zid=zoneIdxAt(wz);const b={zid,kind:place.kind,x:Math.round(wx),z:Math.round(wz),w:place.w,d:place.d,rot:+place.rot.toFixed(2)};BUILDINGS.push(b);dirtyZones.add(zid);selectBuilding(b);refresh();}return;}
+  if(tool==='build'&&inWorld){return;}
+  if(tool==='move'&&e.button===0&&inWorld){const b=pickBuilding(wx,wz);const h=pickHandle(wx,wz);
+    if(b&&(!h)){dragBuilding=b;selectBuilding(b);} else if(h){dragHandle=h;}
+    if(dragBuilding||dragHandle){dragging=true;return;}}
+  if(tool==='select'){const h=pickHandle(wx,wz);const b=pickBuilding(wx,wz);const o=h?h.o:b;
+    const c=o?`{ x: ${o.x}, z: ${o.z} }`:`{ x: ${Math.round(wx)}, z: ${Math.round(wz)} }`;
+    navigator.clipboard?.writeText(c);readout.textContent='copied  '+c+(h?'  ('+(h.o.name||h.type)+')':b?'  (building)':'');}
+  dragging=true; dragStart={mx:e.offsetX,my:e.offsetY,cx:view.cx,cz:view.cz};
+});
+cv.addEventListener('mousemove',e=>{
+  lastWorld=S2W(e.offsetX,e.offsetY); const[wx,wz]=lastWorld;
+  if(dragging&&dragHandle){dragHandle.o.x=Math.round(wx);dragHandle.o.z=Math.round(wz);}
+  else if(dragging&&dragBuilding){dragBuilding.x=Math.round(wx);dragBuilding.z=Math.round(wz);}
+  else if(dragging&&dragStart&&tool!=='brush'&&tool!=='build'){view.cx=dragStart.cx-(e.offsetX-dragStart.mx)/view.scale;view.cz=dragStart.cz-(e.offsetY-dragStart.my)/view.scale;}
+  if(curScene!=='world'){ readout.textContent=`x ${wx.toFixed(0)}  z ${wz.toFixed(0)}  •  ${(DUNGEONS.find(d=>d.id===curScene)||{}).name||'dungeon'}`; }
+  else { const zn=ZONES.find(z=>wz<z.zMax)||ZONES[ZONES.length-1], h=terrainHeight(wx,wz,seed,edits);
+    readout.textContent=`x ${wx.toFixed(0)}  z ${wz.toFixed(0)}  •  h ${h.toFixed(1)}  •  ${zn?zn.biome:'-'}${h<WATER_LEVEL?'  (underwater)':''}`; }
+  draw();
+});
+window.addEventListener('mouseup',()=>{
+  if(dragHandle){markTerrainDirty(dragHandle.type,dragHandle.zid);dragHandle=null;refresh();}
+  if(dragBuilding){dirtyZones.add(dragBuilding.zid);dragBuilding=null;refresh();}
+  dragging=false;
+});
+cv.addEventListener('wheel',e=>{e.preventDefault();const b=S2W(e.offsetX,e.offsetY);view.scale=Math.max(0.12,Math.min(6,view.scale*(e.deltaY<0?1.12:0.89)));const a=S2W(e.offsetX,e.offsetY);view.cx+=b[0]-a[0];view.cz+=b[1]-a[1];draw();},{passive:false});
+window.addEventListener('keydown',e=>{
+  if(!selBuilding)return;
+  if(e.key==='Delete'||e.key==='Backspace'){const i=BUILDINGS.indexOf(selBuilding);if(i>=0){dirtyZones.add(selBuilding.zid);BUILDINGS.splice(i,1);selectBuilding(null);refresh();}}
+  if(e.key==='r'||e.key==='R'){selBuilding.rot=+(selBuilding.rot+Math.PI/12).toFixed(2);dirtyZones.add(selBuilding.zid);syncSelPanel();refresh();}
+});
+
+// ===========================================================================
+// 6) UI wiring
+// ===========================================================================
+const readout=document.getElementById('readout'), $=id=>document.getElementById(id);
+function setTool(t){tool=t;['Select','Move','Brush','Build'].forEach(n=>$('tool'+n).classList.toggle('on',tool===n.toLowerCase()));
+  $('brushPanel').style.display=t==='brush'?'':'none'; $('buildPanel').style.display=t==='build'?'':'none';
+  cv.style.cursor=t==='brush'||t==='build'?'crosshair':t==='move'?'move':'grab'; if(t!=='build'&&t!=='move')selectBuilding(null);}
+$('toolSelect').onclick=()=>setTool('select');$('toolMove').onclick=()=>setTool('move');$('toolBrush').onclick=()=>setTool('brush');$('toolBuild').onclick=()=>setTool('build');
+function setMode(m){brushMode=m;$('modeRaise').classList.toggle('on',m==='raise');$('modeSink').classList.toggle('on',m==='sink');}
+$('modeRaise').onclick=()=>setMode('raise');$('modeSink').onclick=()=>setMode('sink');
+$('bRadius').oninput=e=>{brush.radius=+e.target.value;$('bRadiusV').textContent=brush.radius;draw();};
+$('bStrength').oninput=e=>{brush.strength=+e.target.value;$('bStrengthV').textContent=brush.strength;};
+$('bHard').oninput=e=>{brush.hardness=+e.target.value/100;$('bHardV').textContent=brush.hardness.toFixed(2);};
+$('undo').onclick=()=>{edits.pop();refresh();};
+$('clear').onclick=()=>{if(confirm('Clear all terrain edits?')){edits=[];refresh();}};
+$('bKind').onchange=e=>place.kind=e.target.value;
+$('bW').oninput=e=>place.w=+e.target.value;$('bD').oninput=e=>place.d=+e.target.value;
+$('bRot').oninput=e=>{place.rot=+e.target.value/100;$('bRotV').textContent=place.rot.toFixed(2);};
+function selectBuilding(b){selBuilding=b;$('selPanel').style.display=b?'':'none';if(b)syncSelPanel();draw();}
+function syncSelPanel(){if(!selBuilding)return;$('sKind').value=selBuilding.kind;$('sW').value=selBuilding.w;$('sD').value=selBuilding.d;$('sRot').value=Math.round(selBuilding.rot*100);$('sRotV').textContent=selBuilding.rot.toFixed(2);}
+$('sKind').onchange=e=>{if(selBuilding){selBuilding.kind=e.target.value;dirtyZones.add(selBuilding.zid);refresh();}};
+$('sW').oninput=e=>{if(selBuilding){selBuilding.w=+e.target.value;dirtyZones.add(selBuilding.zid);refresh();}};
+$('sD').oninput=e=>{if(selBuilding){selBuilding.d=+e.target.value;dirtyZones.add(selBuilding.zid);refresh();}};
+$('sRot').oninput=e=>{if(selBuilding){selBuilding.rot=+e.target.value/100;$('sRotV').textContent=selBuilding.rot.toFixed(2);dirtyZones.add(selBuilding.zid);refresh();}};
+$('delBuilding').onclick=()=>{if(selBuilding){const i=BUILDINGS.indexOf(selBuilding);if(i>=0){dirtyZones.add(selBuilding.zid);BUILDINGS.splice(i,1);selectBuilding(null);refresh();}}};
+$('seed').oninput=e=>{seed=+e.target.value||0;refresh();};
+$('fit').onclick=()=>{const W=cv.clientWidth||cv.parentElement.clientWidth||800,H=cv.clientHeight||600;view.cx=0;view.cz=(WORLD.minZ+WORLD.maxZ)/2;view.scale=Math.min(W/(WORLD.maxX-WORLD.minX),H/(WORLD.maxZ-WORLD.minZ))*0.95;draw();};
+$('toggleShade').onclick=()=>{shade=!shade;draw();};
+$('copy').onclick=()=>{navigator.clipboard?.writeText($('exportTxt').value);$('copy').textContent='Copied!';setTimeout(()=>$('copy').textContent='Copy',1000);};
+
+// ===========================================================================
+// 7) Export — grouped, paste-ready TS for everything changed
+// ===========================================================================
+function exportText(){
+  const out=[];
+  // terrain edits (always)
+  out.push('// ── src/sim/content/terrain_edits.ts — replace TERRAIN_EDITS ──');
+  if(!edits.length) out.push('export const TERRAIN_EDITS: TerrainEditDef[] = [];');
+  else out.push('export const TERRAIN_EDITS: TerrainEditDef[] = [\n'+edits.map(e=>`  { x: ${e.x}, z: ${e.z}, radius: ${e.radius}, delta: ${e.delta}${e.hardness?`, hardness: ${e.hardness}`:''} },`).join('\n')+'\n];');
+  if(playerDirty){out.push('\n// ── src/sim/data.ts — replace PLAYER_START ──');out.push(`export const PLAYER_START = { x: ${PLAYER_START.x}, z: ${PLAYER_START.z} };`);}
+  for(const zn of ZONES){
+    if(!dirtyZones.has(zn.i))continue;
+    const N=zn.i+1;
+    out.push(`\n// ── src/sim/content/zone${N}.ts — in ZONE${N}_ZONE, update hub/graveyard/lakes ──`);
+    out.push(`  hub: { x: ${zn.hub.x}, z: ${zn.hub.z}, radius: ${zn.hub.radius}, name: '${zn.hub.name}' },`);
+    out.push(`  graveyard: { x: ${zn.graveyard.x}, z: ${zn.graveyard.z} },`);
+    out.push(`  lakes: [${zn.lakes.map(l=>`{ x: ${l.x}, z: ${l.z}, radius: ${l.radius} }`).join(', ')}],`);
+    const camps=CAMPS.filter(c=>c.zid===zn.i);
+    out.push(`\n// ── src/sim/content/zone${N}.ts — replace ZONE${N}_CAMPS ──`);
+    out.push(`export const ZONE${N}_CAMPS: CampDef[] = [\n`+camps.map(c=>`  { mobId: '${c.mobId}', center: { x: ${c.x}, z: ${c.z} }, radius: ${c.radius}, count: ${c.count} },`).join('\n')+'\n];');
+    const blds=BUILDINGS.filter(b=>b.zid===zn.i);
+    out.push(`\n// ── src/sim/content/zone${N}.ts — in ZONE${N}_PROPS, replace buildings ──`);
+    out.push(`  buildings: [\n`+blds.map(b=>`    { kind: '${b.kind}', x: ${b.x}, z: ${b.z}, w: ${b.w}, d: ${b.d}, rot: ${b.rot} },`).join('\n')+'\n  ],');
+  }
+  return out.join('\n');
+}
+function refresh(){$('editCount').textContent=edits.length;$('exportTxt').value=exportText();draw();}
+
+// ===========================================================================
+// 8) Live data + save (only when served by the Vite dev plugin)
+// ===========================================================================
+let saveAvailable=false;
+function applyData(d){
+  seed=d.seed??seed; $('seed').value=seed;
+  ZONES=d.zones.map((z,i)=>({...z,i}));
+  CAMPS=d.camps.map(c=>({mobId:c.mobId,x:c.center.x,z:c.center.z,radius:c.radius,count:c.count,zid:c.zid}));
+  BUILDINGS=d.buildings.map(b=>({kind:b.kind,x:b.x,z:b.z,w:b.w,d:b.d,rot:b.rot,zid:b.zid}));
+  ROADS=d.roads; PLAYER_START=d.playerStart;
+  edits=(d.terrainEdits||[]).map(e=>({x:e.x,z:e.z,radius:e.radius,delta:e.delta,hardness:e.hardness||0}));
+  recompute(); selectBuilding(null); buildRelief(); $('fit').onclick(); refresh(); sync3D(true);
+}
+async function loadLive(attempt=0){
+  try{
+    const r=await fetch('/__editor/data');
+    if(!r.ok) throw new Error('HTTP '+r.status); // e.g. cold ssrLoadModule on first hit
+    applyData(await r.json());
+    dirtyZones.clear(); playerDirty=false; saveAvailable=true;
+    $('liveBadge').innerHTML='● <b style="color:#7CFF9B">live</b> — reads/writes src/sim/content/*';
+    $('save').style.display=''; $('revert').style.display='';
+    return true;
+  }catch(e){
+    if(attempt<4){ await new Promise(s=>setTimeout(s,400)); return loadLive(attempt+1); }
+    console.warn('[map editor] live data unavailable, using snapshot:', e);
+    return false;
+  }
+}
+async function revertDefault(){
+  try{
+    const r=await fetch('/__editor/default'); if(!r.ok){alert('No default snapshot found (run: npx vite-node tools/dump_map_default.ts).');return;}
+    applyData(await r.json());
+    dirtyZones=new Set([0,1,2]); playerDirty=true; refresh();
+    if(saveAvailable && confirm('Loaded the default layout. Write it back to source now (revert all map files)?')) save();
+    else alert('Default layout loaded into the editor. Click “Save to repo” to write it back.');
+  }catch(e){ alert('Revert failed: '+e); }
+}
+$('revert').onclick=revertDefault;
+async function save(){
+  $('save').textContent='Saving…';
+  try{
+    const r=await fetch('/__editor/save',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({terrainEdits:edits, zones:ZONES, camps:CAMPS, buildings:BUILDINGS, playerStart:PLAYER_START})});
+    const o=await r.json();
+    alert([o.written&&o.written.length?'Wrote:\n  '+o.written.join('\n  '):'No files written',
+      o.skipped&&o.skipped.length?'Skipped:\n  '+o.skipped.join('\n  '):'',
+      o.errors&&o.errors.length?'Errors:\n  '+o.errors.join('\n  '):''].filter(Boolean).join('\n\n'));
+  }catch(e){ alert('Save failed: '+e); }
+  $('save').textContent='💾 Save to repo';
+}
+$('save').onclick=save;
+
+setTool('select'); buildRelief(); $('fit').onclick(); refresh();
+// keep the canvas sized to its container (the preview panel can resize/relayout)
+addEventListener('resize', draw);
+try { new ResizeObserver(()=>{ if(viewMode==='3d') resize3(); else draw(); }).observe(document.getElementById('stage')); } catch(_){}
+requestAnimationFrame(()=>{ $('fit').onclick(); }); // re-fit once layout settles
+loadLive();
+
+// ===========================================================================
+// 9) 3D viewport (Unreal-style) — optional; needs `three` (i.e. npm run dev).
+//    Same state/edits as 2D: sculpt with Brush, place/select with Build.
+// ===========================================================================
+let THREE=null, viewMode='2d';
+let r3=null, scene=null, cam=null, terrainMesh=null, waterMesh=null, bGroup=null, mGroup=null, ray=null;
+const STEP3=4; // world units per terrain quad
+const target={x:0,y:0,z:(WORLD.minZ+WORLD.maxZ)/2}, orbit={radius:1100, theta:Math.PI/2, phi:0.85};
+const cv3d=document.getElementById('cv3d');
+
+async function init3D(){
+  try{ THREE=await import('three'); }
+  catch(e){ console.warn('[map editor] 3D view needs the dev server (npm run dev):', e); $('v3d').disabled=true; $('v3d').title='Open via npm run dev for 3D'; return; }
+  r3=new THREE.WebGLRenderer({canvas:cv3d, antialias:true}); r3.setPixelRatio(Math.min(2,devicePixelRatio||1));
+  scene=new THREE.Scene(); scene.background=new THREE.Color(0x0b0d12);
+  cam=new THREE.PerspectiveCamera(55,1,1,9000);
+  scene.add(new THREE.HemisphereLight(0xcfe0ff,0x39331f,1.0));
+  const sun=new THREE.DirectionalLight(0xffffff,1.15); sun.position.set(-250,500,180); scene.add(sun);
+  ray=new THREE.Raycaster(); bGroup=new THREE.Group(); mGroup=new THREE.Group(); scene.add(bGroup,mGroup);
+  rebuildTerrain3(); rebuildWater3(); rebuildBuildings3(); rebuildMarkers3(); bindOrbit(); updateCam();
+}
+function rebuildTerrain3(){
+  if(!THREE) return;
+  const x0=WORLD.minX,z0=WORLD.minZ, nx=Math.floor((WORLD.maxX-x0)/STEP3)+1, nz=Math.floor((WORLD.maxZ-z0)/STEP3)+1;
+  const pos=new Float32Array(nx*nz*3), col=new Float32Array(nx*nz*3);
+  for(let j=0;j<nz;j++)for(let i=0;i<nx;i++){
+    const x=x0+i*STEP3, z=z0+j*STEP3, h=terrainHeight(x,z,seed,edits), k=(j*nx+i)*3;
+    pos[k]=x; pos[k+1]=h; pos[k+2]=z;
+    const c=heightColor(h); col[k]=c[0]/255; col[k+1]=c[1]/255; col[k+2]=c[2]/255;
+  }
+  const idx=[];
+  for(let j=0;j<nz-1;j++)for(let i=0;i<nx-1;i++){const a=j*nx+i,b=a+1,c=a+nx,d=c+1; idx.push(a,c,b,b,c,d);}
+  const geo = terrainMesh ? terrainMesh.geometry : new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('color',new THREE.BufferAttribute(col,3));
+  geo.setIndex(idx); geo.computeVertexNormals();
+  if(!terrainMesh){ terrainMesh=new THREE.Mesh(geo,new THREE.MeshLambertMaterial({vertexColors:true})); scene.add(terrainMesh); }
+}
+function rebuildWater3(){
+  if(waterMesh) scene.remove(waterMesh);
+  waterMesh=new THREE.Mesh(new THREE.PlaneGeometry(WORLD.maxX-WORLD.minX,WORLD.maxZ-WORLD.minZ),
+    new THREE.MeshLambertMaterial({color:0x2a6cc4,transparent:true,opacity:0.55}));
+  waterMesh.rotation.x=-Math.PI/2; waterMesh.position.set(0,WATER_LEVEL,(WORLD.minZ+WORLD.maxZ)/2); scene.add(waterMesh);
+}
+const bColor3=k=>k==='inn'?0xd8b46a:k==='chapel'?0xc8a0d2:0xb4966e;
+function rebuildBuildings3(){
+  if(!bGroup) return; while(bGroup.children.length) bGroup.remove(bGroup.children[0]);
+  for(const b of BUILDINGS){
+    const m=new THREE.Mesh(new THREE.BoxGeometry(b.w,4,b.d),
+      new THREE.MeshLambertMaterial({color:bColor3(b.kind), emissive:b===selBuilding?0x444400:0x000000}));
+    m.position.set(b.x, terrainHeight(b.x,b.z,seed,edits)+2, b.z); m.rotation.y=-b.rot; m.userData.b=b; bGroup.add(m);
+  }
+}
+function rebuildMarkers3(){
+  if(!mGroup) return; while(mGroup.children.length) mGroup.remove(mGroup.children[0]);
+  for(const zn of ZONES){
+    const hub=new THREE.Mesh(new THREE.CylinderGeometry(zn.hub.radius,zn.hub.radius,1.5,28),
+      new THREE.MeshLambertMaterial({color:0xffd24a,transparent:true,opacity:0.35}));
+    hub.position.set(zn.hub.x, terrainHeight(zn.hub.x,zn.hub.z,seed,edits)+0.8, zn.hub.z); mGroup.add(hub);
+    for(const l of zn.lakes){ const lk=new THREE.Mesh(new THREE.CylinderGeometry(l.radius,l.radius,0.6,24),
+      new THREE.MeshLambertMaterial({color:0x3aa0ff,transparent:true,opacity:0.4})); lk.position.set(l.x,WATER_LEVEL+0.4,l.z); mGroup.add(lk); }
+  }
+  for(const d of DUNGEONS){ const dm=new THREE.Mesh(new THREE.CylinderGeometry(4,4,7,8),new THREE.MeshLambertMaterial({color:0xc98bff}));
+    dm.position.set(d.doorPos.x, terrainHeight(d.doorPos.x,d.doorPos.z,seed,edits)+3.5, d.doorPos.z); mGroup.add(dm); }
+}
+function updateCam(){ if(!cam) return; const sp=orbit.phi,st=orbit.theta;
+  cam.position.set(target.x+orbit.radius*Math.sin(sp)*Math.cos(st), target.y+orbit.radius*Math.cos(sp), target.z+orbit.radius*Math.sin(sp)*Math.sin(st));
+  cam.lookAt(target.x,target.y,target.z); }
+function resize3(){ if(!r3) return; const w=cv3d.clientWidth||cv3d.parentElement.clientWidth||800,h=cv3d.clientHeight||600; r3.setSize(w,h,false); cam.aspect=w/h; cam.updateProjectionMatrix(); }
+function loop3(){ if(viewMode!=='3d'||!r3) return; r3.render(scene,cam); requestAnimationFrame(loop3); }
+function sync3D(full){ if(viewMode!=='3d'||!THREE) return; if(full){rebuildTerrain3();rebuildMarkers3();} rebuildBuildings3(); }
+function setView(m){
+  viewMode=m; $('v2d').classList.toggle('on',m==='2d'); $('v3d').classList.toggle('on',m==='3d');
+  cv.style.display=m==='2d'?'':'none'; cv3d.style.display=m==='3d'?'':'none'; readout.style.display=m==='3d'?'none':'';
+  if(m==='3d'&&THREE){ rebuildTerrain3(); rebuildBuildings3(); rebuildMarkers3(); build3DScene(); resize3(); updateCam(); loop3(); } else draw();
+}
+$('v2d').onclick=()=>setView('2d'); $('v3d').onclick=()=>setView('3d');
+
+function ndcFrom(e){ const r=cv3d.getBoundingClientRect(); return {x:((e.clientX-r.left)/r.width)*2-1, y:-((e.clientY-r.top)/r.height)*2+1}; }
+function edit3(e){
+  if(curScene!=='world') return; // dungeon interiors are view-only
+  ray.setFromCamera(ndcFrom(e),cam);
+  if(tool==='brush'){
+    const hit=ray.intersectObject(terrainMesh)[0]; if(!hit) return;
+    edits.push({x:Math.round(hit.point.x),z:Math.round(hit.point.z),radius:brush.radius,delta:(brushMode==='raise'?1:-1)*brush.strength,hardness:+brush.hardness.toFixed(2)});
+    rebuildTerrain3(); rebuildBuildings3(); rebuildMarkers3(); buildRelief(); refresh();
+  } else if(tool==='build'){
+    const bh=ray.intersectObjects(bGroup.children)[0];
+    if(bh){ selectBuilding(bh.object.userData.b); rebuildBuildings3(); return; }
+    const hit=ray.intersectObject(terrainMesh)[0]; if(!hit) return;
+    const zid=zoneIdxAt(hit.point.z), b={zid,kind:place.kind,x:Math.round(hit.point.x),z:Math.round(hit.point.z),w:place.w,d:place.d,rot:+place.rot.toFixed(2)};
+    BUILDINGS.push(b); dirtyZones.add(zid); selectBuilding(b); rebuildBuildings3(); refresh();
+  }
+}
+function bindOrbit(){
+  let mode=null,last=null;
+  cv3d.addEventListener('contextmenu',e=>e.preventDefault());
+  cv3d.addEventListener('pointerdown',e=>{
+    cv3d.setPointerCapture(e.pointerId); last={x:e.clientX,y:e.clientY};
+    const editing=(tool==='brush'||tool==='build');
+    if(e.button===0&&editing){ edit3(e); mode=null; }
+    else if(e.button===0){ mode='rot'; }
+    else if(e.button===2){ mode=editing?'rot':'pan'; }
+    else if(e.button===1){ mode='pan'; }
+  });
+  cv3d.addEventListener('pointermove',e=>{
+    if(!mode||!last) return; const dx=e.clientX-last.x, dy=e.clientY-last.y; last={x:e.clientX,y:e.clientY};
+    if(mode==='rot'){ orbit.theta-=dx*0.005; orbit.phi=Math.max(0.05,Math.min(1.5,orbit.phi-dy*0.005)); }
+    else { const k=orbit.radius*0.0015, fx=Math.cos(orbit.theta),fz=Math.sin(orbit.theta), rx=Math.sin(orbit.theta),rz=-Math.cos(orbit.theta);
+      target.x+=(-dx*rx+dy*fx)*k; target.z+=(-dx*rz+dy*fz)*k; }
+    updateCam();
+  });
+  const end=e=>{ mode=null; last=null; try{cv3d.releasePointerCapture(e.pointerId);}catch(_){} };
+  cv3d.addEventListener('pointerup',end); cv3d.addEventListener('pointercancel',end);
+  cv3d.addEventListener('wheel',e=>{ e.preventDefault(); orbit.radius=Math.max(30,Math.min(5000,orbit.radius*(e.deltaY>0?1.1:0.9))); updateCam(); },{passive:false});
+}
+// keep 3D buildings in sync with sel-panel edits / deletes / places done elsewhere
+const _refresh=refresh; refresh=function(){ _refresh(); if(viewMode==='3d'&&THREE) rebuildBuildings3(); };
+addEventListener('resize', ()=>{ if(viewMode==='3d') resize3(); });
+init3D();
+
+// ===========================================================================
+// 10) Dungeons — overworld entrances (drawn above) + interior viewer (2D/3D).
+//     View-only: interiors are defined in src/sim/dungeon_layout.ts.
+// ===========================================================================
+function rectFill(x0,z0,x1,z1,col){ const[a,b]=W2S(x0,z0),[c,e]=W2S(x1,z1); ctx.fillStyle=col; ctx.fillRect(Math.min(a,c),Math.min(b,e),Math.abs(c-a),Math.abs(e-b)); }
+const isBoss=(s,L)=>Math.hypot(s.x-L.dais.x,s.z-L.dais.z)<6;
+function drawDungeon2D(){
+  const d=DUNGEONS.find(x=>x.id===curScene); if(!d){ curScene='world'; return draw(); }
+  const L=LAYOUTS[d.interior];
+  rectFill(-DWALL_X,L.zMin,DWALL_X,L.zMax,'#1b1622');                                       // floor
+  for(const sx of [-DWALL_X,DWALL_X]) rectFill(sx-DWALL_HW,L.zMin,sx+DWALL_HW,L.zMax,'#4a4450');   // side walls
+  for(const ez of [L.zMin,L.zMax]) rectFill(-DEND_HW,ez-DWALL_HW,DEND_HW,ez+DWALL_HW,'#4a4450');   // end walls
+  for(const s of L.stubs) rectFill(s.x-s.hw,s.z-s.hd,s.x+s.hw,s.z+s.hd,'#5a5460');                 // waist stubs
+  for(const t of L.tombs) rectFill(t.x-DTOMB_HW,t.z-DTOMB_HD,t.x+DTOMB_HW,t.z+DTOMB_HD,'#6a5a4a'); // tombs
+  for(const p of L.pillars) circle(p.x,p.z,DPILLAR_R,'rgba(190,180,200,.9)','rgba(225,225,235,.85)'); // pillars
+  circle(L.dais.x,L.dais.z,L.dais.r,'rgba(255,210,90,.22)','rgba(255,210,90,.9)');                 // boss dais
+  marker(d.entry.x,d.entry.z,'#7CFF9B','▼');                                                       // arrival
+  for(const s of d.spawns){ const boss=isBoss(s,L); circle(s.x,s.z,boss?2.6:1.3, boss?'rgba(255,70,70,.5)':'rgba(230,120,90,.45)', boss?'#ff5a5a':'#e8a070');
+    if(view.scale>=2.2){ const[a,b]=W2S(s.x,s.z); ctx.fillStyle='rgba(240,205,200,.9)'; ctx.font='9px ui-monospace'; ctx.fillText(s.mobId,a+3,b+3); } }
+  ctx.fillStyle='#dce1ea'; ctx.font='bold 14px ui-monospace'; ctx.fillText('🏰 '+d.name+'  ['+d.interior+']',12,22);
+}
+function build3DScene(){
+  if(!THREE||!scene) return;
+  const inD=curScene!=='world';
+  if(terrainMesh) terrainMesh.visible=!inD; if(waterMesh) waterMesh.visible=!inD; if(bGroup) bGroup.visible=!inD; if(mGroup) mGroup.visible=!inD;
+  if(!dGroup){ dGroup=new THREE.Group(); scene.add(dGroup); }
+  dGroup.visible=inD; while(dGroup.children.length) dGroup.remove(dGroup.children[0]);
+  if(!inD) return;
+  const d=DUNGEONS.find(x=>x.id===curScene), L=LAYOUTS[d.interior], len=L.zMax-L.zMin, midz=(L.zMin+L.zMax)/2;
+  const wall=new THREE.MeshLambertMaterial({color:0x4a4450}), floorM=new THREE.MeshLambertMaterial({color:0x241f2b});
+  const add=(geo,mat,x,y,z)=>{ const m=new THREE.Mesh(geo,mat); m.position.set(x,y,z); dGroup.add(m); return m; };
+  add(new THREE.PlaneGeometry(DWALL_X*2,len),floorM,0,0,midz).rotation.x=-Math.PI/2;
+  for(const sx of [-DWALL_X,DWALL_X]) add(new THREE.BoxGeometry(DWALL_HW*2,DWALL_H,len),wall,sx,DWALL_H/2,midz);
+  for(const ez of [L.zMin,L.zMax]) add(new THREE.BoxGeometry(DEND_HW*2,DWALL_H,DWALL_HW*2),wall,0,DWALL_H/2,ez);
+  for(const s of L.stubs) add(new THREE.BoxGeometry(s.hw*2,DWALL_H,s.hd*2),wall,s.x,DWALL_H/2,s.z);
+  for(const p of L.pillars) add(new THREE.CylinderGeometry(DPILLAR_R,DPILLAR_R,DWALL_H,12),wall,p.x,DWALL_H/2,p.z);
+  for(const t of L.tombs) add(new THREE.BoxGeometry(DTOMB_HW*2,2,DTOMB_HD*2),new THREE.MeshLambertMaterial({color:0x6a5a4a}),t.x,1,t.z);
+  add(new THREE.CylinderGeometry(L.dais.r,L.dais.r,1,28),new THREE.MeshLambertMaterial({color:0xffd24a,transparent:true,opacity:0.5}),L.dais.x,0.5,L.dais.z);
+  for(const s of d.spawns){ const boss=isBoss(s,L); add(new THREE.SphereGeometry(boss?2.2:1,12,12),new THREE.MeshLambertMaterial({color:boss?0xff5a5a:0xe89070}),s.x,1.4,s.z); }
+  add(new THREE.ConeGeometry(1.5,3,4),new THREE.MeshLambertMaterial({color:0x7cff9b}),d.entry.x,2,d.entry.z);
+  target.x=0; target.y=0; target.z=midz; orbit.radius=Math.max(110,len*1.5); orbit.phi=0.7; orbit.theta=Math.PI/2;
+}
+function updateSceneButtons(){
+  const c=$('sceneBtns');
+  if(c.dataset.init!=='1'){ c.innerHTML='';
+    const mk=(id,label)=>{ const b=document.createElement('button'); b.textContent=label; b.dataset.scene=id; b.onclick=()=>setScene(id); c.appendChild(b); };
+    mk('world','🌍 World'); for(const d of DUNGEONS) mk(d.id, d.name.replace(/^The /,'')); c.dataset.init='1'; }
+  for(const b of c.children) b.classList.toggle('on', b.dataset.scene===curScene);
+}
+function setScene(id){
+  if(id!=='world' && curScene==='world') worldViewSaved={...view};
+  curScene=id; selectBuilding(null); updateSceneButtons();
+  if(id==='world'){
+    if(worldViewSaved){ Object.assign(view,worldViewSaved); worldViewSaved=null; }
+    target.x=0; target.y=0; target.z=(WORLD.minZ+WORLD.maxZ)/2; orbit.radius=1100; orbit.phi=0.85; orbit.theta=Math.PI/2;
+  } else {
+    const d=DUNGEONS.find(x=>x.id===id), L=LAYOUTS[d.interior];
+    view.cx=0; view.cz=(L.zMin+L.zMax)/2;
+    view.scale=Math.min((cv.clientWidth||800)/(DWALL_X*2.6),(cv.clientHeight||600)/(L.zMax-L.zMin+24))*0.9;
+  }
+  if(viewMode==='3d'&&THREE){ build3DScene(); resize3(); updateCam(); } else draw();
+}
+updateSceneButtons();
+</script>
