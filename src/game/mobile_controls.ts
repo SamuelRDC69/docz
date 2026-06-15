@@ -22,6 +22,8 @@ export interface MobileControlCallbacks {
   onMeters(): void;
   onMap(): void;
   onLeaderboard(): void;
+  /** Toggle world nameplates; returns the new on/off state to sync the button glow. */
+  onNameplates(): boolean;
 }
 
 export function isPhoneTouchDevice(win: Pick<Window, 'matchMedia'> = window): boolean {
@@ -119,6 +121,11 @@ export class MobileControls {
     this.bindButton('mobile-meters', () => this.callbacks.onMeters());
     this.bindButton('mobile-map', () => this.callbacks.onMap());
     this.bindButton('mobile-leaderboard', () => this.callbacks.onLeaderboard());
+    const nameplatesBtn = document.getElementById('mobile-nameplates');
+    this.bindButton('mobile-nameplates', () => {
+      const on = this.callbacks.onNameplates();
+      nameplatesBtn?.classList.toggle('active', on);
+    });
     this.bindButton('mobile-more', () => {
       this.root?.classList.toggle('expanded');
       document.body.classList.toggle('mobile-more-open', this.root?.classList.contains('expanded') ?? false);

@@ -2877,6 +2877,12 @@
     font-size: 10px;
     color: #e6d8ae;
   }
+  /* A toggle tray button (e.g. Nameplates) glows gold while its feature is on. */
+  body.mobile-touch #mobile-extra-controls .mobile-btn.active {
+    border-color: var(--gold);
+    box-shadow: 0 0 8px #ffd10066, inset 0 0 6px #ffd10033;
+  }
+  body.mobile-touch #mobile-extra-controls .mobile-btn.active .mobile-label { color: var(--gold); }
   body.mobile-touch #bottom-bar {
     left: 0; right: 0; bottom: calc(62px + env(safe-area-inset-bottom));
     width: 100%;
@@ -4130,6 +4136,7 @@
         <button class="mobile-btn" id="mobile-meters" title="Meters" aria-label="Meters" data-icon="meters"><span class="mobile-label">Meters</span></button>
         <button class="mobile-btn" id="mobile-map" title="Map" aria-label="Map" data-icon="map"><span class="mobile-label">Map</span></button>
         <button class="mobile-btn" id="mobile-leaderboard" title="Leaderboard" aria-label="Leaderboard" data-icon="leaderboard"><span class="mobile-label">Ranks</span></button>
+        <button class="mobile-btn active" id="mobile-nameplates" title="Toggle nameplates" aria-label="Toggle nameplates" data-icon="nameplates"><span class="mobile-label">Names</span></button>
       </div>
     </div>
   </div>

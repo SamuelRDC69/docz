@@ -1,6 +1,7 @@
 // Screenshot the mobile autorun toggle button in offline mode.
 // Needs `npm run dev` on :5173. No server/Postgres required (offline flow).
-import puppeteer from '../node_modules/puppeteer-core/lib/puppeteer/puppeteer-core.js';
+import puppeteer from 'puppeteer-core';
+import { BROWSER_PATH } from './browser_path.mjs';
 
 const URL = process.env.URL || 'http://localhost:5173/';
 const OUT = process.env.OUT || '/tmp/woc-autorun';
@@ -8,7 +9,7 @@ const OUT = process.env.OUT || '/tmp/woc-autorun';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const browser = await puppeteer.launch({
-  executablePath: '/usr/bin/chromium',
+  executablePath: BROWSER_PATH,
   headless: 'new',
   args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox'],
 });
