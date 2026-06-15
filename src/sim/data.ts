@@ -22,6 +22,7 @@ import {
   ZONE3_QUESTS, ZONE3_QUEST_ORDER, ZONE3_ROADS, ZONE3_ZONE,
 } from './content/zone3';
 import { DUNGEON_DEFS, DUNGEON_MOBS } from './content/dungeons';
+import { TERRAIN_EDITS } from './content/terrain_edits';
 
 export { CLASSES, ABILITIES, abilitiesKnownAt } from './content/classes';
 export type { ClassDef } from './content/classes';
@@ -55,6 +56,9 @@ export const QUEST_ORDER: string[] = [
 ];
 
 export const CAMPS: CampDef[] = [...ZONE1_CAMPS, ...ZONE2_CAMPS, ...ZONE3_CAMPS];
+
+// Hand-placed terrain bumps/pits (sim/world.ts layers these onto the heightfield).
+export { TERRAIN_EDITS };
 
 export const GROUND_OBJECTS: GroundObjectDef[] = [...ZONE1_OBJECTS, ...ZONE2_OBJECTS, ...ZONE3_OBJECTS];
 

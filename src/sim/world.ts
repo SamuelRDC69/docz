@@ -1,7 +1,7 @@
 import { fbm2, hash2 } from './rng';
 import {
-  CAMPS, DUNGEON_FLOOR_Y, DUNGEON_X_THRESHOLD, ROADS, WORLD_MAX_X, WORLD_MAX_Z,
-  WORLD_MIN_X, WORLD_MIN_Z, ZONES,
+  CAMPS, DUNGEON_FLOOR_Y, DUNGEON_X_THRESHOLD, ROADS, TERRAIN_EDITS, WORLD_MAX_X,
+  WORLD_MAX_Z, WORLD_MIN_X, WORLD_MIN_Z, ZONES,
 } from './data';
 import type { BiomeId } from './types';
 
@@ -105,6 +105,18 @@ export function terrainHeight(x: number, z: number, seed: number): number {
       const ch = baseHeight(camp.center.x, camp.center.z, seed);
       const blend = smoothstep(camp.radius * 0.8, camp.radius * 1.8, d);
       h = h * blend + ch * (1 - blend);
+    }
+  }
+
+  // Hand-authored raise/sink brushes (authored in tools/map_editor.html).
+  // Applied after camps but before ridges/rim so the world walls still bound it.
+  for (const edit of TERRAIN_EDITS) {
+    const dx = x - edit.x, dz = z - edit.z;
+    const d = Math.sqrt(dx * dx + dz * dz);
+    if (d < edit.radius) {
+      const inner = (edit.hardness ?? 0) * edit.radius;
+      // 1 at the center, easing to 0 at the radius, with a flat top out to `inner`
+      h += edit.delta * (1 - smoothstep(inner, edit.radius, d));
     }
   }
 

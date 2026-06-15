@@ -1853,6 +1853,25 @@ export type SupportedLanguage = keyof typeof translations;
 
 let currentLanguage: SupportedLanguage = "en";
 
+// Some runtimes expose a `localStorage` global that lacks the real methods
+// (Node's experimental web storage, some test harnesses) or throws on access
+// (privacy mode, sandboxed iframes). Feature-detect the functions before use.
+function storageGet(key: string): string | null {
+  try {
+    if (typeof localStorage !== "undefined" && typeof localStorage.getItem === "function") {
+      return localStorage.getItem(key);
+    }
+  } catch { /* access denied */ }
+  return null;
+}
+function storageSet(key: string, val: string): void {
+  try {
+    if (typeof localStorage !== "undefined" && typeof localStorage.setItem === "function") {
+      localStorage.setItem(key, val);
+    }
+  } catch { /* access denied */ }
+}
+
 // Initialize language from URL query or localStorage if available (browser environments)
 if (typeof window !== "undefined" && window.location) {
   const params = new URLSearchParams(window.location.search);
@@ -1860,13 +1879,13 @@ if (typeof window !== "undefined" && window.location) {
   if (langParam && translations[langParam]) {
     currentLanguage = langParam;
   } else {
-    const saved = localStorage.getItem("locale") as SupportedLanguage | null;
+    const saved = storageGet("locale") as SupportedLanguage | null;
     if (saved && translations[saved]) {
       currentLanguage = saved;
     }
   }
-} else if (typeof localStorage !== "undefined") {
-  const saved = localStorage.getItem("locale") as SupportedLanguage | null;
+} else {
+  const saved = storageGet("locale") as SupportedLanguage | null;
   if (saved && translations[saved]) {
     currentLanguage = saved;
   }
@@ -1878,9 +1897,7 @@ export function getLanguage(): SupportedLanguage {
 
 export function setLanguage(lang: SupportedLanguage): void {
   currentLanguage = lang;
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem("locale", lang);
-  }
+  storageSet("locale", lang);
 }
 
 export function t(key: Leaves<typeof en>): string {

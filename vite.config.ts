@@ -1,8 +1,10 @@
 import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
+import { mapEditorPlugin } from './tools/vite-map-editor-plugin.mjs';
 
 export default defineConfig({
   base: '/',
+  plugins: [mapEditorPlugin()],
   server: {
     port: 5173,
     proxy: {
