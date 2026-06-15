@@ -24,6 +24,7 @@ import { cacheControlFor, etagFor, isNotModified } from './static_cache';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STATIC_DIR = path.join(__dirname, '..', 'dist');
+const WIKI_URL = process.env.WIKI_URL ?? 'http://localhost:8080/wiki/index.php/Main_Page';
 // How long chat logs are kept (0 = forever); pruned at boot and daily.
 const CHAT_LOG_RETENTION_DAYS = Number(process.env.CHAT_LOG_RETENTION_DAYS ?? 90);
 
@@ -116,6 +117,11 @@ function isAdminRequest(req: http.IncomingMessage): boolean {
 function serveStatic(req: http.IncomingMessage, res: http.ServerResponse): void {
   const shell = isAdminRequest(req) ? 'admin.html' : 'index.html';
   let urlPath = (req.url ?? '/').split('?')[0];
+  if (urlPath === '/wiki' || urlPath === '/wiki/' || urlPath.startsWith('/wiki/')) {
+    res.writeHead(302, { Location: WIKI_URL });
+    res.end();
+    return;
+  }
   if (urlPath === '/' || urlPath === '/admin' || urlPath === '/admin/') urlPath = `/${shell}`;
   // normalize once and reuse for BOTH file resolution and cache policy —
   // otherwise /assets/../x would serve a mutable file with immutable caching

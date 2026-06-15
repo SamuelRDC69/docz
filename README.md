@@ -63,6 +63,10 @@ Open http://localhost:5173 → **Play Online** → create an account → create 
 character → Enter World. Open a second browser/tab and log in again — you'll
 see each other in town. `Enter` opens chat.
 
+The player wiki is a real MediaWiki service when running Docker Compose:
+open http://localhost:8080/wiki/. Its seed pages are generated from the
+current game content and community research with `npm run wiki:seed`.
+
 - **Accounts**: scrypt-hashed passwords, 7-day bearer tokens (`auth_tokens`).
 - **Characters**: up to 10 per account; level/gear/bags/quests/position/money
   persist as JSONB in Postgres — saved every 30 s, on logout, and on server

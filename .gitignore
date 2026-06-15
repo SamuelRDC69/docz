@@ -9,6 +9,7 @@ media-cache/
 
 # test artifacts & screenshots
 tmp/
+.codex-research/
 
 # python
 __pycache__/
