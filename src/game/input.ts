@@ -141,6 +141,13 @@ export class Input {
     this.touchJump = true;
   }
 
+  // Touch-reachable autorun toggle (the keyboard path is the 'autorun' edge action).
+  // Returns the new state so the on-screen button can reflect it.
+  toggleAutorun(): boolean {
+    this.autorun = !this.autorun;
+    return this.autorun;
+  }
+
   setTouchLook(active: boolean): void {
     this.touchLookActive = active;
   }

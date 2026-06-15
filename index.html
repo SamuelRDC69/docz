@@ -2838,6 +2838,16 @@
     z-index: 19;
   }
   body.mobile-touch .mobile-btn:active { transform: translateY(1px); border-color: var(--gold); color: #fff; }
+  body.mobile-touch #mobile-autorun {
+    position: absolute; pointer-events: auto;
+    left: max(150px, calc(env(safe-area-inset-left) + 132px));
+    bottom: calc(40px + env(safe-area-inset-bottom));
+  }
+  body.mobile-touch #mobile-autorun.active {
+    border-color: var(--gold); color: #fff;
+    background: radial-gradient(circle at 35% 30%, #5a4a1ed8, #2a230fd8 72%);
+    box-shadow: inset 0 1px 0 #ffffff20, 0 0 12px #e3c46a80;
+  }
   body.mobile-touch .mobile-btn .mobile-label { display: block; margin-top: 1px; font-size: 8px; font-family: var(--ui-font); color: #bfb28a; }
   body.mobile-touch #mobile-extra-controls {
     position: fixed;
@@ -4100,6 +4110,7 @@
       <div id="mobile-camera-stick" class="mobile-stick"></div>
       <div class="mobile-joy-label">Camera</div>
     </div>
+    <button class="mobile-btn" id="mobile-autorun" title="Toggle autorun" aria-label="Toggle autorun" data-icon="autorun"><span class="mobile-label">Autorun</span></button>
     <div id="mobile-combat-controls">
       <button class="mobile-btn" id="mobile-attack-nearest" title="Attack nearest enemy" aria-label="Attack nearest enemy" data-icon="attack"><span class="mobile-label">Attack</span></button>
       <button class="mobile-btn" id="mobile-jump" title="Jump" aria-label="Jump" data-icon="jump"><span class="mobile-label">Jump</span></button>

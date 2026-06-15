@@ -53,6 +53,33 @@ beforeEach(() => {
   installStorage();
 });
 
+describe('Input autorun', () => {
+  it('toggleAutorun flips state and feeds forward into readMoveInput', () => {
+    const { input } = makeInput();
+    expect(input.autorun).toBe(false);
+    expect(input.toggleAutorun()).toBe(true);
+    expect(input.autorun).toBe(true);
+    expect(input.readMoveInput().forward).toBe(true);
+    expect(input.toggleAutorun()).toBe(false);
+    expect(input.readMoveInput().forward).toBe(false);
+  });
+
+  it('a forward touch-move cancels autorun (classic tap-to-stop)', () => {
+    const { input } = makeInput();
+    input.toggleAutorun();
+    input.setTouchMove({ forward: true, back: false, strafeLeft: false, strafeRight: false });
+    expect(input.autorun).toBe(false);
+  });
+
+  it('a strafe-only touch-move keeps autorun engaged', () => {
+    const { input } = makeInput();
+    input.toggleAutorun();
+    input.setTouchMove({ forward: false, back: false, strafeLeft: true, strafeRight: false });
+    expect(input.autorun).toBe(true);
+    expect(input.readMoveInput().forward).toBe(true);
+  });
+});
+
 describe('Input pointer lock', () => {
   it('does not request pointer lock for a plain right click', () => {
     const { canvas, canvasListeners } = makeInput();

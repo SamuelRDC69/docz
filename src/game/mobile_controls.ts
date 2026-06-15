@@ -9,6 +9,7 @@ export interface MobileControlCallbacks {
   onJump(): void;
   onTarget(): void;
   onInteract(): void;
+  onAutorun(): boolean;
   onChat(): void;
   onMenu(): void;
   onSocial(): void;
@@ -67,6 +68,7 @@ export class MobileControls {
   private moveStick = document.getElementById('mobile-move-stick') as HTMLElement | null;
   private cameraJoystick = document.getElementById('mobile-camera-joystick') as HTMLElement | null;
   private cameraStick = document.getElementById('mobile-camera-stick') as HTMLElement | null;
+  private autorunButton = document.getElementById('mobile-autorun') as HTMLElement | null;
 
   constructor(private input: Input, private callbacks: MobileControlCallbacks) {}
 
@@ -90,6 +92,13 @@ export class MobileControls {
     this.cameraJoystick.addEventListener('pointermove', (e) => this.onCameraMove(e));
     this.cameraJoystick.addEventListener('pointerup', (e) => this.onCameraEnd(e));
     this.cameraJoystick.addEventListener('pointercancel', (e) => this.onCameraEnd(e));
+
+    this.autorunButton?.addEventListener('click', (e) => {
+      if (!this.active) return;
+      e.preventDefault();
+      const on = this.callbacks.onAutorun();
+      this.autorunButton?.classList.toggle('active', on);
+    });
 
     this.bindButton('mobile-attack-nearest', () => this.callbacks.onAttackNearest());
     this.bindButton('mobile-jump', () => this.callbacks.onJump());
@@ -115,6 +124,7 @@ export class MobileControls {
     document.body.classList.toggle('mobile-touch', active);
     if (!active) {
       this.root?.classList.remove('expanded');
+      this.autorunButton?.classList.remove('active');
       document.body.classList.remove('mobile-more-open', 'mobile-chat-open');
       this.releaseMove();
       this.releaseCamera();
@@ -179,7 +189,10 @@ export class MobileControls {
     const x = rawX / mag;
     const y = rawY / mag;
     this.moveStick.style.transform = `translate(${(x * radius * 0.46).toFixed(1)}px, ${(y * radius * 0.46).toFixed(1)}px)`;
-    this.input.setTouchMove(mapJoystickVector(x, y));
+    const move = mapJoystickVector(x, y);
+    this.input.setTouchMove(move);
+    // setTouchMove cancels autorun on forward/back input — keep the button glow honest.
+    if (move.forward || move.back) this.autorunButton?.classList.remove('active');
   }
 
   private onMoveEnd(e: PointerEvent): void {
