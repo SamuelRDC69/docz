@@ -25,6 +25,7 @@ import { svgIcon } from './ui_icons';
 import { Keybinds, BIND_ACTIONS, BIND_CATEGORIES, isReservedCode, keyLabel } from '../game/keybinds';
 import { Settings, GameSettings, BoolSettingKey, NumericSettingKey, SETTING_RANGES } from '../game/settings';
 import { chatPlayerContextActions } from './player_context_menu';
+import { TouchPeekGuard, TOOLTIP_PEEK_MS } from './touch_peek';
 import {
   talentsFor, computeTalentModifiers, validateAllocation, dormantNodes, pointsSpent,
   exportBuild, importBuild, cloneAllocation, talentPointsAtLevel, FIRST_TALENT_LEVEL,
@@ -115,6 +116,8 @@ export class Hud {
   private errorEl = $('#error-msg');
   private bannerEl = $('#banner');
   private tooltipEl = $('#tooltip');
+  // Distinguishes a touch long-press "peek" (inspect, no action) from a tap.
+  private peekGuard = new TouchPeekGuard();
   private errorTimer: number | undefined;
   private bannerTimer: number | undefined;
   private minimapCtx: CanvasRenderingContext2D;
@@ -311,6 +314,9 @@ export class Hud {
       touchTimer = undefined;
     };
     const showAt = (x: number, y: number) => {
+      // Touch-only path: showing the tooltip means the held control is being
+      // inspected, so the release click should peek, not fire its action.
+      this.peekGuard.peek();
       this.tooltipEl.innerHTML = html();
       this.tooltipEl.style.display = 'block';
       const tw = this.tooltipEl.offsetWidth, th = this.tooltipEl.offsetHeight;
@@ -332,8 +338,11 @@ export class Hud {
     el.addEventListener('pointerdown', (e) => {
       if (!mobile() || e.pointerType === 'mouse') return;
       clearTouchTimer();
+      // A fresh press: drop any stale peek and dismiss a lingering tooltip.
+      this.peekGuard.press();
+      this.tooltipEl.style.display = 'none';
       const x = e.clientX, y = e.clientY;
-      touchTimer = window.setTimeout(() => showAt(x, y), 950);
+      touchTimer = window.setTimeout(() => showAt(x, y), TOOLTIP_PEEK_MS);
     });
     el.addEventListener('pointerup', clearTouchTimer);
     el.addEventListener('pointercancel', clearTouchTimer);
@@ -553,6 +562,9 @@ export class Hud {
       // slot 0 is Attack for every class (auto-attack toggle — players
       // without right-click need a way in); the kit fills slots 1+
       btn.addEventListener('click', () => {
+        // On touch, the click that ends a long-press peek inspects the slot
+        // (tooltip already shown) instead of casting — release dismisses it.
+        if (this.peekGuard.consume()) { this.hideTooltip(); return; }
         audio.click();
         this.castSlot(slot);
       });
