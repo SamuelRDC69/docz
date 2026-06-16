@@ -4,17 +4,23 @@ import * as path from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import {
   ensureSchema, pool, createAccount, findAccount, getAccountsCount, touchLogin, saveToken, accountForToken,
-  listCharacters, getCharacter, createCharacter, deleteCharacter, closeOrphanSessions,
+  listCharacters, getCharacter, createCharacterCapped, deleteCharacter, closeOrphanSessions,
   pruneChatLogs, searchCharacters, characterCountsByRealm, moderationStatusForAccount, renameCharacter,
-  findCharacterReportTargetByName, topArenaRatings,
+  findCharacterReportTargetByName, topArenaRatings, topLifetimeXp, chatMuteStatusForAccount,
 } from './db';
-import { cleanReportReason, createPlayerReport } from './moderation_db';
+import { virtualLevel } from '../src/sim/types';
+import { Sim } from '../src/sim/sim';
+import type { PlayerClass } from '../src/sim/types';
+import type { LeaderboardEntry } from '../src/world_api';
+import { cleanReportReason, createPlayerReport, createSuspiciousRegistrationReport } from './moderation_db';
 import { resolveReportTarget } from './report_target';
+import { bufferHandshakeMessages } from './ws_buffer';
 import {
   hashPassword, verifyPassword, newToken, validUsernameShape, offensiveName, validPassword, normalizeCharName,
 } from './auth';
-import { json, readBody } from './http_util';
-import { rateLimited, authThrottled, recordAuthFailure, clearAuthFailures } from './ratelimit';
+import { json, readBody, isUniqueViolation } from './http_util';
+import { requestIp, rateLimited, authThrottled, recordAuthFailure, clearAuthFailures } from './ratelimit';
+import { verifyTurnstile } from './turnstile';
 import { handleAdminApi } from './admin';
 import { GameServer } from './game';
 import { REALM, REALM_DIRECTORY, REALM_ORIGINS } from './realm';
@@ -22,10 +28,62 @@ import { cacheControlFor, etagFor, isNotModified } from './static_cache';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const STATIC_DIR = path.join(__dirname, '..', 'dist');
+const WIKI_URL = process.env.WIKI_URL ?? 'http://localhost:8080/wiki/index.php/Main_Page';
 // How long chat logs are kept (0 = forever); pruned at boot and daily.
 const CHAT_LOG_RETENTION_DAYS = Number(process.env.CHAT_LOG_RETENTION_DAYS ?? 90);
+// Cloudflare Turnstile secret. When unset (local dev / tests) registration and
+// login skip human verification entirely — see requireTurnstile below.
+const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET ?? '';
 
 const game = new GameServer();
+
+function initialCharacterState(cls: PlayerClass, name: string, skin: number): import('../src/sim/sim').CharacterState {
+  const sim = new Sim({ seed: 20061, playerClass: cls, playerName: name });
+  sim.setPlayerSkin(sim.playerId, skin);
+  return sim.serializeCharacter(sim.playerId)!;
+}
+
+// ---------------------------------------------------------------------------
+// Lifetime-XP leaderboard cache (Max-Level XP Overflow, FR-4.2 / PR-3).
+// Same shape as the chat-censor memoization: compute once, serve from memory,
+// refresh on an interval. The query is never run per request under load — at
+// most once per LEADERBOARD_TTL_MS, plus the boot warm-up below.
+// ---------------------------------------------------------------------------
+const LEADERBOARD_TTL_MS = 30_000;
+const LEADERBOARD_SIZE = 100;
+// One cache per scope: 'realm' for the in-game panel, 'global' for the
+// cross-realm home-page board.
+const leaderboardCache: Record<'realm' | 'global', { at: number; entries: LeaderboardEntry[] } | null> = {
+  realm: null,
+  global: null,
+};
+
+async function refreshLeaderboard(scope: 'realm' | 'global'): Promise<LeaderboardEntry[]> {
+  const rows = await topLifetimeXp(LEADERBOARD_SIZE, { global: scope === 'global' });
+  const entries: LeaderboardEntry[] = rows.map((r, i) => ({
+    rank: i + 1,
+    name: r.name,
+    cls: r.class,
+    level: r.level,
+    virtualLevel: virtualLevel(r.lifetimeXp),
+    lifetimeXp: r.lifetimeXp,
+    prestigeRank: r.prestigeRank,
+    ...(scope === 'global' ? { realm: r.realm } : {}),
+  }));
+  leaderboardCache[scope] = { at: Date.now(), entries };
+  return entries;
+}
+
+async function getLeaderboard(scope: 'realm' | 'global'): Promise<LeaderboardEntry[]> {
+  const cached = leaderboardCache[scope];
+  if (cached && Date.now() - cached.at < LEADERBOARD_TTL_MS) return cached.entries;
+  try {
+    return await refreshLeaderboard(scope);
+  } catch (err) {
+    console.error(`leaderboard refresh failed (${scope}):`, err);
+    return cached?.entries ?? [];
+  }
+}
 
 function normalizeDeleteConfirmation(name: unknown): string {
   return typeof name === 'string' ? name.trim().toLowerCase() : '';
@@ -52,6 +110,22 @@ async function bearerActiveAccount(req: http.IncomingMessage, res: http.ServerRe
   return accountId;
 }
 
+function requestMetadata(req: http.IncomingMessage): { ip: string; userAgent: string } {
+  return {
+    ip: requestIp(req),
+    userAgent: String(req.headers['user-agent'] ?? ''),
+  };
+}
+
+// Gate account creation / login behind Cloudflare Turnstile. Returns true when
+// the request may proceed: trivially true when no secret is configured, else the
+// client-supplied token must verify. The English error is matched to a t() key
+// by userFacingApiError() in src/main.ts — keep the two strings in sync.
+async function passesTurnstile(req: http.IncomingMessage, body: Record<string, unknown>): Promise<boolean> {
+  if (!TURNSTILE_SECRET) return true;
+  return verifyTurnstile(String(body.turnstileToken ?? ''), TURNSTILE_SECRET, requestIp(req));
+}
+
 const MIME: Record<string, string> = {
   '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
   '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json',
@@ -72,6 +146,11 @@ function isAdminRequest(req: http.IncomingMessage): boolean {
 function serveStatic(req: http.IncomingMessage, res: http.ServerResponse): void {
   const shell = isAdminRequest(req) ? 'admin.html' : 'index.html';
   let urlPath = (req.url ?? '/').split('?')[0];
+  if (urlPath === '/wiki' || urlPath === '/wiki/' || urlPath.startsWith('/wiki/')) {
+    res.writeHead(302, { Location: WIKI_URL });
+    res.end();
+    return;
+  }
   if (urlPath === '/' || urlPath === '/admin' || urlPath === '/admin/') urlPath = `/${shell}`;
   // normalize once and reuse for BOTH file resolution and cache policy —
   // otherwise /assets/../x would serve a mutable file with immutable caching
@@ -149,18 +228,34 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse): P
     }
     if (req.method === 'POST' && url === '/api/register') {
       const body = await readBody(req);
+      if (!(await passesTurnstile(req, body))) return json(res, 403, { error: 'verification failed, please try again' });
       if (!validUsernameShape(body.username)) return json(res, 400, { error: 'username must be 3-24 chars (letters, digits, _)' });
       if (offensiveName(body.username)) return json(res, 400, { error: 'username is not allowed' });
       if (!validPassword(body.password)) return json(res, 400, { error: 'password must be at least 6 chars' });
       const existing = await findAccount(body.username);
       if (existing) return json(res, 409, { error: 'username already taken' });
-      const account = await createAccount(body.username, await hashPassword(body.password));
+      let account;
+      try {
+        account = await createAccount(body.username, await hashPassword(body.password), requestMetadata(req));
+      } catch (err: any) {
+        // a concurrent registration can win the insert after our findAccount
+        // check; the username UNIQUE index is the real guard. Surface it as a
+        // 409 like the duplicate path above, not a generic 500.
+        if (isUniqueViolation(err)) return json(res, 409, { error: 'username already taken' });
+        throw err;
+      }
       const token = newToken();
       await saveToken(token, account.id);
+      void createSuspiciousRegistrationReport({
+        accountId: account.id,
+        username: account.username,
+        ...requestMetadata(req),
+      }).catch((err) => console.error('suspicious registration report failed:', err));
       return json(res, 200, { token, username: account.username });
     }
     if (req.method === 'POST' && url === '/api/login') {
       const body = await readBody(req);
+      if (!(await passesTurnstile(req, body))) return json(res, 403, { error: 'verification failed, please try again' });
       const username = typeof body.username === 'string' ? body.username : '';
       // Per-account brute-force throttle (#93). The message is identical to a
       // bad-password response so it never reveals whether the account exists.
@@ -175,7 +270,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse): P
       const status = await moderationStatusForAccount(account.id);
       if (status.locked) return json(res, 403, { error: status.message });
       clearAuthFailures(username); // correct password: forgive earlier typos
-      await touchLogin(account.id);
+      await touchLogin(account.id, requestMetadata(req));
       const token = newToken();
       await saveToken(token, account.id);
       return json(res, 200, { token, username: account.username });
@@ -189,6 +284,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse): P
           realm: REALM,
           characters: chars.map((c) => ({
             id: c.id, name: c.name, class: c.class, level: c.level,
+            skin: c.state?.skin ?? 0,
             online: [...game.clients.values()].some((s) => s.characterId === c.id),
             forceRename: c.force_rename,
           })),
@@ -201,15 +297,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse): P
         if (offensiveName(name)) return json(res, 400, { error: 'character name is not allowed' });
         const validClasses = ['warrior', 'paladin', 'hunter', 'rogue', 'priest', 'shaman', 'mage', 'warlock', 'druid'];
         if (!validClasses.includes(body.class)) return json(res, 400, { error: 'invalid class' });
-        const chars = await listCharacters(accountId);
-        if (chars.length >= 10) return json(res, 400, { error: 'character limit reached' });
+        const skin = Math.max(0, Math.min(7, Math.floor(typeof body.skin === 'number' ? body.skin : 0)));
         try {
-          const c = await createCharacter(accountId, name, body.class);
-          return json(res, 200, { id: c.id, name: c.name, class: c.class, level: c.level, forceRename: c.force_rename });
+          const c = await createCharacterCapped(accountId, name, body.class, 10, initialCharacterState(body.class, name, skin));
+          if (!c) return json(res, 400, { error: 'character limit reached' });
+          return json(res, 200, { id: c.id, name: c.name, class: c.class, level: c.level, skin: c.state?.skin ?? skin, forceRename: c.force_rename });
         } catch (err: any) {
-          if (String(err?.message).includes('unique') || err?.code === '23505') {
-            return json(res, 409, { error: 'that name is taken' });
-          }
+          if (isUniqueViolation(err)) return json(res, 409, { error: 'that name is taken' });
           throw err;
         }
       }
@@ -223,14 +317,21 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse): P
       const name = normalizeCharName(body.name);
       if (name === null) return json(res, 400, { error: 'invalid character name (2-16 letters)' });
       if (offensiveName(name)) return json(res, 400, { error: 'character name is not allowed' });
+      const characterId = Number(renameMatch[1]);
+      // A rename mutates the DB name and clears force_rename, but a live
+      // ClientSession keeps its own copy of the name (used by reports, chat and
+      // /api/status). Renaming an online character desyncs that copy and — worse
+      // — lets a force-renamed player already in the world clear the moderation
+      // flag without ever leaving. Mirror the DELETE guard and require offline.
+      if ([...game.clients.values()].some((s) => s.characterId === characterId)) {
+        return json(res, 400, { error: 'character is currently online' });
+      }
       try {
-        const c = await renameCharacter(accountId, Number(renameMatch[1]), name);
+        const c = await renameCharacter(accountId, characterId, name);
         if (!c) return json(res, 404, { error: 'character not found' });
         return json(res, 200, { id: c.id, name: c.name, class: c.class, level: c.level, forceRename: c.force_rename });
       } catch (err: any) {
-        if (String(err?.message).includes('unique') || err?.code === '23505') {
-          return json(res, 409, { error: 'that name is taken' });
-        }
+        if (isUniqueViolation(err)) return json(res, 409, { error: 'that name is taken' });
         throw err;
       }
     }
@@ -315,6 +416,18 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse): P
       // public all-time Ashen Coliseum ladder (top rated characters)
       return json(res, 200, { leaders: await topArenaRatings(20) });
     }
+    if (req.method === 'GET' && url === '/api/leaderboard') {
+      // lifetime-XP leaderboard (Max-Level XP Overflow), served from the
+      // in-memory cache. metric is fixed to lifetimeXp. ?scope=global ranks
+      // across every realm (home page); default is this process's realm (the
+      // in-game panel). Optional ?limit=N (1..100). `url` is the path only, so
+      // the query string is parsed from req.url.
+      const params = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+      const scope: 'realm' | 'global' = params.get('scope') === 'global' ? 'global' : 'realm';
+      const limit = Math.max(1, Math.min(LEADERBOARD_SIZE, Number(params.get('limit')) || LEADERBOARD_SIZE));
+      const entries = await getLeaderboard(scope);
+      return json(res, 200, { realm: REALM, scope, metric: 'lifetimeXp', leaders: entries.slice(0, limit) });
+    }
     json(res, 404, { error: 'unknown endpoint' });
   } catch (err: any) {
     console.error('api error:', err);
@@ -344,9 +457,18 @@ async function main(): Promise<void> {
   const pruned = await pruneChatLogs(CHAT_LOG_RETENTION_DAYS);
   if (pruned > 0) console.log(`pruned ${pruned} chat log row(s) older than ${CHAT_LOG_RETENTION_DAYS} days`);
   await game.loadMarket();
+  await game.loadChatFilter();
   setInterval(() => {
     void pruneChatLogs(CHAT_LOG_RETENTION_DAYS).catch((err) => console.error('chat log prune failed:', err));
   }, 24 * 3600 * 1000).unref();
+  // keep both leaderboard caches warm so the first viewer never waits on the
+  // query and it never recomputes per request (PR-3)
+  const warmLeaderboards = () => {
+    void refreshLeaderboard('realm').catch((err) => console.error('leaderboard refresh failed (realm):', err));
+    void refreshLeaderboard('global').catch((err) => console.error('leaderboard refresh failed (global):', err));
+  };
+  warmLeaderboards();
+  setInterval(warmLeaderboards, LEADERBOARD_TTL_MS).unref();
   console.log('database ready');
 
   const server = http.createServer((req, res) => {
@@ -370,11 +492,11 @@ async function main(): Promise<void> {
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      void onConnection(ws);
+      void onConnection(ws, req);
     });
   });
 
-  async function authenticateWebSocket(ws: WebSocket, raw: string): Promise<void> {
+  async function authenticateWebSocket(ws: WebSocket, raw: string, req: http.IncomingMessage): Promise<void> {
     let msg: any;
     try {
       msg = JSON.parse(raw);
@@ -414,7 +536,22 @@ async function main(): Promise<void> {
       ws.close();
       return;
     }
-    const result = game.join(ws, accountId, character.id, character.name, character.class, character.state, character.is_gm);
+    const chatMute = await chatMuteStatusForAccount(accountId);
+    const result = game.join(
+      ws,
+      accountId,
+      character.id,
+      character.name,
+      character.class,
+      character.state,
+      character.is_gm,
+      {
+        ...requestMetadata(req),
+        mutedUntil: status.chatMutedUntil ?? chatMute.mutedUntil,
+        reason: chatMute.reason,
+        chatStrikes: status.chatStrikes,
+      },
+    );
     if ('error' in result) {
       ws.send(JSON.stringify({ t: 'error', error: result.error }));
       ws.close();
@@ -434,7 +571,7 @@ async function main(): Promise<void> {
     });
   }
 
-  async function onConnection(ws: WebSocket): Promise<void> {
+  async function onConnection(ws: WebSocket, req: http.IncomingMessage): Promise<void> {
     const authTimer = setTimeout(() => {
       ws.send(JSON.stringify({ t: 'error', error: 'authentication timed out' }));
       ws.close();
@@ -451,13 +588,18 @@ async function main(): Promise<void> {
 
     ws.once('message', (data) => {
       clearTimeout(authTimer);
-      void authenticateWebSocket(ws, String(data));
+      // Buffer any frames the client sends while the async auth/join handshake
+      // is still in flight, then replay them once authenticateWebSocket has
+      // attached the permanent message handler. Without this the frames are
+      // silently dropped (see ws_buffer.ts).
+      const flush = bufferHandshakeMessages(ws);
+      void authenticateWebSocket(ws, String(data), req).finally(flush);
     });
   }
 
   game.start();
   server.listen(PORT, () => {
-    console.log(`World of Claudecraft server listening on http://localhost:${PORT}`);
+    console.log(`World of ClaudeCraft server listening on http://localhost:${PORT}`);
     console.log(`  REST: /api/register /api/login /api/characters /api/status`);
     console.log(`  WS:   /ws, then first message {t:"auth",token,character}`);
   });

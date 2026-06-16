@@ -1,10 +1,26 @@
-# World of Claudecraft — a WoW-Classic-style MMO
+<div align="center">
+
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-ESM-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Three.js](https://img.shields.io/badge/Three.js-r165-000000?logo=threedotjs&logoColor=white)](https://threejs.org/)
+[![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vite.dev/)
+[![Vitest](https://img.shields.io/badge/Vitest-4.1-6E9F18?logo=vitest&logoColor=white)](https://vitest.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.6.0-blue)](package.json)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/GjhnUsBtw)
+
+**English** · [Español](docs/i18n/README.es.md) · [Español (España)](docs/i18n/README.es_ES.md) · [Français](docs/i18n/README.fr_FR.md) · [Français (Canada)](docs/i18n/README.fr_CA.md) · [Italiano](docs/i18n/README.it_IT.md) · [Deutsch](docs/i18n/README.de_DE.md) · [简体中文](docs/i18n/README.zh_CN.md) · [繁體中文](docs/i18n/README.zh_TW.md) · [한국어](docs/i18n/README.ko_KR.md) · [日本語](docs/i18n/README.ja_JP.md) · [Português (Brasil)](docs/i18n/README.pt_BR.md) · [Русский](docs/i18n/README.ru_RU.md)
+
+</div>
+
+# World of ClaudeCraft — a classic-style MMO
 
 [Join the community Discord](https://discord.gg/GjhnUsBtw)
 
-![World of Claudecraft title screen](docs/screenshots/title-screen.jpg)
+![World of ClaudeCraft title screen](docs/screenshots/title-screen.jpg)
 
-A vanilla-WoW-flavored micro-MMO you can host and play:
+A classic-era-MMO-flavored micro-MMO you can host and play:
 
 1. **Play it online** — a real client/server game with accounts, persistent
    characters in Postgres, and other players in the world with you.
@@ -23,10 +39,11 @@ runs for everyone online.
 | ![Dusk at the Eastbrook campfire](docs/screenshots/eastbrook-dusk.jpg)<br>*Dusk at the Eastbrook campfire* | ![Elite pulls in the Hollow Crypt](docs/screenshots/hollow-crypt.jpg)<br>*Torch-lit elite pulls in the Hollow Crypt* |
 | ![The restless dead at the ruined chapel](docs/screenshots/restless-dead.jpg)<br>*The restless dead at the ruined chapel* | ![A brawl with Vale Bandits](docs/screenshots/vale-bandits.jpg)<br>*Outnumbered at the bandit camp* |
 | ![Old Greyjaw hunted down on the north road](docs/screenshots/old-greyjaw.jpg)<br>*Old Greyjaw, the rare spawn, run down on the north road* | ![Vendor and bags UI](docs/screenshots/vendor-and-bags.jpg)<br>*Gearing up at Smith Haldren's — tooltips, bags, coin* |
+| ![The moongate on the Glimmermere shore](docs/screenshots/glimmermere-moongate.jpg)<br>*The drowned climb out at the Glimmermere moongate* | ![Ysolei on the altar of the Drowned Temple](docs/screenshots/drowned-temple-altar.jpg)<br>*Moonfire and the altar of the Drowned Temple* |
 
 ![World of Claude](worldofclaude.png)
 
-![World of Claudecraft community](woc_community.png)
+![World of ClaudeCraft community](woc_community.png)
 
 ---
 
@@ -63,6 +80,10 @@ Open http://localhost:5173 → **Play Online** → create an account → create 
 character → Enter World. Open a second browser/tab and log in again — you'll
 see each other in town. `Enter` opens chat.
 
+The player wiki is a real MediaWiki service when running Docker Compose:
+open http://localhost:8080/wiki/. Its seed pages are generated from the
+current game content and community research with `npm run wiki:seed`.
+
 - **Accounts**: scrypt-hashed passwords, 7-day bearer tokens (`auth_tokens`).
 - **Characters**: up to 10 per account; level/gear/bags/quests/position/money
   persist as JSONB in Postgres — saved every 30 s, on logout, and on server
@@ -75,7 +96,9 @@ see each other in town. `Enter` opens chat.
 - **Parties** (up to 5): right-click a player → *Invite to Party*. Party
   frames on the left, members share tap rights, kill quest credit and split
   XP with the real vanilla group bonuses (1.166/1.3/1.43 for 3/4/5). Party
-  chat with `/p message`. Blue member blips on the minimap.
+  chat with `/p message`. Blue member blips on the minimap. Settle loot
+  disputes with `/roll` (also `/roll N` or `/roll M-N`) — a server-rolled
+  number broadcast to the party, or to nearby players when ungrouped.
 - **Trading**: right-click a player → *Trade*. Both sides stage items + money,
   both must accept, and the swap is atomic and server-validated (quest items
   are untradeable). Walking apart cancels.
@@ -94,6 +117,10 @@ see each other in town. `Enter` opens chat.
   its loot/XP/quest credit — others get "You don't have permission to loot
   that."), mobs retarget the next attacker when their victim dies (no free
   resets), join/leave announcements, `/say`-style chat.
+- **Away status**: `/afk [message]` and `/dnd [message]` mark you as away.
+  Anyone who whispers you gets an automatic reply with your message; `/dnd`
+  also withholds the incoming whisper. Repeat the bare command (or just send
+  any other chat) to clear it. Status is session-only and resets on login.
 
 ## The Hollow Crypt — 5-player elite instance
 
@@ -130,6 +157,31 @@ boneguard and drakonid, Korgath the Bound (enrages below 30%), Grand
 Necromancer Velkhar (more add waves), and **Korzul the Gravewyrm** — epic
 weapons drop here, and the lead-up quest chain is soloable so nobody is
 locked out of the story.
+
+## The Drowned Temple — a portal to a sunken moon-cult (5-player)
+
+A separate story from the Gravecaller conspiracy. High in Thornpeak Heights,
+the **Glimmermere** — a still mountain tarn — has begun to glow and give up its
+dead, and a **moongate** has reopened on its shore. **Ondrel Vane, Tidewatcher**
+keeps a lonely watch there and sets you on a self-contained, soloable lead-up:
+cull the **Glimmermere Waders** that climb from the water, silence the **Drowned
+Votaries** of the Pale Choir, and slay **Sethrael the Palecoil**, the moon-serpent
+guarding the deep shelf.
+
+Walk into the moongate and you step through into **The Drowned Temple** — a
+5-player elite instance with its own pale, moon-violet look (a flooded
+antechamber of reliquary altars, a chamber-waist arch, then a colonnaded
+moon-sanctum). Paired elite packs — drowned templeguards, pale choir acolytes,
+glimmerscale lurkers and pearlguard sentinels — lead to **Choirmother Selthe**
+holding the threshold, and finally **Ysolei, Avatar of the Drowned Moon**
+(level 18) coiled on the great altar: she pulses **Lunar Tide** AoE every 9s,
+summons **Moonspawn** at 60% and 30% health, and enrages below 30%. Blue (rare)
+gear drops here — a class-split set of weapons and the **Moonshroud** chestpieces
+— bridging the gap between the Sunken Bastion (13) and the Gravewyrm Sanctum (20).
+
+```
+node scripts/tour_temple.mjs   # screenshot tour of the Glimmermere + Drowned Temple (needs `npm run dev`)
+```
 
 
 
@@ -240,6 +292,7 @@ node scripts/smoke_browser.mjs  # warrior E2E (needs `npm run dev` running)
 node scripts/smoke_mage.mjs     # mage: casting, polymorph, conjure+drink, death/release
 node scripts/smoke_rogue.mjs    # rogue: combo points, eviscerate, vendor, eating
 node scripts/visual_tour.mjs    # screenshot tour of the zone + UI into tmp/
+node scripts/tour_temple.mjs    # screenshot tour of the Glimmermere + Drowned Temple into tmp/
 node scripts/mp_integration.mjs # 26-check API/WS/persistence suite (server running)
 node scripts/social_e2e.mjs     # trade + duel over the wire (ALLOW_DEV_COMMANDS=1)
 node scripts/arena_visual.mjs   # two clients queue + fight a ranked 1v1 in the Ashen Coliseum
@@ -272,6 +325,15 @@ scripts/      browser E2E + screenshot tour + multiplayer integration tests
 Names, quests and the zones are original; formulas and mechanics follow
 vanilla. World seed is fixed in `src/main.ts` so the world is the same place
 every visit.
+
+## Contributing
+
+Contributions of every kind are welcome: code, translations, bug reports, and
+documentation. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for setup and
+guidelines, and please follow our [Code of Conduct](CODE_OF_CONDUCT.md). New here?
+Look for issues labeled [`good first issue`](https://github.com/levy-street/world-of-claudecraft/labels/good%20first%20issue),
+open an [issue](https://github.com/levy-street/world-of-claudecraft/issues/new/choose),
+or say hello on [Discord](https://discord.gg/GjhnUsBtw).
 
 ## License
 

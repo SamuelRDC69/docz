@@ -20,6 +20,10 @@ export const ALL_CLASSES: PlayerClass[] = [
   'warrior', 'paladin', 'hunter', 'rogue', 'priest', 'shaman', 'mage', 'warlock', 'druid',
 ];
 export type ResourceType = 'rage' | 'mana' | 'energy';
+export const OVERHEAD_EMOTE_IDS = [
+  'wave', 'laugh', 'question', 'cheer', 'dance', 'point', 'flex', 'salute', 'cry', 'bow', 'clap', 'roar', 'kneel',
+] as const;
+export type OverheadEmoteId = typeof OVERHEAD_EMOTE_IDS[number];
 
 export interface Vec3 {
   x: number;
@@ -29,13 +33,13 @@ export interface Vec3 {
 
 export type EntityKind = 'player' | 'mob' | 'npc' | 'object';
 
-export type AiState = 'idle' | 'chase' | 'attack' | 'evade' | 'dead';
+export type AiState = 'idle' | 'chase' | 'attack' | 'flee' | 'evade' | 'dead';
 
 export type AuraKind =
   | 'dot' | 'slow' | 'stun' | 'root' | 'incapacitate' | 'polymorph'
-  | 'attackspeed' | 'buff_ap' | 'buff_armor' | 'buff_int' | 'buff_dodge' | 'buff_speed' | 'buff_haste'
+  | 'attackspeed' | 'debuff_ap' | 'buff_ap' | 'buff_armor' | 'buff_int' | 'buff_dodge' | 'buff_speed' | 'buff_haste'
   | 'hot' | 'absorb' | 'imbue' | 'buff_sta' | 'buff_allstats' | 'thorns' | 'form_bear'
-  | 'form_cat' | 'stealth' | 'defensive_stance' | 'righteous_fury' | 'sunder';
+  | 'form_cat' | 'stealth' | 'defensive_stance' | 'righteous_fury' | 'sunder' | 'mortal_wound';
 
 export interface Aura {
   id: string; // ability id that applied it
@@ -54,7 +58,7 @@ export interface Aura {
   stacks?: number; // sunder armor: applications stack up to the effect's cap
 }
 
-export type CrowdControlDrCategory = 'root';
+export type CrowdControlDrCategory = 'root' | 'polymorph' | 'fear';
 
 export interface CrowdControlDrState {
   stage: number;
@@ -93,6 +97,10 @@ export interface ItemDef {
   sellValue: number; // copper (vendor buys at this)
   buyValue?: number; // copper (vendor sells at this)
   questId?: string;
+  /** Shown when interacting with a ground quest object before the quest is active. */
+  pickupDeny?: string;
+  /** Shown when the quest is active but the collect count is already met. */
+  pickupEnough?: string;
   // consumables: total restored over 18 seconds while sitting
   foodHp?: number;
   drinkMana?: number;
@@ -130,7 +138,9 @@ export interface LootEntry {
 
 export type MobFamily =
   | 'beast' | 'humanoid' | 'murloc' | 'spider' | 'kobold' | 'undead'
-  | 'troll' | 'ogre' | 'elemental' | 'dragonkin';
+  | 'troll' | 'ogre' | 'elemental' | 'dragonkin' | 'demon';
+export type PetMode = 'passive' | 'defensive' | 'aggressive';
+export type PetRole = 'melee_tank' | 'ranged_dps';
 
 export interface MobTemplate {
   id: string;
@@ -161,8 +171,40 @@ export interface MobTemplate {
   aoePulse?: { min: number; max: number; radius: number; every: number; name: string; school?: string; fx?: 'nova' | 'projectile' };
   // Boss mechanic: spawn adds when hp first drops below each threshold (descending fractions).
   summonAdds?: { mobId: string; count: number; atHpPct: number[] };
-  // Boss mechanic: damage multiplier once hp drops below the threshold.
-  enrage?: { belowHpPct: number; dmgMult: number };
+  // Boss mechanic: damage multiplier (and optional swing-speed haste) once hp
+  // drops below the threshold. hasteMult > 1 makes the enraged mob swing faster.
+  enrage?: { belowHpPct: number; dmgMult: number; hasteMult?: number };
+  // Mob mechanic: a one-time desperation self-heal the first time hp drops
+  // below the threshold (healPct is a fraction of maxHp). Resets on evade/respawn.
+  desperateHeal?: { belowHpPct: number; healPct: number };
+  // Boss mechanic ("War Stomp"): periodic ground slam that stuns nearby players
+  // for `duration`s (and optionally deals min..max damage). Telegraphed: the
+  // first slam only lands one full `every` interval after combat starts.
+  stomp?: { radius: number; every: number; duration: number; min?: number; max?: number; name: string; school?: string };
+  // Melee mechanic: each landed swing also splashes onto other players near the
+  // primary target for `mult` of the (pre-armor) hit. Classic-WoW Cleave.
+  cleave?: { radius: number; mult: number; name?: string };
+  // On-hit debuff: a chance per landed melee swing to inflict a stacking-refresh
+  // damage-over-time poison on the struck target (spiders, serpents, scorpions).
+  venom?: { chance: number; perTick: number; interval: number; duration: number; name: string; school?: string };
+  // Classic beast "Frenzy": when a mob with this trait dies, nearby living
+  // same-family hostile mobs briefly attack faster (hasteMult, e.g. 1.3 = +30%
+  // swing speed) for `duration` seconds. Applied as a buff_haste aura.
+  packFrenzy?: { radius: number; hasteMult: number; duration: number };
+  // Melee mechanic: a landed swing has `chance` to inflict a Mortal Wound debuff
+  // that reduces all healing the victim receives by `healReduction` for `duration`.
+  mortalStrike?: { chance: number; healReduction: number; duration: number; name: string; school?: string };
+  // Combat mechanic: a landed melee hit has `chance` to corrode the victim's
+  // armor: a stacking `sunder` debuff (up to `maxStacks`) so the victim takes
+  // more physical damage from everyone until it expires. Rides the existing
+  // sunder aura; no new aura kind.
+  corrode?: { chance: number; armor: number; maxStacks: number; duration: number; name: string; school?: Aura['school'] };
+  // Pet mechanic: this creature is a ranged caster (warlock Imp) — instead of
+  // closing to melee, it stays at `range` and hurls bolts of `school` damage.
+  // updatePet reads this; the bolt damage comes from the mob's weapon range.
+  petRanged?: { range: number; school: Aura['school'] };
+  petRole?: PetRole;
+  petSpell?: { name: string; school: 'physical' | 'fire' | 'frost' | 'arcane' | 'shadow' | 'holy' | 'nature'; min: number; max: number; range: number; every: number };
 }
 
 export type AbilityEffect =
@@ -186,6 +228,7 @@ export type AbilityEffect =
   | { type: 'polymorph'; duration: number } // sheep: breaks on damage, target heals
   | { type: 'aoeDamage'; min: number; max: number; radius: number }
   | { type: 'aoeAttackSpeed'; mult: number; duration: number; radius: number } // thunder clap rider
+  | { type: 'aoeAttackPower'; amount: number; duration: number; radius: number } // demoralizing roar/shout
   | { type: 'aoeRoot'; duration: number; radius: number; min: number; max: number }
   | { type: 'selfBuff'; kind: AuraKind; value: number; duration: number }
   | { type: 'finisherHaste'; mult: number; basedur: number; perCombo: number } // slice and dice
@@ -196,7 +239,9 @@ export type AbilityEffect =
   | { type: 'sunder'; armor: number; maxStacks: number } // sunder armor: stacking armor debuff + flat threat
   | { type: 'taunt' } // taunt/growl: match top threat and force-attack the caster
   | { type: 'tamePet' } // hunter tame beast: the targeted mob becomes the caster's pet
-  | { type: 'dismissPet' }; // release the caster's pet back to the wild
+  | { type: 'dismissPet' } // release the caster's pet back to the wild
+  | { type: 'summonPet'; templateId: string } // warlock demon summon: creates/replaces a controlled pet
+  | { type: 'summonDemon'; mobId: string }; // warlock: summon a demon pet (imp/voidwalker)
 
 export interface AbilityRank {
   rank: number;
@@ -235,8 +280,6 @@ export interface AbilityDef {
   learnLevel: number;
   effects: AbilityEffect[];
   ranks?: AbilityRank[]; // later ranks (sorted by level)
-  icon: string; // short label for UI
-  iconColor: string;
   description: string; // tooltip text, $d = damage placeholder
 }
 
@@ -288,7 +331,7 @@ export interface DungeonDef {
   entry: { x: number; z: number }; // player arrival point (instance-local)
   exitOffset: { x: number; z: number }; // exit portal (instance-local)
   spawns: DungeonSpawn[];
-  interior: 'crypt' | 'sanctum'; // renderer + collider interior builder key
+  interior: 'crypt' | 'sanctum' | 'temple'; // renderer + collider interior builder key
   suggestedPlayers: number;
   enterText: string;
   leaveText: string;
@@ -408,6 +451,8 @@ export interface Entity {
   // so each interpolates on its own clock (see ClientWorld.applySnapshot)
   netUpdatedAt?: number;
   netInterval?: number;
+  vx: number; // horizontal air velocity (x, yards/sec)
+  vz: number; // horizontal air velocity (z, yards/sec)
   vy: number; // vertical velocity (jumping/falling)
   onGround: boolean;
   fallStartY: number;
@@ -416,6 +461,9 @@ export interface Entity {
   resource: number;
   maxResource: number;
   resourceType: ResourceType | null;
+  overheadEmoteId: OverheadEmoteId | null;
+  overheadEmoteUntil: number;
+  overheadEmoteSeq: number;
   stats: Stats;
   weapon: WeaponInfo;
   attackPower: number;
@@ -450,6 +498,7 @@ export interface Entity {
   chargeTargetId: number | null;
   chargeTimeLeft: number; // seconds; failsafe so a blocked charge can't run forever
   chargePath: Vec3[]; // waypoints consumed front-to-back; last leg homes on the live target
+  followTargetId: number | null; // /follow: auto-walk after another player until interrupted
   savedMana: number; // druid forms: mana put aside while running on rage/energy
   sitting: boolean;
   eating: Consuming | null;
@@ -464,14 +513,19 @@ export interface Entity {
   forcedTargetId: number | null; // taunt/growl: attack this target while the timer runs
   forcedTargetTimer: number; // seconds left on the forced-attack window
   ownerId: number | null; // controlled pets: owning player's entity id (null = wild)
+  petMode: PetMode; // hunter pet behavior stance
   petTauntTimer: number; // controlled pet Growl cooldown
   pulseTimer: number; // boss aoe pulse countdown
+  stompTimer: number; // boss War Stomp stun-pulse countdown
   firedSummons: number; // summonAdds thresholds already triggered
   summonedIds: number[]; // live adds this boss summoned; despawned on reset
   enraged: boolean; // enrage mechanic active
+  healedThisPull: boolean; // desperation self-heal already used this pull
   spawnPos: Vec3;
   leashAnchor: Vec3 | null; // refreshed by hostile player/pet actions; spawnPos remains the true home
   evadeStall: number; // seconds an evading mob has failed to get closer to home; snaps it home if it can't path back (e.g. across water)
+  fleeTimer: number; // seconds left in a low-HP panic flee; counts down in the 'flee' state
+  hasFled: boolean; // a cowardly mob flees only once per pull; cleared when it resets at spawn
   wanderTarget: Vec3 | null;
   wanderTimer: number;
   aggroTargetId: number | null;
@@ -493,6 +547,7 @@ export interface Entity {
   dead: boolean;
   scale: number;
   color: number;
+  skin: number; // player appearance: index into SKINS[visualKey]; 0 = default. synced in identity fields.
 }
 
 // `pid` (when present) marks a personal event that should only be delivered to
@@ -503,6 +558,10 @@ export type SimEvent = { pid?: number } & (
   | { type: 'death'; entityId: number; killerId: number }
   | { type: 'xp'; amount: number }
   | { type: 'levelup'; level: number }
+  // post-cap cosmetic progression (Max-Level XP Overflow): crossing a virtual
+  // level past the cap, and unlocking a cosmetic lifetime-XP milestone
+  | { type: 'virtualLevelUp'; level: number }
+  | { type: 'milestoneUnlocked'; milestoneId: string }
   | { type: 'learnAbility'; abilityId: string; rank: number }
   | { type: 'loot'; text: string }
   | { type: 'error'; text: string }
@@ -521,7 +580,7 @@ export type SimEvent = { pid?: number } & (
   // entity id so the client can hang a chat bubble over their head; whisper
   // goes to the target (and echoes to the sender with `to` set); general is
   // a world-wide broadcast
-  | { type: 'chat'; fromPid: number; from: string; text: string; channel?: 'say' | 'yell' | 'whisper' | 'general' | 'party' | 'guild' | 'officer'; entityId?: number; to?: string }
+  | { type: 'chat'; fromPid: number; from: string; text: string; channel?: 'say' | 'yell' | 'whisper' | 'general' | 'party' | 'guild' | 'officer' | 'world' | 'lfg' | 'emote' | 'roll'; entityId?: number; to?: string }
   | { type: 'partyInvite'; fromPid: number; fromName: string }
   // a guild invitation from an online guild officer/leader; resolved by name
   // server-side so it carries no pid
@@ -564,6 +623,7 @@ export interface SimConfig {
   autoEquip?: boolean; // auto-equip better gear on loot (headless convenience)
   playerName?: string;
   noPlayer?: boolean; // multiplayer server: start with an empty world and addPlayer() later
+  devCommands?: boolean; // local dev: /dev level|tp|give chat cheats
 }
 
 export function emptyMoveInput(): MoveInput {
@@ -600,6 +660,113 @@ export function xpForLevel(level: number): number {
   return XP_TABLE[Math.min(level - 1, XP_TABLE.length - 1)];
 }
 
+// ---------------------------------------------------------------------------
+// Post-cap progression — "Max-Level XP Overflow" (see docs/prd/…).
+//
+// At the level cap, XP keeps accruing into a 64-bit lifetime counter that
+// drives a cosmetic *virtual level* so the XP bar keeps "leveling" forever.
+// The threshold table below is the cumulative lifetime XP needed to reach each
+// virtual level. Real levels 1..20 reuse XP_TABLE exactly (so below the cap
+// `virtualLevel(lifetimeXp) === level`); past the cap the per-level cost keeps
+// growing geometrically (RuneScape-style ~10%/level) so the grind has a long
+// tail but the bar always visibly moves. Built once and cached.
+// ---------------------------------------------------------------------------
+
+const POSTCAP_GROWTH = 1.1; // each virtual level past the cap costs ~10% more
+export const MAX_VIRTUAL_LEVEL = 200; // table bound; far beyond any reachable lifetime total
+
+// VLEVEL_CUM[v] = total lifetime XP required to *reach* virtual level v.
+// VLEVEL_CUM[1] = 0; index 0 is unused padding.
+const VLEVEL_CUM: number[] = (() => {
+  const cum: number[] = [0, 0];
+  let total = 0;
+  // real levels: 1→2 … 19→20 come straight from XP_TABLE
+  for (let lvl = 1; lvl < MAX_LEVEL; lvl++) {
+    total += XP_TABLE[lvl - 1];
+    cum[lvl + 1] = total;
+  }
+  // post-cap: continue from the 20→21 step, growing geometrically
+  let step = XP_TABLE[MAX_LEVEL - 1];
+  for (let lvl = MAX_LEVEL; lvl < MAX_VIRTUAL_LEVEL; lvl++) {
+    total += Math.round(step);
+    cum[lvl + 1] = total;
+    step *= POSTCAP_GROWTH;
+  }
+  return cum;
+})();
+
+// Total lifetime XP needed to reach a given (virtual or real) level. Used to
+// backfill `lifetimeXp` for characters saved before the counter existed.
+export function xpToReachLevel(level: number): number {
+  return VLEVEL_CUM[Math.max(1, Math.min(MAX_VIRTUAL_LEVEL, Math.floor(level)))];
+}
+
+// Cosmetic virtual level for a lifetime-XP total. Below the cap this equals the
+// real level; at/after the cap it climbs past MAX_LEVEL. O(log n) over the
+// cached table — never recomputed per frame, never per combat tick.
+export function virtualLevel(lifetimeXp: number): number {
+  const xp = Math.max(0, lifetimeXp);
+  let lo = 1, hi = MAX_VIRTUAL_LEVEL;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (VLEVEL_CUM[mid] <= xp) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+// Progress within the current virtual level: how much lifetime XP into it, and
+// how much that level costs in total. Pre-cap callers use the level bar instead.
+export function virtualLevelProgress(lifetimeXp: number): { level: number; into: number; span: number } {
+  const level = virtualLevel(lifetimeXp);
+  const floor = VLEVEL_CUM[level];
+  const next = VLEVEL_CUM[Math.min(level + 1, MAX_VIRTUAL_LEVEL)];
+  const span = Math.max(1, next - floor);
+  return { level, into: Math.max(0, Math.min(span, lifetimeXp - floor)), span };
+}
+
+// Cosmetic lifetime-XP milestones (Paragon-style). Strictly cosmetic — they
+// grant titles / nameplate borders, never power. Ordered by threshold.
+export interface MilestoneDef {
+  id: string;
+  lifetimeXp: number;
+  kind: 'title' | 'border';
+}
+export const MILESTONES: MilestoneDef[] = [
+  { id: 'veteran', lifetimeXp: 250_000, kind: 'title' },
+  { id: 'champion', lifetimeXp: 500_000, kind: 'title' },
+  { id: 'paragon', lifetimeXp: 1_000_000, kind: 'border' },
+  { id: 'mythic', lifetimeXp: 2_500_000, kind: 'border' },
+  { id: 'eternal', lifetimeXp: 5_000_000, kind: 'title' },
+];
+
+// Prestige cost. Each prestige rank requires a full level-cap bar's worth of
+// post-cap lifetime XP, so prestige rank is a pure function of XP actually
+// earned past the cap. This is the anti-abuse guard: the prestige command can't
+// be spammed from a hacked client to inflate the (leaderboard-visible) rank —
+// the server caps rank at maxPrestigeRank(lifetimeXp) regardless of how many
+// prestige commands arrive.
+export const PRESTIGE_XP_PER_RANK = xpForLevel(MAX_LEVEL); // = 23,200
+
+// Highest prestige rank the given lifetime XP can support (post-cap XP / cost).
+export function maxPrestigeRank(lifetimeXp: number): number {
+  const earned = lifetimeXp - xpToReachLevel(MAX_LEVEL);
+  return earned <= 0 ? 0 : Math.floor(earned / PRESTIGE_XP_PER_RANK);
+}
+
+// Authoritative prestige eligibility: at the cap, and with enough unspent
+// post-cap XP for the next rank. Used server-side (enforced) and client-side
+// (to enable/disable the button — display only).
+export function canPrestige(level: number, lifetimeXp: number, prestigeRank: number): boolean {
+  return level >= MAX_LEVEL && prestigeRank < maxPrestigeRank(lifetimeXp);
+}
+
+// Lifetime XP still needed before the next prestige rank unlocks (0 if ready).
+export function xpUntilNextPrestige(lifetimeXp: number, prestigeRank: number): number {
+  const target = xpToReachLevel(MAX_LEVEL) + (prestigeRank + 1) * PRESTIGE_XP_PER_RANK;
+  return Math.max(0, target - lifetimeXp);
+}
+
 // Zero-difference band: how many levels below you a mob stops giving XP.
 // Vanilla: ZD = 5 for player level 1-7, 6 for 8-9, 7 for 10-11, ...
 export function zeroDiff(playerLevel: number): number {
@@ -626,12 +793,15 @@ export function rageConversion(level: number): number {
   return 0.0091 * level * level + 3.23 * level + 4.27;
 }
 
-// Rage from dealing damage: 7.5 * d / c ; from taking damage: 2.5 * d / c
+// Rage from dealing damage uses the classic outgoing-damage scale.
 export function rageFromDealing(damage: number, level: number): number {
   return (7.5 * damage) / rageConversion(level);
 }
-export function rageFromTaking(damage: number, level: number): number {
-  return (2.5 * damage) / rageConversion(level);
+
+// Rage from taking damage scales with the attacker's level so dungeon tanks get
+// useful rage from being hit without hard-coding the current level cap.
+export function rageFromTaking(damage: number, attackerLevel: number): number {
+  return damage / (Math.max(1, attackerLevel) * 1.5);
 }
 
 // Vanilla spell hit table by level difference (target - caster):

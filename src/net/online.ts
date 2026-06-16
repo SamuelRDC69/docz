@@ -3,11 +3,15 @@
 import { NPCS, abilitiesKnownAt } from '../sim/data';
 import { computeQuestState, ResolvedAbility } from '../sim/sim';
 import {
+  cloneAllocation, computeTalentModifiers, emptyAllocation, talentPointsAtLevel, pointsSpent,
+  type TalentAllocation, type SavedLoadout, type Role,
+} from '../sim/content/talents';
+import {
   Entity, EquipSlot, InvSlot, MoveInput, PlayerClass, QuestProgress, QuestState, SimEvent,
   emptyMoveInput,
 } from '../sim/types';
 import { normalizeMoveFacing, sanitizeMoveInput } from '../sim/move_input';
-import type { ArenaInfo, CharacterSearchResult, DuelInfo, IWorld, MarketInfo, PartyInfo, SocialInfo, TradeInfo } from '../world_api';
+import { isOverheadEmoteId, type ArenaInfo, type CharacterSearchResult, type DuelInfo, type FriendInfo, type IWorld, type LeaderboardEntry, type MarketInfo, type OverheadEmoteId, type PartyInfo, type PresenceStatus, type SocialInfo, type TradeInfo } from '../world_api';
 
 // ---------------------------------------------------------------------------
 // REST
@@ -18,6 +22,7 @@ export interface CharacterSummary {
   name: string;
   class: PlayerClass;
   level: number;
+  skin: number;
   online: boolean;
   forceRename: boolean;
 }
@@ -119,14 +124,14 @@ export class Api {
     return data;
   }
 
-  async register(username: string, password: string): Promise<void> {
-    const data = await this.post('/api/register', { username, password });
+  async register(username: string, password: string, turnstileToken = ''): Promise<void> {
+    const data = await this.post('/api/register', { username, password, turnstileToken });
     this.token = data.token;
     this.username = data.username;
   }
 
-  async login(username: string, password: string): Promise<void> {
-    const data = await this.post('/api/login', { username, password });
+  async login(username: string, password: string, turnstileToken = ''): Promise<void> {
+    const data = await this.post('/api/login', { username, password, turnstileToken });
     this.token = data.token;
     this.username = data.username;
   }
@@ -137,8 +142,8 @@ export class Api {
     return data.characters;
   }
 
-  async createCharacter(name: string, cls: PlayerClass): Promise<void> {
-    await this.post('/api/characters', { name, class: cls });
+  async createCharacter(name: string, cls: PlayerClass, skin = 0): Promise<void> {
+    await this.post('/api/characters', { name, class: cls, skin });
   }
 
   async renameCharacter(characterId: number, name: string): Promise<void> {
@@ -159,6 +164,16 @@ export class Api {
 
   async projectStats(): Promise<{ accounts_created: number; players_online: number; realm: string }> {
     return this.get('/api/project-stats');
+  }
+
+  // Lifetime-XP leaderboard for the home page. 'global' ranks across all realms.
+  async leaderboard(scope: 'realm' | 'global' = 'global', limit = 100): Promise<LeaderboardEntry[]> {
+    try {
+      const data = await this.get(`/api/leaderboard?scope=${scope}&metric=lifetimeXp&limit=${limit}`);
+      return data.leaders ?? [];
+    } catch {
+      return [];
+    }
   }
 }
 
@@ -187,8 +202,9 @@ function blankEntity(id: number): Entity {
   return {
     id, kind: 'mob', templateId: '', name: '', level: 1,
     pos: { x: 0, y: 0, z: 0 }, prevPos: { x: 0, y: 0, z: 0 }, facing: 0, prevFacing: 0,
-    vy: 0, onGround: true, fallStartY: 0,
+    vx: 0, vz: 0, vy: 0, onGround: true, fallStartY: 0,
     hp: 1, maxHp: 1, resource: 0, maxResource: 0, resourceType: null,
+    overheadEmoteId: null, overheadEmoteUntil: 0, overheadEmoteSeq: 0,
     stats: { str: 0, agi: 0, sta: 0, int: 0, spi: 0, armor: 0 },
     weapon: { min: 1, max: 2, speed: 2 },
     attackPower: 0, rangedPower: 0, critChance: 0.05, dodgeChance: 0.05, moveSpeed: 7, hostile: false,
@@ -198,14 +214,14 @@ function blankEntity(id: number): Entity {
     channeling: false, channelTickTimer: 0, channelTickEvery: 0,
     gcdRemaining: 0, cooldowns: new Map(), queuedOnSwing: null, fiveSecondRule: 99,
     comboPoints: 0, comboTargetId: null, overpowerUntil: -1, potionCooldownUntil: -1, savedMana: 0,
-    chargeTargetId: null, chargeTimeLeft: 0, chargePath: [],
+    chargeTargetId: null, chargeTimeLeft: 0, chargePath: [], followTargetId: null,
     sitting: false, eating: null, drinking: null,
-    aiState: 'idle', tappedById: null, pulseTimer: 0, firedSummons: 0, summonedIds: [], enraged: false,
-    threat: new Map(), forcedTargetId: null, forcedTargetTimer: 0, ownerId: null, petTauntTimer: 0,
-    spawnPos: { x: 0, y: 0, z: 0 }, leashAnchor: null, evadeStall: 0, wanderTarget: null, wanderTimer: 0,
+    aiState: 'idle', tappedById: null, pulseTimer: 0, stompTimer: 0, firedSummons: 0, summonedIds: [], enraged: false, healedThisPull: false,
+    threat: new Map(), forcedTargetId: null, forcedTargetTimer: 0, ownerId: null, petMode: 'defensive', petTauntTimer: 0,
+    spawnPos: { x: 0, y: 0, z: 0 }, leashAnchor: null, evadeStall: 0, fleeTimer: 0, hasFled: false, wanderTarget: null, wanderTimer: 0,
     aggroTargetId: null, respawnTimer: 0, corpseTimer: 0, lootable: false, loot: null,
     xpValue: 0, questIds: [], vendorItems: [], objectItemId: null, dungeonId: null,
-    dead: false, scale: 1, color: 0xffffff,
+    dead: false, scale: 1, color: 0xffffff, skin: 0,
   };
 }
 
@@ -219,7 +235,17 @@ export class ClientWorld implements IWorld {
   equipment: Partial<Record<EquipSlot, string>> = {};
   copper = 0;
   xp = 0;
+  // Post-cap progression (Max-Level XP Overflow), mirrored from snapshot self.
+  lifetimeXp = 0;
+  prestigeRank = 0;
+  unlockedMilestones: string[] = [];
   known: ResolvedAbility[] = [];
+  // Talents & Specializations, mirrored from snapshot self (display + staging).
+  talents: TalentAllocation = emptyAllocation();
+  talentSpec: string | null = null;
+  talentRole: Role | null = null;
+  loadouts: SavedLoadout[] = [];
+  activeLoadout = -1;
   questLog = new Map<string, QuestProgress>();
   questsDone = new Set<string>();
   partyInfo: PartyInfo | null = null;
@@ -248,9 +274,20 @@ export class ClientWorld implements IWorld {
   // inventory deltas arrive in snapshots, separate from the event frames the
   // HUD redraws on — the frame loop polls this so open panels re-render
   private invChanged = false;
+  // Soft (cosmetic) profanity terms the server sends in `hello` and pushes via
+  // `censor` frames when an admin edits the list. The HUD drains these to mask
+  // chat locally when the player's filter is on. Hard words never arrive here.
+  profanityWords: string[] = [];
+  private profanityDirty = false;
   private pendingQuestCommands = new Map<string, 'accept' | 'turnin'>();
   private mouselookFacing: number | null = null;
   private sendTimer: number | undefined;
+  private lastInputSentAt = 0;
+  private lastInputSig = '';
+  private inputSeq = 0;
+  private pendingInputSeqSentAt = new Map<number, number>();
+  private ackedInputSeq = 0;
+  private inputEchoSamples: number[] = [];
 
   constructor(token: string, characterId: number, cls: PlayerClass, base = '') {
     this.characterId = characterId;
@@ -301,15 +338,42 @@ export class ClientWorld implements IWorld {
     this.mouselookFacing = normalizeMoveFacing(facing);
   }
 
+  flushInput(now = performance.now()): boolean {
+    return this.sendInput(now, true);
+  }
+
+  consumeInputEchoSamples(): number[] {
+    const samples = this.inputEchoSamples;
+    this.inputEchoSamples = [];
+    return samples;
+  }
+
   // -----------------------------------------------------------------------
   // Socket
   // -----------------------------------------------------------------------
 
-  private sendInput(): void {
-    if (!this.connected || this.ws.readyState !== WebSocket.OPEN) return;
+  private inputSignature(): string {
+    const mi = this.moveInput;
+    const facing = this.mouselookFacing === null ? '' : Math.round(this.mouselookFacing * 10000).toString();
+    return [
+      mi.forward ? 1 : 0, mi.back ? 1 : 0,
+      mi.turnLeft ? 1 : 0, mi.turnRight ? 1 : 0,
+      mi.strafeLeft ? 1 : 0, mi.strafeRight ? 1 : 0,
+      mi.jump ? 1 : 0, facing,
+    ].join(',');
+  }
+
+  private sendInput(now = performance.now(), changedOnly = false): boolean {
+    if (!this.connected || this.ws.readyState !== WebSocket.OPEN) return false;
+    const sig = this.inputSignature();
+    if (changedOnly) {
+      if (sig === this.lastInputSig) return false;
+      if (now - this.lastInputSentAt < 16) return false;
+    }
     const mi = this.moveInput;
     const msg: Record<string, unknown> = {
       t: 'input',
+      seq: ++this.inputSeq,
       mi: {
         f: mi.forward ? 1 : 0, b: mi.back ? 1 : 0,
         tl: mi.turnLeft ? 1 : 0, tr: mi.turnRight ? 1 : 0,
@@ -319,6 +383,16 @@ export class ClientWorld implements IWorld {
     };
     if (this.mouselookFacing !== null) msg.facing = this.mouselookFacing;
     this.ws.send(JSON.stringify(msg));
+    this.lastInputSentAt = now;
+    this.lastInputSig = sig;
+    this.pendingInputSeqSentAt.set(this.inputSeq, now);
+    if (this.pendingInputSeqSentAt.size > 120) {
+      const stale = this.inputSeq - 120;
+      for (const seq of this.pendingInputSeqSentAt.keys()) {
+        if (seq <= stale) this.pendingInputSeqSentAt.delete(seq);
+      }
+    }
+    return true;
   }
 
   private canSendCommand(): boolean {
@@ -341,7 +415,19 @@ export class ClientWorld implements IWorld {
       this.playerId = msg.pid;
       this.cfg.seed = msg.seed;
       if (typeof msg.realm === 'string') this.realm = msg.realm;
+      if (Array.isArray(msg.softWords)) {
+        this.profanityWords = msg.softWords.filter((w: unknown): w is string => typeof w === 'string');
+        this.profanityDirty = true;
+      }
       this.connected = true;
+      return;
+    }
+    if (msg.t === 'censor') {
+      // live word-list update pushed after an admin edits the filter
+      this.profanityWords = Array.isArray(msg.words)
+        ? msg.words.filter((w: unknown): w is string => typeof w === 'string')
+        : [];
+      this.profanityDirty = true;
       return;
     }
     if (msg.t === 'error') {
@@ -358,6 +444,23 @@ export class ClientWorld implements IWorld {
       this.socialDirty = true;
       return;
     }
+    if (msg.t === 'socialpos') {
+      // live position refresh for friends/guildmates (drives the world map);
+      // merge into the existing roster in place — snapshots own online/offline.
+      if (this.socialInfo && Array.isArray(msg.list)) {
+        const byId = new Map<number, { x: number; z: number; zone: string; status: PresenceStatus }>();
+        for (const e of msg.list) byId.set(e.id, e);
+        const apply = (arr: FriendInfo[]) => {
+          for (const m of arr) {
+            const u = byId.get(m.id);
+            if (u) { m.x = u.x; m.z = u.z; m.zone = u.zone; m.status = u.status; m.online = true; }
+          }
+        };
+        apply(this.socialInfo.friends);
+        if (this.socialInfo.guild) apply(this.socialInfo.guild.members);
+      }
+      return;
+    }
     if (msg.t === 'snap') {
       this.applySnapshot(msg);
     }
@@ -366,6 +469,12 @@ export class ClientWorld implements IWorld {
   consumeSocialChanged(): boolean {
     const v = this.socialDirty;
     this.socialDirty = false;
+    return v;
+  }
+
+  consumeProfanityChanged(): boolean {
+    const v = this.profanityDirty;
+    this.profanityDirty = false;
     return v;
   }
 
@@ -407,6 +516,7 @@ export class ClientWorld implements IWorld {
         e.templateId = w.tid;
         e.name = w.nm;
         e.level = w.lv;
+        e.skin = w.sk ?? 0;
         e.scale = w.sc ?? 1;
         e.color = w.c ?? 0xffffff;
         e.dungeonId = w.dgn ?? null;
@@ -449,7 +559,9 @@ export class ClientWorld implements IWorld {
       // real update (e.g. taking damage). Snap both poses to the destination so
       // it appears exactly where the server placed it.
       const teleDx = w.x - e.pos.x, teleDz = w.z - e.pos.z;
-      if (teleDx * teleDx + teleDz * teleDz > TELEPORT_SNAP_DIST_SQ) {
+      const wasDead = e.dead;
+      const nowDead = !!w.dead;
+      if ((wasDead && !nowDead) || teleDx * teleDx + teleDz * teleDz > TELEPORT_SNAP_DIST_SQ) {
         e.prevPos = { x: w.x, y: w.y, z: w.z };
         e.prevFacing = w.f;
       } else {
@@ -464,7 +576,10 @@ export class ClientWorld implements IWorld {
       e.facing = w.f;
       e.hp = w.hp;
       e.maxHp = w.mhp;
-      e.dead = !!w.dead;
+      e.overheadEmoteId = isOverheadEmoteId(w.emo) ? w.emo : null;
+      e.overheadEmoteUntil = e.overheadEmoteId ? Number.POSITIVE_INFINITY : 0;
+      if (typeof w.emoSeq === 'number') e.overheadEmoteSeq = w.emoSeq;
+      e.dead = nowDead;
       e.lootable = !!w.loot;
       e.hostile = !!w.h;
       e.castingAbility = w.cast ?? null;
@@ -475,6 +590,8 @@ export class ClientWorld implements IWorld {
       e.aggroTargetId = w.aggro ?? null;
       e.tappedById = w.tap ?? null;
       e.ownerId = w.own ?? null;
+      e.petMode = w.pm ?? 'defensive';
+      e.petTauntTimer = w.pt ?? 0;
       e.threat = new Map(w.thr ?? []);
       e.auras = (w.auras ?? []).map((a: any) => ({
         id: a.id, name: a.name, kind: a.kind, remaining: a.rem, duration: a.dur,
@@ -498,6 +615,16 @@ export class ClientWorld implements IWorld {
     const e = s ? applyWire(s) : null;
     if (s && e) {
       seen.add(s.id);
+      if (typeof s.ack === 'number' && s.ack > this.ackedInputSeq) {
+        for (let seq = this.ackedInputSeq + 1; seq <= s.ack; seq++) {
+          const sentAt = this.pendingInputSeqSentAt.get(seq);
+          if (sentAt !== undefined) {
+            this.inputEchoSamples.push(now - sentAt);
+            this.pendingInputSeqSentAt.delete(seq);
+          }
+        }
+        this.ackedInputSeq = s.ack;
+      }
       e.resource = s.res;
       e.maxResource = s.mres;
       e.resourceType = s.rtype;
@@ -522,6 +649,9 @@ export class ClientWorld implements IWorld {
         ? { itemId: '', kind: 'drink', hpPer2s: 0, manaPer2s: 0, remaining: s.drk.remaining }
         : null;
       this.xp = s.xp ?? 0;
+      this.lifetimeXp = s.lxp ?? 0;
+      this.prestigeRank = s.prk ?? 0;
+      if (s.milestones !== undefined) this.unlockedMilestones = s.milestones;
       this.copper = s.copper ?? 0;
       if (s.inv !== undefined) { this.inventory = s.inv; this.invChanged = true; }
       if (s.buyback !== undefined) { this.vendorBuyback = s.buyback; this.invChanged = true; }
@@ -529,7 +659,17 @@ export class ClientWorld implements IWorld {
       if (s.qlog !== undefined) this.questLog = new Map((s.qlog as QuestProgress[]).map((q) => [q.questId, q]));
       if (s.qdone !== undefined) this.questsDone = new Set(s.qdone);
       if (s.qlog !== undefined || s.qdone !== undefined) this.pendingQuestCommands?.clear();
-      this.known = abilitiesKnownAt(this.cfg.playerClass, e.level);
+      // talent state (heavy field, sent on change): mirror it, then resolve known
+      // with the precomputed modifiers so granted abilities + tweaks show locally.
+      if (s.tal !== undefined && s.tal) {
+        this.talents = s.tal.alloc ?? emptyAllocation();
+        this.talentSpec = s.tal.spec ?? null;
+        this.talentRole = s.tal.role ?? null;
+        this.loadouts = s.tal.loadouts ?? [];
+        this.activeLoadout = typeof s.tal.activeLoadout === 'number' ? s.tal.activeLoadout : -1;
+      }
+      const talents = this.talents ?? (this.talents = emptyAllocation());
+      this.known = abilitiesKnownAt(this.cfg.playerClass, e.level, computeTalentModifiers(this.cfg.playerClass, talents));
       if (s.party !== undefined) this.partyInfo = s.party;
       if (s.marks !== undefined) this.markers = s.marks ?? {}; // null = cleared (no party/disband)
       if (s.trade !== undefined) this.tradeInfo = s.trade;
@@ -591,6 +731,12 @@ export class ClientWorld implements IWorld {
   tabTarget(): void {
     this.cmd({ cmd: 'tab' });
   }
+  targetNearestFriendly(): void {
+    this.cmd({ cmd: 'targetNearestFriendly' });
+  }
+  friendlyTabTarget(): void {
+    this.cmd({ cmd: 'tabFriendly' });
+  }
   startAutoAttack(): void {
     this.cmd({ cmd: 'attack' });
   }
@@ -625,6 +771,9 @@ export class ClientWorld implements IWorld {
   useItem(itemId: string): void {
     this.cmd({ cmd: 'use', item: itemId });
   }
+  discardItem(itemId: string, count?: number): void {
+    this.cmd({ cmd: 'discard', item: itemId, count });
+  }
   buyItem(npcId: number, itemId: string): void {
     this.cmd({ cmd: 'buy', npc: npcId, item: itemId });
   }
@@ -634,11 +783,49 @@ export class ClientWorld implements IWorld {
   buyBackItem(itemId: string): void {
     this.cmd({ cmd: 'buyback', item: itemId });
   }
+  changeSkin(skin: number): void {
+    const idx = Math.max(0, Math.min(7, Math.floor(skin)));
+    const p = this.entities.get(this.playerId);
+    if (p) p.skin = idx;
+    this.cmd({ cmd: 'change_skin', skin: idx });
+  }
   releaseSpirit(): void {
     this.cmd({ cmd: 'release' });
   }
   chat(text: string): void {
     this.cmd({ cmd: 'chat', text });
+  }
+  playEmote(emoteId: OverheadEmoteId): void {
+    if (!this.player.dead) {
+      this.player.overheadEmoteId = emoteId;
+      this.player.overheadEmoteUntil = Number.POSITIVE_INFINITY;
+      this.player.overheadEmoteSeq += 1;
+    }
+    this.cmd({ cmd: 'emote', emote: emoteId });
+  }
+  abandonPet(): void {
+    this.cmd({ cmd: 'pet_abandon' });
+  }
+  renamePet(name: string): void {
+    this.cmd({ cmd: 'pet_rename', name });
+  }
+  revivePet(): void {
+    this.cmd({ cmd: 'pet_revive' });
+  }
+  petAttack(): void {
+    this.cmd({ cmd: 'pet_attack' });
+  }
+  petTaunt(): void {
+    this.cmd({ cmd: 'pet_taunt' });
+  }
+  feedPet(itemId: string): void {
+    this.cmd({ cmd: 'pet_feed', item: itemId });
+  }
+  healPet(): void {
+    this.cmd({ cmd: 'pet_heal' });
+  }
+  setPetMode(mode: 'passive' | 'defensive' | 'aggressive'): void {
+    this.cmd({ cmd: 'pet_mode', mode });
   }
   // social systems
   partyInvite(targetPid: number): void {
@@ -739,6 +926,67 @@ export class ClientWorld implements IWorld {
   }
   leaveDungeon(): void {
     this.cmd({ cmd: 'leave_dungeon' });
+  }
+  async leaderboard(): Promise<LeaderboardEntry[]> {
+    try {
+      const res = await fetch(`${this.base}/api/leaderboard?metric=lifetimeXp&limit=100`);
+      if (!res.ok) return [];
+      return (await res.json()).leaders ?? [];
+    } catch {
+      return [];
+    }
+  }
+  prestige(): void {
+    this.cmd({ cmd: 'prestige' });
+  }
+  // Talents & Specializations — the server re-validates every allocation.
+  talentPoints(): { total: number; spent: number } {
+    const level = this.entities.get(this.playerId)?.level ?? 1;
+    return { total: talentPointsAtLevel(level), spent: pointsSpent(this.talents) };
+  }
+  applyTalents(alloc: TalentAllocation): void {
+    this.cmd({ cmd: 'applyTalents', alloc });
+  }
+  respec(): void {
+    this.cmd({ cmd: 'respec' });
+  }
+  setSpec(specId: string | null): void {
+    this.cmd({ cmd: 'setSpec', spec: specId });
+  }
+  saveLoadout(name: string, bar: (string | null)[], alloc?: TalentAllocation): void {
+    this.cmd({ cmd: 'saveLoadout', name, bar, alloc });
+    if (alloc) {
+      const clean = (name || 'Build').toString().slice(0, 24);
+      const safeBar = Array.isArray(bar) ? bar.slice(0, 16).map((b) => (typeof b === 'string' ? b : null)) : [];
+      const saved = { name: clean, alloc: cloneAllocation(alloc), bar: safeBar };
+      this.talents = cloneAllocation(alloc);
+      const existing = this.loadouts.findIndex((l) => l.name === clean);
+      if (existing >= 0) {
+        this.loadouts[existing] = saved;
+        this.activeLoadout = existing;
+      } else {
+        this.loadouts = [...this.loadouts, saved];
+        this.activeLoadout = this.loadouts.length - 1;
+      }
+      this.known = abilitiesKnownAt(this.cfg.playerClass, this.player.level, computeTalentModifiers(this.cfg.playerClass, this.talents));
+    }
+  }
+  switchLoadout(index: number): void {
+    this.cmd({ cmd: 'switchLoadout', index });
+  }
+  deleteLoadout(index: number): void {
+    this.cmd({ cmd: 'deleteLoadout', index });
+    if (index < 0 || index >= this.loadouts.length) return;
+    const wasActive = this.activeLoadout === index;
+    this.loadouts = this.loadouts.filter((_, i) => i !== index);
+    if (wasActive) {
+      this.activeLoadout = this.loadouts.length > 0 ? Math.min(index, this.loadouts.length - 1) : -1;
+      const next = this.activeLoadout >= 0 ? this.loadouts[this.activeLoadout] : null;
+      if (next) {
+        this.talents = cloneAllocation(next.alloc);
+        this.known = abilitiesKnownAt(this.cfg.playerClass, this.player.level, computeTalentModifiers(this.cfg.playerClass, this.talents));
+      }
+    } else if (this.activeLoadout > index) this.activeLoadout -= 1;
   }
   // legacy aliases kept for older scripts
   enterCrypt(): void {
