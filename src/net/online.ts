@@ -50,6 +50,18 @@ export interface RealmDirectory {
   characters: Record<string, number>; // realm name -> how many characters you have
 }
 
+// A published GitHub release, as surfaced by the server's /api/releases proxy
+// for the home-page "News & Updates" view. Body is raw release-note markdown.
+export interface ReleaseEntry {
+  id: number;
+  tag: string;
+  name: string;
+  body: string;
+  url: string;
+  prerelease: boolean;
+  publishedAt: string; // ISO 8601
+}
+
 export class Api {
   token: string | null = null;
   username: string | null = null;
@@ -171,6 +183,19 @@ export class Api {
     try {
       const data = await this.get(`/api/leaderboard?scope=${scope}&metric=lifetimeXp&limit=${limit}`);
       return data.leaders ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  // News & Updates feed for the home page, mirrored from GitHub Releases by the
+  // server. Not realm-scoped — always read from the page's own origin.
+  async releases(limit = 20): Promise<ReleaseEntry[]> {
+    try {
+      const res = await fetch(`/api/releases?limit=${limit}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.releases ?? [];
     } catch {
       return [];
     }

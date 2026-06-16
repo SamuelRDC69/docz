@@ -9,7 +9,7 @@ import { audio } from './game/audio';
 import { music } from './game/music';
 import { handlePickedEntity, hoverCursorKind } from './game/interactions';
 import { clickMoveShouldCancel, clickMoveStep, stepAngleToward } from './game/click_move';
-import { Api, ClientWorld, CharacterSummary } from './net/online';
+import { Api, ClientWorld, CharacterSummary, type ReleaseEntry } from './net/online';
 import type { IWorld, LeaderboardEntry } from './world_api';
 import { formatXp } from './ui/xp_bar';
 import { assetsReady } from './render/assets/preload';
@@ -19,7 +19,7 @@ import { DT, INTERACT_RANGE, PlayerClass, dist2d } from './sim/types';
 import { togglePasswordVisibility, syncInputAriaState, validateForm, handleKeyboardActivation, validateCharacterName } from './ui/auth_utils';
 import { CLASSES, ABILITIES } from './sim/content/classes';
 import { iconDataUrl } from './ui/icons';
-import { formatNumber, getLanguage, isSupportedLanguage, languageTag, setLanguage, t, type SupportedLanguage, type TranslationKey } from './ui/i18n';
+import { formatDateTime, formatNumber, getLanguage, isSupportedLanguage, languageTag, setLanguage, t, type SupportedLanguage, type TranslationKey } from './ui/i18n';
 import { tServer } from './ui/server_i18n';
 import { tEntity } from './ui/entity_i18n';
 import { hydrateIcons } from './ui/ui_icons';
@@ -2078,6 +2078,83 @@ async function loadHighscores(): Promise<void> {
   host.innerHTML = head + body;
 }
 
+// Minimal, safe Markdown → HTML for GitHub release notes. The input is escaped
+// FIRST, so every regex below operates on inert text; the only markup we emit is
+// our own whitelisted tags. Deliberately tiny (no tables/images/blockquotes) —
+// enough to make patch notes readable without pulling in a markdown dependency.
+function renderReleaseBody(md: string): string {
+  const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+  const inline = (s: string): string =>
+    esc(s)
+      // [text](url) — only http(s) links survive; anything else renders as text.
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, text, url) =>
+        `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
+  const out: string[] = [];
+  let inList = false;
+  const closeList = () => { if (inList) { out.push('</ul>'); inList = false; } };
+  for (const line of md.replace(/\r\n/g, '\n').split('\n')) {
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (heading) {
+      closeList();
+      const level = Math.min(3, heading[1].length); // collapse h1-h6 → h1-h3
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+    } else if (bullet) {
+      if (!inList) { out.push('<ul>'); inList = true; }
+      out.push(`<li>${inline(bullet[1])}</li>`);
+    } else if (line.trim() === '') {
+      closeList();
+    } else {
+      closeList();
+      out.push(`<p>${inline(line)}</p>`);
+    }
+  }
+  closeList();
+  return out.join('');
+}
+
+// News & Updates: published GitHub releases, proxied + cached by the server.
+// Re-fetched each time the view is opened (the server caches, so it is cheap).
+let newsLoading = false;
+async function loadNews(): Promise<void> {
+  const host = $('#news-feed');
+  if (!host || newsLoading) return;
+  newsLoading = true;
+  host.innerHTML = `<div class="news-loading">${t('news.loading')}</div>`;
+  let releases: ReleaseEntry[] = [];
+  try {
+    releases = await api.releases(20);
+  } catch {
+    host.innerHTML = `<div class="news-error">${t('news.error')}</div>`;
+    newsLoading = false;
+    return;
+  }
+  newsLoading = false;
+  if (releases.length === 0) {
+    host.innerHTML = `<div class="news-empty">${t('news.empty')}</div>`;
+    return;
+  }
+  const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+  host.innerHTML = releases.map((r) => {
+    const when = r.publishedAt
+      ? `<span class="news-date">${formatDateTime(new Date(r.publishedAt), { dateStyle: 'medium' })}</span>`
+      : '';
+    const tag = r.tag ? `<span class="news-tag">${esc(r.tag)}</span>` : '';
+    const badge = r.prerelease ? `<span class="news-badge">${t('news.prerelease')}</span>` : '';
+    const title = esc(r.name || r.tag || '');
+    const link = r.url
+      ? `<div class="news-item-foot"><a class="news-link" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${t('news.viewOnGithub')}</a></div>`
+      : '';
+    return `<article class="news-item">`
+      + `<div class="news-item-head">`
+      + `<h3 class="news-item-title">${title}</h3>${tag}${badge}${when}</div>`
+      + `<div class="news-body">${renderReleaseBody(r.body)}</div>${link}</article>`;
+  }).join('');
+}
+
 function wireStartScreens(): void {
   // Initial page translation and stats load
   translatePage();
@@ -2640,7 +2717,10 @@ function wireStartScreens(): void {
     void loadHighscores();
   });
   setupNavBtn(navBtnWiki, '#wiki-view');
-  setupNavBtn(navBtnNews, '#news-view');
+  setupNavBtn(navBtnNews, '#news-view', () => {
+    switchMainView('#news-view');
+    void loadNews();
+  });
   setupNavBtn(navBtnDownload, '#download-view');
   setupNavBtn(navBtnLogin, '#hero-view', () => {
     show('#login-panel');
