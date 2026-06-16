@@ -170,6 +170,7 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
       { itemId: 'ritual_phylactery', chance: 0.55, questId: 'q_necromancers' },
       { itemId: 'linen_scrap', chance: 0.3 },
     ],
+    manaBurn: { chance: 0.3, amount: 80, name: 'Mana Sear', school: 'shadow' },
     scale: 1.0, color: 0x533566,
   },
   boneclad_revenant: {

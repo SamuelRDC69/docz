@@ -4150,6 +4150,15 @@ export class Sim {
         school: (slowStrike.school as Aura['school']) ?? 'physical',
       });
     }
+    // Mana Burn: a landed hit may sap a flat amount of mana from a mana-using
+    // victim (casters). No effect on rage/energy users. Guarded on `hostile` so
+    // a friendly pet (mobSwing's other caller) never drains an ally's mana. The
+    // mana bar visibly drops and the affix is surfaced via an `aura` log line.
+    const burn = MOBS[mob.templateId]?.manaBurn;
+    if (burn && mob.hostile && !target.dead && target.resourceType === 'mana' && target.resource > 0 && this.rng.chance(burn.chance)) {
+      target.resource = Math.max(0, target.resource - burn.amount);
+      this.emit({ type: 'aura', targetId: target.id, name: burn.name, gained: true });
+    }
   }
 
   // Apply (or refresh + stack) a corrosive armor-shred debuff on the victim.
