@@ -7,9 +7,15 @@ import {
   listCharacters, getCharacter, createCharacterCapped, deleteCharacter, closeOrphanSessions,
   pruneChatLogs, searchCharacters, characterCountsByRealm, moderationStatusForAccount, renameCharacter,
   findCharacterReportTargetByName, topArenaRatings, topLifetimeXp, chatMuteStatusForAccount,
+  linkWaxAccount, getWaxLink, getCharacterByAssetId, setCharacterMinted, redeemCharacterToAccount,
+  recordNftOperation, nftOperationByTxid,
 } from './db';
 import { virtualLevel } from '../src/sim/types';
-import { Sim } from '../src/sim/sim';
+import { Sim, characterNetWorth, isMintEligible, formatMoney } from '../src/sim/sim';
+import {
+  waxEnabled, getWaxConfig, verifyLinkTransfer, verifyFeePayment, verifyRedeemTransaction, mintCharacterAsset,
+  burnAsset, assetOwner, getMarketListings, assetsOwnedBy,
+} from './wax';
 import type { PlayerClass } from '../src/sim/types';
 import type { LeaderboardEntry } from '../src/world_api';
 import { cleanReportReason, createPlayerReport, createSuspiciousRegistrationReport } from './moderation_db';
@@ -36,6 +42,31 @@ const CHAT_LOG_RETENTION_DAYS = Number(process.env.CHAT_LOG_RETENTION_DAYS ?? 90
 const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET ?? '';
 
 const game = new GameServer();
+
+// Short-lived WAX wallet-link challenges. The client requests a nonce, has the
+// wallet sign it, and returns the signature; we verify it recovers to one of the
+// account's on-chain keys. Kept in memory (per realm process) — a dropped nonce
+// just means the player re-requests one. Expire after WAX_LINK_NONCE_TTL_MS.
+const WAX_LINK_NONCE_TTL_MS = 5 * 60_000;
+const waxLinkNonces = new Map<number, { nonce: string; expires: number }>();
+function issueWaxLinkNonce(accountId: number): string {
+  const nonce = `wocc-link:${REALM}:${accountId}:${newToken()}`;
+  waxLinkNonces.set(accountId, { nonce, expires: Date.now() + WAX_LINK_NONCE_TTL_MS });
+  return nonce;
+}
+function takeWaxLinkNonce(accountId: number): string | null {
+  const entry = waxLinkNonces.get(accountId);
+  if (!entry || entry.expires < Date.now()) {
+    waxLinkNonces.delete(accountId);
+    return null;
+  }
+  waxLinkNonces.delete(accountId); // single-use
+  return entry.nonce;
+}
+
+function characterIsOnline(characterId: number): boolean {
+  return [...game.clients.values()].some((s) => s.characterId === characterId);
+}
 
 function initialCharacterState(cls: PlayerClass, name: string, skin: number): import('../src/sim/sim').CharacterState {
   const sim = new Sim({ seed: 20061, playerClass: cls, playerName: name });
@@ -282,11 +313,18 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse): P
         const chars = await listCharacters(accountId);
         return json(res, 200, {
           realm: REALM,
+          waxEnabled: waxEnabled(),
           characters: chars.map((c) => ({
             id: c.id, name: c.name, class: c.class, level: c.level,
             skin: c.state?.skin ?? 0,
-            online: [...game.clients.values()].some((s) => s.characterId === c.id),
+            online: characterIsOnline(c.id),
             forceRename: c.force_rename,
+            // WAX character-NFT surface for the char-select screen.
+            prestigeRank: c.state?.prestigeRank ?? 0,
+            netWorth: c.state ? characterNetWorth(c.state) : 0,
+            mintEligible: c.state ? isMintEligible(c.state) : false,
+            minted: c.wax_minted,
+            nftAssetId: c.nft_asset_id,
           })),
         });
       }
@@ -323,9 +361,13 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse): P
       // /api/status). Renaming an online character desyncs that copy and — worse
       // — lets a force-renamed player already in the world clear the moderation
       // flag without ever leaving. Mirror the DELETE guard and require offline.
-      if ([...game.clients.values()].some((s) => s.characterId === characterId)) {
+      if (characterIsOnline(characterId)) {
         return json(res, 400, { error: 'character is currently online' });
       }
+      // A minted (frozen) character is owned by an NFT — its name is baked into
+      // the on-chain snapshot, so it can't be renamed until redeemed.
+      const renameTarget = await getCharacter(accountId, characterId);
+      if (renameTarget?.wax_minted) return json(res, 400, { error: 'character is minted as an nft' });
       try {
         const c = await renameCharacter(accountId, characterId, name);
         if (!c) return json(res, 404, { error: 'character not found' });
@@ -342,9 +384,11 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse): P
       const body = await readBody(req);
       const character = await getCharacter(accountId, characterId);
       if (!character) return json(res, 404, { error: 'not found' });
-      if ([...game.clients.values()].some((s) => s.characterId === characterId)) {
+      if (characterIsOnline(characterId)) {
         return json(res, 400, { error: 'character is currently online' });
       }
+      // A minted character lives as an NFT now; it can't be deleted until redeemed.
+      if (character.wax_minted) return json(res, 400, { error: 'character is minted as an nft' });
       if (normalizeDeleteConfirmation(body.name) !== normalizeDeleteConfirmation(character.name)) {
         return json(res, 400, { error: 'type the character name to confirm deletion' });
       }
@@ -428,6 +472,153 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse): P
       const entries = await getLeaderboard(scope);
       return json(res, 200, { realm: REALM, scope, metric: 'lifetimeXp', leaders: entries.slice(0, limit) });
     }
+
+    // -----------------------------------------------------------------------
+    // WAX character-NFT: wallet linking, mint, redeem, and the in-game market.
+    // -----------------------------------------------------------------------
+    if (req.method === 'GET' && url === '/api/wax/config') {
+      // Public chain config (never the signing key) — drives WharfKit + fee UI.
+      return json(res, 200, getWaxConfig());
+    }
+    if (req.method === 'GET' && url === '/api/market/listings') {
+      if (!waxEnabled()) return json(res, 503, { error: 'nft market is not available' });
+      return json(res, 200, { listings: await getMarketListings(100) });
+    }
+    if (req.method === 'POST' && url === '/api/wax/link-challenge') {
+      const accountId = await bearerActiveAccount(req, res);
+      if (accountId === null) return;
+      if (!waxEnabled()) return json(res, 503, { error: 'nft minting is not available' });
+      return json(res, 200, { nonce: issueWaxLinkNonce(accountId) });
+    }
+    if (req.method === 'POST' && url === '/api/wax/link') {
+      const accountId = await bearerActiveAccount(req, res);
+      if (accountId === null) return;
+      if (!waxEnabled()) return json(res, 503, { error: 'nft minting is not available' });
+      const body = await readBody(req);
+      const waxAccount = typeof body.waxAccount === 'string' ? body.waxAccount.trim().toLowerCase() : '';
+      const txid = typeof body.txid === 'string' ? body.txid.trim() : '';
+      if (!/^[a-z1-5.]{1,13}$/.test(waxAccount)) return json(res, 400, { error: 'invalid wax account name' });
+      if (!txid) return json(res, 400, { error: 'missing wallet proof transaction' });
+      const nonce = takeWaxLinkNonce(accountId);
+      if (!nonce) return json(res, 400, { error: 'link challenge expired — request a new one' });
+      const ok = await verifyLinkTransfer(waxAccount, nonce, txid);
+      if (!ok) return json(res, 403, { error: 'wallet ownership proof did not verify' });
+      try {
+        await linkWaxAccount(accountId, waxAccount);
+      } catch (err: any) {
+        if (isUniqueViolation(err)) return json(res, 409, { error: 'that wax wallet is already linked to another account' });
+        throw err;
+      }
+      return json(res, 200, { ok: true, waxAccount });
+    }
+    if (req.method === 'GET' && url === '/api/wax/redeemable') {
+      // Assets in our collection currently held by the caller's linked wallet,
+      // so the client can offer "Redeem" for each.
+      const accountId = await bearerActiveAccount(req, res);
+      if (accountId === null) return;
+      if (!waxEnabled()) return json(res, 503, { error: 'nft minting is not available' });
+      const linkedWax = await getWaxLink(accountId);
+      if (!linkedWax) return json(res, 200, { waxAccount: null, assets: [] });
+      return json(res, 200, { waxAccount: linkedWax, assets: await assetsOwnedBy(linkedWax) });
+    }
+    const mintMatch = /^\/api\/characters\/(\d+)\/mint$/.exec(url);
+    if (req.method === 'POST' && mintMatch) {
+      const accountId = await bearerActiveAccount(req, res);
+      if (accountId === null) return;
+      if (!waxEnabled()) return json(res, 503, { error: 'nft minting is not available' });
+      const characterId = Number(mintMatch[1]);
+      const body = await readBody(req);
+      const feeTxid = typeof body.feeTxid === 'string' ? body.feeTxid.trim() : '';
+      if (!feeTxid) return json(res, 400, { error: 'missing mint fee transaction' });
+      const linkedWax = await getWaxLink(accountId);
+      if (!linkedWax) return json(res, 400, { error: 'link your wax wallet first' });
+      const character = await getCharacter(accountId, characterId);
+      if (!character) return json(res, 404, { error: 'character not found' });
+      if (character.wax_minted) return json(res, 409, { error: 'character is already minted' });
+      if (characterIsOnline(characterId)) return json(res, 400, { error: 'character is currently online' });
+      if (!character.state || !isMintEligible(character.state)) {
+        return json(res, 403, { error: 'character must prestige before minting' });
+      }
+      const cfg = getWaxConfig();
+      // Idempotency: a given paid fee tx can mint exactly once. Claim it BEFORE
+      // minting so a retry can never mint a second NFT against one payment.
+      if (await nftOperationByTxid(feeTxid)) return json(res, 409, { error: 'this payment was already used' });
+      // Exact memo `mint:<characterId>` binds this fee to THIS character, so a
+      // fee paid for one character can't be replayed to mint another.
+      const feeOk = await verifyFeePayment({ txid: feeTxid, fromWax: linkedWax, requiredFee: cfg.mintFee, memo: `mint:${characterId}` });
+      if (!feeOk) return json(res, 402, { error: 'mint fee payment not found' });
+      const claimed = await recordNftOperation({
+        op: 'mint', accountId, characterId, assetId: null, waxAccount: linkedWax, feeTxid,
+      });
+      if (!claimed) return json(res, 409, { error: 'this payment was already used' });
+      const netWorth = characterNetWorth(character.state);
+      const assetId = await mintCharacterAsset(linkedWax, {
+        name: character.name,
+        charClass: character.class,
+        level: character.level,
+        prestigeRank: character.state.prestigeRank ?? 0,
+        netWorth,
+        netWorthText: formatMoney(netWorth),
+        characterId,
+      });
+      // The NFT now exists on-chain; freezing the character MUST stick, or the
+      // player would hold a playable character AND a sellable NFT. Retry transient
+      // DB errors; a hard failure is logged for out-of-band reconciliation.
+      let frozen = false;
+      for (let attempt = 0; ; attempt++) {
+        try { frozen = await setCharacterMinted(accountId, characterId, assetId); break; }
+        catch (err) {
+          if (attempt >= 3) {
+            console.error(`CRITICAL: minted asset ${assetId} for character ${characterId} but failed to freeze it:`, err);
+            return json(res, 500, { error: 'mint recorded on-chain but freezing the character failed; contact support' });
+          }
+          await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+        }
+      }
+      if (!frozen) return json(res, 409, { error: 'character is already minted' });
+      return json(res, 200, { ok: true, assetId });
+    }
+    if (req.method === 'POST' && url === '/api/characters/redeem') {
+      const accountId = await bearerActiveAccount(req, res);
+      if (accountId === null) return;
+      if (!waxEnabled()) return json(res, 503, { error: 'nft minting is not available' });
+      const body = await readBody(req);
+      const assetId = typeof body.assetId === 'string' ? body.assetId.trim() : '';
+      const txid = typeof body.txid === 'string' ? body.txid.trim() : '';
+      if (!assetId || !txid) return json(res, 400, { error: 'missing asset id or transaction' });
+      const linkedWax = await getWaxLink(accountId);
+      if (!linkedWax) return json(res, 400, { error: 'link your wax wallet first' });
+      // The character must exist on THIS realm (asset id is realm-scoped here).
+      const character = await getCharacterByAssetId(assetId);
+      if (!character) return json(res, 404, { error: 'no minted character for that nft on this realm' });
+      if (await nftOperationByTxid(txid)) return json(res, 409, { error: 'this payment was already used' });
+      const cfg = getWaxConfig();
+      // One transaction must both pay the redeem fee and hand the NFT to the game
+      // account, both from the redeemer's wallet — atomic, self-proving.
+      const proofOk = await verifyRedeemTransaction({ txid, fromWax: linkedWax, assetId, requiredFee: cfg.redeemFee });
+      if (!proofOk) return json(res, 402, { error: 'redeem payment or nft transfer not found' });
+      // Defensive: the NFT must now actually sit in the game account before we
+      // burn it (the transfer in the proof tx landed).
+      const owner = await assetOwner(assetId);
+      if (owner !== cfg.gameAccount) return json(res, 409, { error: 'nft is not held by the game account yet' });
+      const claimed = await recordNftOperation({
+        op: 'redeem', accountId, characterId: character.id, assetId, waxAccount: linkedWax, feeTxid: txid,
+      });
+      if (!claimed) return json(res, 409, { error: 'this payment was already used' });
+      // Reassign + unfreeze FIRST (the user-visible commit, guarded on wax_minted
+      // so it runs exactly once). Only then burn the NFT — the asset already sits
+      // in the game account, so a burn failure is mere housekeeping and must not
+      // strand a buyer who already paid and transferred it in (sweep-burn later).
+      const redeemed = await redeemCharacterToAccount(assetId, accountId);
+      if (!redeemed) return json(res, 409, { error: 'character was already redeemed' });
+      try {
+        await burnAsset(assetId);
+      } catch (err) {
+        console.error(`redeem burn failed for asset ${assetId} (held by game account; burn out-of-band):`, err);
+      }
+      return json(res, 200, { ok: true, characterId: character.id });
+    }
+
     json(res, 404, { error: 'unknown endpoint' });
   } catch (err: any) {
     console.error('api error:', err);
@@ -533,6 +724,13 @@ async function main(): Promise<void> {
     }
     if (character.force_rename) {
       ws.send(JSON.stringify({ t: 'error', error: 'This character must be renamed before entering the world.' }));
+      ws.close();
+      return;
+    }
+    // A minted character is frozen: its state belongs to a live NFT and must not
+    // be entered (which would diverge from the on-chain snapshot) until redeemed.
+    if (character.wax_minted) {
+      ws.send(JSON.stringify({ t: 'error', error: 'character is minted as an nft' }));
       ws.close();
       return;
     }

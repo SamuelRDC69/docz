@@ -12,7 +12,11 @@ vi.mock('pg', () => ({
   },
 }));
 
-import { createAccount, createCharacterCapped, deleteCharacter, openPlaySession, touchLogin } from '../server/db';
+import {
+  createAccount, createCharacterCapped, deleteCharacter, openPlaySession, touchLogin,
+  linkWaxAccount, getWaxLink, accountForWaxAccount, getCharacterByAssetId,
+  setCharacterMinted, redeemCharacterToAccount, recordNftOperation, nftOperationByTxid,
+} from '../server/db';
 import { REALM } from '../server/realm';
 
 beforeEach(() => {
@@ -144,5 +148,89 @@ describe('createCharacterCapped', () => {
     expect(client.query.mock.calls.map((c) => c[0])).toContain('ROLLBACK');
     expect(client.query.mock.calls.map((c) => c[0])).not.toContain('COMMIT');
     expect(client.release).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('WAX wallet links', () => {
+  it('upserts a wallet on the account_id key so re-linking replaces the wallet', async () => {
+    dbMock.query.mockResolvedValueOnce({ rowCount: 1 } as any);
+    await linkWaxAccount(7, 'cooltestacct');
+    const [sql, params] = dbMock.query.mock.calls[0];
+    expect(sql).toMatch(/INSERT INTO wax_links/);
+    expect(sql).toMatch(/ON CONFLICT \(account_id\) DO UPDATE/);
+    expect(params).toEqual([7, 'cooltestacct']);
+  });
+
+  it('reads the linked wallet and the reverse mapping', async () => {
+    dbMock.query.mockResolvedValueOnce({ rows: [{ wax_account: 'cooltestacct' }] } as any);
+    expect(await getWaxLink(7)).toBe('cooltestacct');
+
+    dbMock.query.mockResolvedValueOnce({ rows: [{ account_id: 7 }] } as any);
+    expect(await accountForWaxAccount('cooltestacct')).toBe(7);
+
+    dbMock.query.mockResolvedValueOnce({ rows: [] } as any);
+    expect(await accountForWaxAccount('nobody')).toBeNull();
+  });
+});
+
+describe('character minting & redemption', () => {
+  it('freezes the character, scoped to account+realm and guarded on not-yet-minted', async () => {
+    dbMock.query.mockResolvedValueOnce({ rowCount: 1 } as any);
+    expect(await setCharacterMinted(7, 42, '123456789')).toBe(true);
+    const [sql, params] = dbMock.query.mock.calls[0];
+    expect(sql).toMatch(/UPDATE characters/);
+    expect(sql).toMatch(/wax_minted = TRUE/);
+    expect(sql).toMatch(/wax_minted = FALSE/); // the WHERE guard
+    expect(params).toEqual([42, 7, '123456789', REALM]);
+  });
+
+  it('reports false when the mint guard matched no row (already minted)', async () => {
+    dbMock.query.mockResolvedValueOnce({ rowCount: 0 } as any);
+    expect(await setCharacterMinted(7, 42, '123456789')).toBe(false);
+  });
+
+  it('redeem reassigns the character to the new account and unfreezes it', async () => {
+    dbMock.query.mockResolvedValueOnce({ rowCount: 1 } as any);
+    expect(await redeemCharacterToAccount('123456789', 99)).toBe(true);
+    const [sql, params] = dbMock.query.mock.calls[0];
+    expect(sql).toMatch(/UPDATE characters/);
+    expect(sql).toMatch(/account_id = \$2/);
+    expect(sql).toMatch(/wax_minted = FALSE/);
+    expect(sql).toMatch(/nft_asset_id = NULL/);
+    expect(params).toEqual(['123456789', 99, REALM]);
+  });
+
+  it('looks up a character by its minted asset id, realm-scoped', async () => {
+    dbMock.query.mockResolvedValueOnce({ rows: [{ id: 42, name: 'Frosty' }] } as any);
+    const row = await getCharacterByAssetId('123456789');
+    expect(row?.id).toBe(42);
+    const [sql, params] = dbMock.query.mock.calls[0];
+    expect(sql).toMatch(/nft_asset_id = \$1/);
+    expect(params).toEqual(['123456789', REALM]);
+  });
+});
+
+describe('NFT fee ledger (idempotency)', () => {
+  it('records a fee and reports success', async () => {
+    dbMock.query.mockResolvedValueOnce({ rowCount: 1 } as any);
+    const ok = await recordNftOperation({
+      op: 'mint', accountId: 7, characterId: 42, assetId: '123456789', waxAccount: 'cooltestacct', feeTxid: 'tx_abc',
+    });
+    expect(ok).toBe(true);
+    expect(dbMock.query.mock.calls[0][0]).toMatch(/INSERT INTO nft_operations/);
+  });
+
+  it('treats a duplicate fee_txid (23505) as an idempotent replay, returning false', async () => {
+    dbMock.query.mockRejectedValueOnce(Object.assign(new Error('dup'), { code: '23505' }));
+    const ok = await recordNftOperation({
+      op: 'redeem', accountId: 7, characterId: null, assetId: '123456789', waxAccount: 'cooltestacct', feeTxid: 'tx_abc',
+    });
+    expect(ok).toBe(false);
+  });
+
+  it('finds a prior operation by fee_txid', async () => {
+    dbMock.query.mockResolvedValueOnce({ rows: [{ id: 1, op: 'mint', fee_txid: 'tx_abc' }] } as any);
+    const row = await nftOperationByTxid('tx_abc');
+    expect(row?.op).toBe('mint');
   });
 });

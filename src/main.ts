@@ -9,7 +9,7 @@ import { audio } from './game/audio';
 import { music } from './game/music';
 import { handlePickedEntity, hoverCursorKind } from './game/interactions';
 import { clickMoveShouldCancel, clickMoveStep, stepAngleToward } from './game/click_move';
-import { Api, ClientWorld, CharacterSummary } from './net/online';
+import { Api, ClientWorld, CharacterSummary, type WaxMarketListing } from './net/online';
 import type { IWorld, LeaderboardEntry } from './world_api';
 import { formatXp } from './ui/xp_bar';
 import { assetsReady } from './render/assets/preload';
@@ -19,7 +19,7 @@ import { DT, INTERACT_RANGE, PlayerClass, dist2d } from './sim/types';
 import { togglePasswordVisibility, syncInputAriaState, validateForm, handleKeyboardActivation, validateCharacterName } from './ui/auth_utils';
 import { CLASSES, ABILITIES } from './sim/content/classes';
 import { iconDataUrl } from './ui/icons';
-import { formatNumber, getLanguage, isSupportedLanguage, languageTag, setLanguage, t, type SupportedLanguage, type TranslationKey } from './ui/i18n';
+import { formatMoney as formatLocalizedMoney, formatNumber, getLanguage, isSupportedLanguage, languageTag, setLanguage, t, type SupportedLanguage, type TranslationKey } from './ui/i18n';
 import { tServer } from './ui/server_i18n';
 import { tEntity } from './ui/entity_i18n';
 import { hydrateIcons } from './ui/ui_icons';
@@ -114,6 +114,24 @@ function userFacingApiError(err: unknown): string {
   if (normalized === 'this account is suspended.') return tServer('moderation.suspended');
   if (normalized === 'a moderator requires one of your characters to be renamed.') return tServer('moderation.forceRename');
   if (normalized.startsWith('too many failed attempts')) return tServer('moderation.tooManyFailed');
+  // WAX character-NFT errors (server/main.ts). Grouped to a few user-facing
+  // messages under the wax.* keys; the precise English stays in server logs.
+  if (normalized === 'nft minting is not available' || normalized === 'nft market is not available') return t('wax.errUnavailable');
+  if (normalized === 'that wax wallet is already linked to another account') return t('wax.errWalletElsewhere');
+  if (
+    normalized === 'invalid wax account name' || normalized === 'missing wallet proof transaction' ||
+    normalized === 'link challenge expired — request a new one' || normalized === 'wallet ownership proof did not verify'
+  ) return t('wax.errLinkFailed');
+  if (normalized === 'link your wax wallet first') return t('wax.errLinkFirst');
+  if (normalized === 'character must prestige before minting') return t('wax.errNotEligible');
+  if (normalized === 'character is already minted' || normalized === 'character is minted as an nft') return t('wax.errAlreadyMinted');
+  if (normalized === 'this payment was already used') return t('wax.errPaymentUsed');
+  if (normalized === 'missing mint fee transaction' || normalized === 'mint fee payment not found') return t('wax.errMintFailed');
+  if (
+    normalized === 'missing asset id or transaction' || normalized === 'no minted character for that nft on this realm' ||
+    normalized === 'redeem payment or nft transfer not found' || normalized === 'nft is not held by the game account yet' ||
+    normalized === 'character was already redeemed'
+  ) return t('wax.errRedeemFailed');
   // Transport/runtime failures are diagnostic code errors. Preserve their
   // English source text so browser logs and support reports match exactly.
   return text;
@@ -1417,6 +1435,7 @@ async function refreshCharacters(): Promise<void> {
   const listEl = $('#char-list');
   listEl.innerHTML = `<li class="char-list-message">${escapeHtml(t('character.loading'))}</li>`;
   try {
+    await initWaxForCharSelect();
     const chars = await api.characters();
     if (api.realm) $('#charselect-realm').textContent = t('realm.selectedRealm', { name: api.realm });
     listEl.innerHTML = '';
@@ -1431,21 +1450,51 @@ async function refreshCharacters(): Promise<void> {
       row.setAttribute('aria-selected', 'false');
       row.dataset.class = c.class;
       const className = classDisplayName(c.class);
-      const statusText = c.online ? ` (${t('character.inWorld')})` : c.forceRename ? ` (${t('character.renameRequired')})` : '';
+      if (c.minted) row.classList.add('minted');
+      const statusText = c.online ? ` (${t('character.inWorld')})`
+        : c.minted ? ` (${t('wax.frozen')})`
+        : c.forceRename ? ` (${t('character.renameRequired')})` : '';
+      // Net worth + prestige line — only meaningful when this realm has WAX on.
+      const worthLine = waxClient
+        ? `<span class="char-worth">${escapeHtml(t('wax.netWorth', { value: formatLocalizedMoney(c.netWorth) }))}${
+            c.prestigeRank > 0 ? ' · ' + escapeHtml(t('wax.prestige', { rank: c.prestigeRank })) : ''
+          }</span>`
+        : '';
+      let actionsHtml: string;
+      if (c.minted) {
+        // Frozen: owned by a live NFT — no enter/delete/rename until redeemed.
+        actionsHtml = `<span class="char-actions"><span class="nft-badge">${escapeHtml(t('wax.frozen'))}</span><button class="btn view-nft-btn">${escapeHtml(t('wax.viewNft'))}</button></span>`;
+      } else if (c.forceRename) {
+        actionsHtml = `<input class="rename-input" placeholder="${escapeHtml(t('character.newNamePlaceholder'))}" maxlength="16" /><span class="char-actions"><button class="btn btn-danger delete-char-btn" ${c.online ? 'disabled' : ''}>${escapeHtml(t('character.delete'))}</button><button class="btn rename-btn">${escapeHtml(t('character.rename'))}</button></span>`;
+      } else {
+        const mintBtn = !waxClient ? ''
+          : c.mintEligible
+            ? `<button class="btn mint-nft-btn" ${c.online ? 'disabled' : ''}>${escapeHtml(t('wax.mint'))}</button>`
+            : `<span class="nft-hint">${escapeHtml(t('wax.mustPrestige'))}</span>`;
+        actionsHtml = `<span class="char-actions"><button class="btn btn-danger delete-char-btn" ${c.online ? 'disabled' : ''}>${escapeHtml(t('character.delete'))}</button><button class="btn enter-world-btn" ${c.online ? 'disabled' : ''}>${escapeHtml(t('auth.enterWorld'))}</button>${mintBtn}</span>`;
+      }
       row.innerHTML = `<span class="char-name">${escapeHtml(c.name)}</span>
         <span class="char-sub">${escapeHtml(t('character.levelClass', { level: c.level, className }))}${escapeHtml(statusText)}</span>
-        ${c.forceRename
-          ? `<input class="rename-input" placeholder="${escapeHtml(t('character.newNamePlaceholder'))}" maxlength="16" /><span class="char-actions"><button class="btn btn-danger delete-char-btn" ${c.online ? 'disabled' : ''}>${escapeHtml(t('character.delete'))}</button><button class="btn rename-btn">${escapeHtml(t('character.rename'))}</button></span>`
-          : `<span class="char-actions"><button class="btn btn-danger delete-char-btn" ${c.online ? 'disabled' : ''}>${escapeHtml(t('character.delete'))}</button><button class="btn enter-world-btn" ${c.online ? 'disabled' : ''}>${escapeHtml(t('auth.enterWorld'))}</button></span>`}`;
+        ${worthLine}
+        ${actionsHtml}`;
 
-      row.querySelector('.delete-char-btn')!.addEventListener('click', (e) => {
+      // Wire actions; minted rows omit delete/enter, so guard each lookup.
+      row.querySelector('.delete-char-btn')?.addEventListener('click', (e) => {
         e.stopPropagation();
         openDeleteCharacterDialog(c);
+      });
+      row.querySelector('.view-nft-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (c.nftAssetId) window.open(waxAssetUrl(c.nftAssetId), '_blank', 'noopener');
+      });
+      row.querySelector('.mint-nft-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void mintCharacterNft(c);
       });
 
       if (c.forceRename) {
         const input = row.querySelector('.rename-input') as HTMLInputElement;
-        row.querySelector('.rename-btn')!.addEventListener('click', async (e) => {
+        row.querySelector('.rename-btn')?.addEventListener('click', async (e) => {
           e.stopPropagation();
           $('#charselect-error').textContent = '';
           try {
@@ -1455,8 +1504,8 @@ async function refreshCharacters(): Promise<void> {
             $('#charselect-error').textContent = userFacingApiError(err);
           }
         });
-      } else {
-        row.querySelector('.enter-world-btn')!.addEventListener('click', (e) => {
+      } else if (!c.minted) {
+        row.querySelector('.enter-world-btn')?.addEventListener('click', (e) => {
           e.stopPropagation();
           void enterWorld(c, e.currentTarget as HTMLButtonElement);
         });
@@ -1501,6 +1550,222 @@ async function refreshCharacters(): Promise<void> {
     }
   } catch (err) {
     listEl.innerHTML = `<li class="char-list-message char-list-error">${escapeHtml(userFacingApiError(err))}</li>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WAX character-NFT: wallet connect, mint, redeem, and the in-game market.
+// Lives in main.ts (the only module that wires net + ui together). All on-chain
+// signing goes through WaxClient (net/wax_client.ts); the REST Api handles the
+// off-chain side. Every visible string is a t() key.
+// ---------------------------------------------------------------------------
+// Loaded lazily (dynamic import) so WharfKit + the web wallet renderer only ship
+// to players on a WAX-enabled realm, keeping the base bundle lean.
+let waxClient: import('./net/wax_client').WaxClient | null = null;
+let waxInitDone = false;
+
+// AtomicHub explorer link for an asset (testnet vs mainnet inferred from config).
+function waxAssetUrl(assetId: string): string {
+  const cfg = waxClient?.cfg;
+  if (!cfg) return '#';
+  const testnet = cfg.atomicApiUrl.includes('test') || cfg.chainId.startsWith('f16b');
+  return testnet
+    ? `https://wax-test.atomichub.io/explorer/asset/wax-test-network/${assetId}`
+    : `https://wax.atomichub.io/explorer/asset/wax-mainnet/${assetId}`;
+}
+
+function setCharselectStatus(message: string, isError = true): void {
+  const el = $('#charselect-error');
+  if (el) el.textContent = message;
+  if (el) el.classList.toggle('charselect-ok', !isError);
+}
+
+// One-time WAX bootstrap for the char-select screen: read the realm's chain
+// config and, if enabled, build the wallet client + restore any prior session.
+async function initWaxForCharSelect(): Promise<void> {
+  if (waxInitDone) { renderWalletBar(); return; }
+  waxInitDone = true;
+  const cfg = await api.waxConfig();
+  if (!cfg || !cfg.enabled) { waxClient = null; renderWalletBar(); return; }
+  const { WaxClient } = await import('./net/wax_client');
+  waxClient = new WaxClient(cfg);
+  try { await waxClient.restore(); } catch { /* no prior session */ }
+  renderWalletBar();
+}
+
+// The wallet bar sits above the character list: connect/disconnect + a button
+// to open the character NFT market. Injected via DOM (no index.html change).
+function renderWalletBar(): void {
+  const listEl = $('#char-list');
+  const host = listEl?.parentElement;
+  if (!host) return;
+  let bar = document.getElementById('wax-wallet-bar');
+  if (!waxClient) { bar?.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'wax-wallet-bar';
+    bar.className = 'wax-wallet-bar';
+    host.insertBefore(bar, listEl);
+  }
+  const acct = waxClient.account;
+  bar.innerHTML = acct
+    ? `<span class="wax-wallet-label">${escapeHtml(t('wax.wallet', { account: acct }))}</span>
+       <span class="wax-bar-actions"><button class="btn wax-market-btn">${escapeHtml(t('wax.market'))}</button><button class="btn wax-disconnect-btn">${escapeHtml(t('wax.disconnect'))}</button></span>`
+    : `<span class="wax-wallet-label">${escapeHtml(t('wax.notConnected'))}</span>
+       <span class="wax-bar-actions"><button class="btn wax-connect-btn">${escapeHtml(t('wax.connectWallet'))}</button><button class="btn wax-market-btn">${escapeHtml(t('wax.market'))}</button></span>`;
+  bar.querySelector('.wax-connect-btn')?.addEventListener('click', () => void connectWallet());
+  bar.querySelector('.wax-disconnect-btn')?.addEventListener('click', () => void disconnectWallet());
+  bar.querySelector('.wax-market-btn')?.addEventListener('click', () => void openMarketOverlay());
+}
+
+// Connect a WAX wallet, then prove ownership to bind it to the game account.
+async function connectWallet(): Promise<void> {
+  if (!waxClient) return;
+  setCharselectStatus('');
+  try {
+    const acct = await waxClient.connect();
+    const nonce = await api.waxLinkChallenge();
+    const txid = await waxClient.proveOwnership(nonce);
+    await api.waxLink(acct, txid);
+    setCharselectStatus(t('wax.linkDone'), false);
+    renderWalletBar();
+  } catch (err) {
+    setCharselectStatus(walletError(err));
+  }
+}
+
+async function disconnectWallet(): Promise<void> {
+  if (!waxClient) return;
+  try { await waxClient.disconnect(); } catch { /* ignore */ }
+  renderWalletBar();
+}
+
+// Mint an eligible character: confirm the fee, pay it on-chain, then have the
+// server verify + mint + freeze. Refresh so the row flips to "Frozen".
+async function mintCharacterNft(c: CharacterSummary): Promise<void> {
+  if (!waxClient) return;
+  setCharselectStatus('');
+  if (!waxClient.account) { await connectWallet(); if (!waxClient.account) return; }
+  if (!confirm(t('wax.mintConfirm', { name: c.name, fee: waxClient.cfg.mintFee }))) return;
+  try {
+    const feeTxid = await waxClient.payMintFee(c.id);
+    await api.mintCharacter(c.id, feeTxid);
+    setCharselectStatus(t('wax.mintDone'), false);
+    await refreshCharacters();
+  } catch (err) {
+    setCharselectStatus(walletError(err));
+  }
+}
+
+function walletError(err: unknown): string {
+  const msg = userFacingApiError(err);
+  // WharfKit/user-cancel errors aren't API errors; show a generic wallet message.
+  return msg && !/wallet not connected/i.test(msg) ? msg : t('wax.actionFailed');
+}
+
+// The in-game character NFT market: listings to buy + the caller's own NFTs to
+// redeem. Reads on-chain data through the server; actions sign via WharfKit.
+async function openMarketOverlay(): Promise<void> {
+  if (!waxClient) return;
+  const existing = document.getElementById('wax-market-overlay');
+  existing?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'wax-market-overlay';
+  overlay.className = 'wax-market-overlay';
+  overlay.innerHTML = `<div class="wax-market-dialog" role="dialog" aria-modal="true" aria-label="${escapeHtml(t('wax.marketTitle'))}">
+    <div class="wax-market-head"><h2>${escapeHtml(t('wax.marketTitle'))}</h2><button class="btn wax-market-close">${escapeHtml(t('wax.close'))}</button></div>
+    <div class="wax-market-status"></div>
+    <div class="wax-market-body">${escapeHtml(t('character.loading'))}</div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector('.wax-market-close')?.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  const statusEl = overlay.querySelector('.wax-market-status') as HTMLElement;
+  const bodyEl = overlay.querySelector('.wax-market-body') as HTMLElement;
+
+  const render = async () => {
+    const [listings, redeemable] = await Promise.all([api.marketListings(), api.waxRedeemable()]);
+    bodyEl.innerHTML = '';
+
+    if (redeemable.assets.length > 0) {
+      const sec = document.createElement('div');
+      sec.className = 'wax-market-section';
+      sec.innerHTML = `<h3>${escapeHtml(t('wax.yourNfts'))}</h3><div class="wax-card-grid"></div>`;
+      const grid = sec.querySelector('.wax-card-grid')!;
+      for (const a of redeemable.assets) {
+        const card = document.createElement('div');
+        card.className = 'wax-card';
+        card.innerHTML = nftCardHtml(a.data) +
+          `<button class="btn wax-redeem-btn">${escapeHtml(t('wax.redeem'))}</button>`;
+        card.querySelector('.wax-redeem-btn')?.addEventListener('click', () => void redeemNft(a.assetId, statusEl, render));
+        grid.appendChild(card);
+      }
+      bodyEl.appendChild(sec);
+    }
+
+    const sec = document.createElement('div');
+    sec.className = 'wax-market-section';
+    sec.innerHTML = `<h3>${escapeHtml(t('wax.forSale'))}</h3>`;
+    if (listings.length === 0) {
+      sec.innerHTML += `<p class="wax-market-empty">${escapeHtml(t('wax.marketEmpty'))}</p>`;
+    } else {
+      const grid = document.createElement('div');
+      grid.className = 'wax-card-grid';
+      for (const l of listings) {
+        const card = document.createElement('div');
+        card.className = 'wax-card';
+        card.innerHTML = nftCardHtml(l.data) +
+          `<div class="wax-card-price">${escapeHtml(t('wax.price', { price: l.price }))}</div>
+           <div class="wax-card-seller">${escapeHtml(t('wax.seller', { seller: l.seller }))}</div>
+           <button class="btn wax-buy-btn">${escapeHtml(t('wax.buy'))}</button>`;
+        card.querySelector('.wax-buy-btn')?.addEventListener('click', () => void buyNft(l, statusEl, render));
+        grid.appendChild(card);
+      }
+      sec.appendChild(grid);
+    }
+    bodyEl.appendChild(sec);
+  };
+  try { await render(); } catch (err) { bodyEl.textContent = walletError(err); }
+}
+
+// A read-only character summary card from the on-chain NFT attributes.
+function nftCardHtml(data: Record<string, unknown>): string {
+  const name = String(data.name ?? '');
+  const cls = String(data.class ?? '');
+  const level = String(data.level ?? '');
+  const prestige = Number(data.prestige ?? 0);
+  const worth = String(data.networth_text ?? '');
+  return `<div class="wax-card-title">${escapeHtml(name)}</div>
+    <div class="wax-card-sub">${escapeHtml(t('wax.cardLine', { level, className: cls }))}${prestige > 0 ? ' · ' + escapeHtml(t('wax.prestige', { rank: prestige })) : ''}</div>
+    <div class="wax-card-worth">${escapeHtml(t('wax.netWorth', { value: worth }))}</div>`;
+}
+
+async function buyNft(l: WaxMarketListing, statusEl: HTMLElement, refresh: () => Promise<void>): Promise<void> {
+  if (!waxClient) return;
+  if (!waxClient.account) { await connectWallet(); if (!waxClient.account) return; }
+  statusEl.textContent = t('wax.working');
+  try {
+    await waxClient.buy(l.saleId, l.price);
+    statusEl.textContent = t('wax.buyDone');
+    await refresh();
+  } catch (err) {
+    statusEl.textContent = walletError(err);
+  }
+}
+
+async function redeemNft(assetId: string, statusEl: HTMLElement, refresh: () => Promise<void>): Promise<void> {
+  if (!waxClient) return;
+  if (!confirm(t('wax.redeemConfirm', { fee: waxClient.cfg.redeemFee }))) return;
+  statusEl.textContent = t('wax.working');
+  try {
+    const txid = await waxClient.redeem(assetId);
+    await api.redeemCharacter(assetId, txid);
+    statusEl.textContent = t('wax.redeemDone');
+    await refresh();
+    await refreshCharacters();
+  } catch (err) {
+    statusEl.textContent = walletError(err);
   }
 }
 

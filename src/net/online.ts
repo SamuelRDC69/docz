@@ -25,6 +25,44 @@ export interface CharacterSummary {
   skin: number;
   online: boolean;
   forceRename: boolean;
+  // WAX character-NFT surface (see server /api/characters).
+  prestigeRank: number;
+  netWorth: number; // copper; vendor value of all assets + current gold
+  mintEligible: boolean; // has prestiged at least once
+  minted: boolean; // frozen as a live NFT
+  nftAssetId: string | null;
+}
+
+// Public WAX chain config served by /api/wax/config (never the signing key).
+export interface WaxClientConfig {
+  enabled: boolean;
+  chainId: string;
+  rpcUrl: string;
+  atomicApiUrl: string;
+  hyperionUrl: string;
+  gameAccount: string;
+  permission: string;
+  collection: string;
+  schema: string;
+  marketplace: string;
+  templateId: number;
+  feeTokenContract: string;
+  mintFee: string;
+  redeemFee: string;
+}
+
+export interface WaxMarketListing {
+  saleId: string;
+  assetId: string;
+  price: string;
+  seller: string;
+  data: Record<string, unknown>;
+}
+
+export interface WaxOwnedAsset {
+  assetId: string;
+  templateId: string | null;
+  data: Record<string, unknown>;
 }
 
 export function buildWebSocketUrl(protocol: string, host: string): string {
@@ -174,6 +212,59 @@ export class Api {
     } catch {
       return [];
     }
+  }
+
+  // --- WAX character-NFT --------------------------------------------------
+  // Public chain config; null if the realm has WAX integration disabled.
+  async waxConfig(): Promise<WaxClientConfig | null> {
+    try {
+      return await this.get('/api/wax/config');
+    } catch {
+      return null;
+    }
+  }
+
+  // Request a single-use nonce, then prove wallet ownership by broadcasting a
+  // tiny transfer whose memo carries the nonce and posting its txid.
+  async waxLinkChallenge(): Promise<string> {
+    const data = await this.post('/api/wax/link-challenge', {});
+    return data.nonce;
+  }
+
+  async waxLink(waxAccount: string, txid: string): Promise<void> {
+    await this.post('/api/wax/link', { waxAccount, txid });
+  }
+
+  // Assets in our collection currently held by the caller's linked wallet.
+  async waxRedeemable(): Promise<{ waxAccount: string | null; assets: WaxOwnedAsset[] }> {
+    try {
+      const data = await this.get('/api/wax/redeemable');
+      return { waxAccount: data.waxAccount ?? null, assets: data.assets ?? [] };
+    } catch {
+      return { waxAccount: null, assets: [] };
+    }
+  }
+
+  async marketListings(): Promise<WaxMarketListing[]> {
+    try {
+      const data = await this.get('/api/market/listings');
+      return data.listings ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  // Mint after the mint fee has been paid on-chain; returns the new asset id.
+  async mintCharacter(characterId: number, feeTxid: string): Promise<string> {
+    const data = await this.post(`/api/characters/${characterId}/mint`, { feeTxid });
+    return data.assetId;
+  }
+
+  // Redeem: `txid` is the single transaction that paid the redeem fee AND
+  // transferred the NFT to the game account. Returns the redeemed character id.
+  async redeemCharacter(assetId: string, txid: string): Promise<number> {
+    const data = await this.post('/api/characters/redeem', { assetId, txid });
+    return data.characterId;
   }
 }
 

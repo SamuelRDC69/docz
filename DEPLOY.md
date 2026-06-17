@@ -174,3 +174,51 @@ sudo docker exec eastbrook-db psql -U eastbrook eastbrook \
 
 Revoke with `npm run admin:grant -- <username> --revoke` (or set the
 flag to `FALSE` in SQL).
+
+## WAX character-NFT (mint / sell / redeem)
+
+Players can mint an eligible character (one that has **prestiged** — i.e.
+reached the level cap and prestiged at least once) into a tradeable
+[AtomicAssets](https://github.com/pinknetworkofficial/atomicassets-contract)
+NFT, sell it on the in-game market (backed by the `atomicmarket` contract),
+and a buyer can redeem it back into a playable character on their own account.
+The chain tracks ownership; the game server stays authoritative for character
+data and freezes a minted character until its NFT is redeemed.
+
+The feature is **off by default** and turns on only when the WAX env is set
+(see the `WAX_*` block in `.env.example`). With it unset the server boots and
+plays exactly as before, and the client never loads the wallet code.
+
+### One-time setup
+1. Create a WAX account for the game (the minter/collection owner) and fund it.
+   Start on **testnet** (free funds via a testnet faucet) before mainnet.
+2. Fill the `WAX_*` values in `.env` (account, **private key**, collection,
+   schema, marketplace, fees, and — for mainnet — the chain endpoints).
+   Keep `WAX_GAME_PRIVATE_KEY` out of git; inject it like any other secret.
+3. Create the collection + schema and register the marketplace:
+   ```bash
+   node scripts/wax_setup.mjs
+   ```
+   It is idempotent (already-exists steps are skipped), so it is safe to re-run.
+4. Build the client with the same env present so `/api/wax/config` advertises
+   the chain to players, then deploy as usual.
+
+### Testnet → mainnet
+Everything network-specific is env: flip `WAX_CHAIN_ID`, `WAX_RPC_URL`,
+`WAX_ATOMIC_API_URL`, and `WAX_HYPERION_URL` to mainnet values (commented
+examples are in `.env.example`), point `WAX_GAME_ACCOUNT`/`WAX_GAME_PRIVATE_KEY`
+at a funded mainnet account, re-run `scripts/wax_setup.mjs`, and rebuild.
+
+### How it works (operator's view)
+- **Mint**: the player pays `WAX_MINT_FEE` to the game account; the server
+  verifies the payment on-chain, mints the NFT (with the character's stats +
+  net worth as on-chain attributes) to the player's wallet, and marks the
+  character `wax_minted` (frozen — login/rename/delete are blocked).
+- **Sell/buy**: handled on-chain via `atomicmarket`; the in-game market is a UI
+  over it and lists our registered `WAX_MARKETPLACE` as the maker/taker so the
+  game earns the marketplace fee.
+- **Redeem**: the buyer (wallet linked to their game account) sends one
+  transaction that pays `WAX_REDEEM_FEE` and transfers the NFT to the game
+  account; the server verifies it, burns the NFT, and reassigns the character to
+  the buyer's account (unfrozen). Each fee transaction is single-use
+  (`nft_operations.fee_txid` is globally unique), so payments can't be replayed.

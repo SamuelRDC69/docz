@@ -7463,3 +7463,45 @@ export function formatMoney(copper: number): string {
   if (c > 0 || parts.length === 0) parts.push(`${c}c`);
   return parts.join(' ');
 }
+
+// ---------------------------------------------------------------------------
+// Character net worth & NFT mint eligibility (WAX character-NFT feature).
+//
+// Both are PURE functions of the persisted CharacterState — no live entity, no
+// host deps — so the server can compute them straight from the stored JSONB
+// (server/db.ts rows) without spinning up a Sim, and tests can call them
+// directly. The net worth is "the gold the character would have if every owned
+// item were vendored, plus the gold they already hold": Σ vendor sellValue over
+// equipped + bagged items, plus current copper. Unknown item ids price at 0.
+// ---------------------------------------------------------------------------
+
+/** Copper value of a single inventory/equipment item id (vendor sell price). */
+function itemSellValue(itemId: string | undefined): number {
+  if (!itemId) return 0;
+  return ITEMS[itemId]?.sellValue ?? 0;
+}
+
+/**
+ * Total net worth in copper: every equipped item + every bag stack valued at its
+ * vendor sell price, plus the character's current copper. Mirrors what selling
+ * each item to a vendor (`Sim.sellItem`, using `ItemDef.sellValue`) would yield.
+ */
+export function characterNetWorth(state: CharacterState): number {
+  let total = Math.max(0, Math.floor(state.copper ?? 0));
+  for (const itemId of Object.values(state.equipment ?? {})) {
+    total += itemSellValue(itemId);
+  }
+  for (const slot of state.inventory ?? []) {
+    total += itemSellValue(slot.itemId) * Math.max(0, Math.floor(slot.count ?? 0));
+  }
+  return total;
+}
+
+/**
+ * Whether a character may be minted as an NFT: it must have prestiged at least
+ * once. Prestige is only reachable at the level cap (`canPrestige` requires
+ * `level >= MAX_LEVEL`), so a non-zero `prestigeRank` is the eligibility gate.
+ */
+export function isMintEligible(state: CharacterState): boolean {
+  return (state.prestigeRank ?? 0) >= 1;
+}

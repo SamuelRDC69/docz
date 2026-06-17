@@ -71,6 +71,36 @@ CREATE INDEX IF NOT EXISTS accounts_created_ip_created ON accounts(created_ip, c
 CREATE INDEX IF NOT EXISTS accounts_created_user_agent_created ON accounts(created_user_agent, created_at DESC);
 ALTER TABLE characters ADD COLUMN IF NOT EXISTS is_gm BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE characters ADD COLUMN IF NOT EXISTS force_rename BOOLEAN NOT NULL DEFAULT FALSE;
+-- WAX character-NFT (mint / sell / redeem). A minted character is "frozen": it
+-- cannot be logged in, renamed, or deleted until the NFT is redeemed, which
+-- reassigns the character to the redeemer's account and clears these columns.
+-- nft_asset_id is the AtomicAssets asset id once minted.
+ALTER TABLE characters ADD COLUMN IF NOT EXISTS wax_minted BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE characters ADD COLUMN IF NOT EXISTS nft_asset_id TEXT;
+ALTER TABLE characters ADD COLUMN IF NOT EXISTS nft_minted_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS characters_nft_asset_id ON characters(nft_asset_id);
+-- Account <-> WAX wallet link. Account-scoped (accounts are global, not
+-- realm-scoped). One wallet per account and one account per wallet, so a buyer
+-- redeems an NFT into exactly one game account.
+CREATE TABLE IF NOT EXISTS wax_links (
+  account_id INT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  wax_account TEXT UNIQUE NOT NULL,
+  verified_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Mint/redeem ledger. fee_txid is globally UNIQUE so a paid WAX fee transfer is
+-- consumed exactly once (idempotency + cross-realm double-spend guard).
+CREATE TABLE IF NOT EXISTS nft_operations (
+  id BIGSERIAL PRIMARY KEY,
+  op TEXT NOT NULL,
+  account_id INT REFERENCES accounts(id) ON DELETE SET NULL,
+  character_id INT REFERENCES characters(id) ON DELETE SET NULL,
+  asset_id TEXT,
+  wax_account TEXT NOT NULL DEFAULT '',
+  fee_txid TEXT UNIQUE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'done',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS nft_operations_account ON nft_operations(account_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS play_sessions (
   id SERIAL PRIMARY KEY,
   account_id INT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -332,14 +362,23 @@ export interface CharacterRow {
   state: CharacterState | null;
   is_gm: boolean;
   force_rename: boolean;
+  // WAX character-NFT: true while the character is minted (frozen). asset id is
+  // the AtomicAssets id of the live NFT, null when not minted.
+  wax_minted: boolean;
+  nft_asset_id: string | null;
 }
+
+// Column list shared by every character read so the NFT fields can't drift
+// between SELECTs. Keep in sync with CharacterRow.
+const CHARACTER_COLUMNS =
+  'id, account_id, name, class, level, state, is_gm, force_rename, wax_minted, nft_asset_id';
 
 // Character reads/writes are scoped to this process's realm: an account may
 // hold characters on several realms (each served by its own process), but a
 // process only ever lists, loads, or creates characters on its own realm.
 export async function listCharacters(accountId: number): Promise<CharacterRow[]> {
   const res = await pool.query(
-    'SELECT id, account_id, name, class, level, state, is_gm, force_rename FROM characters WHERE account_id = $1 AND realm = $2 ORDER BY id',
+    `SELECT ${CHARACTER_COLUMNS} FROM characters WHERE account_id = $1 AND realm = $2 ORDER BY id`,
     [accountId, REALM],
   );
   return res.rows;
@@ -347,7 +386,7 @@ export async function listCharacters(accountId: number): Promise<CharacterRow[]>
 
 export async function getCharacter(accountId: number, characterId: number): Promise<CharacterRow | null> {
   const res = await pool.query(
-    'SELECT id, account_id, name, class, level, state, is_gm, force_rename FROM characters WHERE id = $1 AND account_id = $2 AND realm = $3',
+    `SELECT ${CHARACTER_COLUMNS} FROM characters WHERE id = $1 AND account_id = $2 AND realm = $3`,
     [characterId, accountId, REALM],
   );
   return res.rows[0] ?? null;
@@ -369,7 +408,7 @@ export async function findCharacterReportTargetByName(name: string): Promise<{ a
 
 export async function createCharacter(accountId: number, name: string, cls: PlayerClass, state: CharacterState | null = null): Promise<CharacterRow> {
   const res = await pool.query(
-    'INSERT INTO characters (account_id, name, class, realm, state) VALUES ($1, $2, $3, $4, $5) RETURNING id, account_id, name, class, level, state, is_gm, force_rename',
+    `INSERT INTO characters (account_id, name, class, realm, state) VALUES ($1, $2, $3, $4, $5) RETURNING ${CHARACTER_COLUMNS}`,
     [accountId, name, cls, REALM, state ? JSON.stringify(state) : null],
   );
   return res.rows[0];
@@ -393,7 +432,7 @@ export async function createCharacterCapped(
     );
     if (Number(count.rows[0]?.n ?? 0) >= limit) { await client.query('ROLLBACK'); return null; }
     const res = await client.query(
-      'INSERT INTO characters (account_id, name, class, realm, state) VALUES ($1, $2, $3, $4, $5) RETURNING id, account_id, name, class, level, state, is_gm, force_rename',
+      `INSERT INTO characters (account_id, name, class, realm, state) VALUES ($1, $2, $3, $4, $5) RETURNING ${CHARACTER_COLUMNS}`,
       [accountId, name, cls, REALM, state ? JSON.stringify(state) : null],
     );
     await client.query('COMMIT');
@@ -449,7 +488,7 @@ export async function renameCharacter(accountId: number, characterId: number, na
     `UPDATE characters
      SET name = $3, force_rename = FALSE, updated_at = now()
      WHERE id = $1 AND account_id = $2 AND realm = $4
-     RETURNING id, account_id, name, class, level, state, is_gm, force_rename`,
+     RETURNING ${CHARACTER_COLUMNS}`,
     [characterId, accountId, name, REALM],
   );
   return res.rows[0] ?? null;
@@ -465,6 +504,112 @@ export async function saveCharacterState(characterId: number, level: number, sta
 export async function isAdminAccount(accountId: number): Promise<boolean> {
   const res = await pool.query('SELECT is_admin FROM accounts WHERE id = $1', [accountId]);
   return res.rows[0]?.is_admin === true;
+}
+
+// ---------------------------------------------------------------------------
+// WAX character-NFT: wallet links, mint/redeem ledger, and the freeze/redeem
+// state transitions. The chain is the source of truth for ownership; these
+// queries own the off-chain character row + the account<->wallet mapping.
+// ---------------------------------------------------------------------------
+
+// Link (or re-link) a verified WAX wallet to a game account. One wallet per
+// account; the wax_account UNIQUE constraint rejects (23505) a wallet already
+// bound to a different account, which callers surface as a conflict.
+export async function linkWaxAccount(accountId: number, waxAccount: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO wax_links (account_id, wax_account, verified_at)
+     VALUES ($1, $2, now())
+     ON CONFLICT (account_id) DO UPDATE SET wax_account = EXCLUDED.wax_account, verified_at = now()`,
+    [accountId, waxAccount],
+  );
+}
+
+export async function getWaxLink(accountId: number): Promise<string | null> {
+  const res = await pool.query('SELECT wax_account FROM wax_links WHERE account_id = $1', [accountId]);
+  return res.rows[0]?.wax_account ?? null;
+}
+
+export async function accountForWaxAccount(waxAccount: string): Promise<number | null> {
+  const res = await pool.query('SELECT account_id FROM wax_links WHERE wax_account = $1', [waxAccount]);
+  return res.rows[0]?.account_id ?? null;
+}
+
+// Find the (realm-scoped) character backing a minted NFT, by asset id. Used by
+// the redeem path to locate which character an NFT unlocks.
+export async function getCharacterByAssetId(assetId: string): Promise<CharacterRow | null> {
+  const res = await pool.query(
+    `SELECT ${CHARACTER_COLUMNS} FROM characters WHERE nft_asset_id = $1 AND realm = $2`,
+    [assetId, REALM],
+  );
+  return res.rows[0] ?? null;
+}
+
+export interface NftOperationRow {
+  id: number;
+  op: string;
+  account_id: number | null;
+  character_id: number | null;
+  asset_id: string | null;
+  wax_account: string;
+  fee_txid: string;
+  status: string;
+}
+
+// Idempotency lookup: has this WAX fee transfer already been consumed by a
+// mint/redeem? fee_txid is globally UNIQUE, so a replay finds the prior row.
+export async function nftOperationByTxid(feeTxid: string): Promise<NftOperationRow | null> {
+  const res = await pool.query(
+    'SELECT id, op, account_id, character_id, asset_id, wax_account, fee_txid, status FROM nft_operations WHERE fee_txid = $1',
+    [feeTxid],
+  );
+  return res.rows[0] ?? null;
+}
+
+// Record a consumed fee. Returns false if the fee_txid was already used (the
+// UNIQUE violation is swallowed) so callers treat it as an idempotent replay.
+export async function recordNftOperation(op: {
+  op: 'mint' | 'redeem';
+  accountId: number;
+  characterId: number | null;
+  assetId: string | null;
+  waxAccount: string;
+  feeTxid: string;
+}): Promise<boolean> {
+  try {
+    await pool.query(
+      `INSERT INTO nft_operations (op, account_id, character_id, asset_id, wax_account, fee_txid, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'done')`,
+      [op.op, op.accountId, op.characterId, op.assetId, op.waxAccount, op.feeTxid],
+    );
+    return true;
+  } catch (err: unknown) {
+    if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') return false;
+    throw err;
+  }
+}
+
+// Freeze a character as a minted NFT. Scoped to the owning account + realm and
+// guarded on not-already-minted so a double mint can't clobber the asset id.
+export async function setCharacterMinted(accountId: number, characterId: number, assetId: string): Promise<boolean> {
+  const res = await pool.query(
+    `UPDATE characters
+     SET wax_minted = TRUE, nft_asset_id = $3, nft_minted_at = now(), updated_at = now()
+     WHERE id = $1 AND account_id = $2 AND realm = $4 AND wax_minted = FALSE`,
+    [characterId, accountId, assetId, REALM],
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+// Redeem: atomically reassign a minted character to the redeemer's account and
+// unfreeze it. Realm-scoped and guarded on wax_minted so it runs exactly once.
+export async function redeemCharacterToAccount(assetId: string, newAccountId: number): Promise<boolean> {
+  const res = await pool.query(
+    `UPDATE characters
+     SET account_id = $2, wax_minted = FALSE, nft_asset_id = NULL, nft_minted_at = NULL, force_rename = FALSE, updated_at = now()
+     WHERE nft_asset_id = $1 AND realm = $3 AND wax_minted = TRUE`,
+    [assetId, newAccountId, REALM],
+  );
+  return (res.rowCount ?? 0) > 0;
 }
 
 // ---------------------------------------------------------------------------
