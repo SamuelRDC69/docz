@@ -68,7 +68,7 @@ entry; `onEvent` paths feed log/FCT/audio/banners (~L1651). Jump by banner:
 Toggle/open methods (`toggleBags`, `openVendor`, `openContextMenu`, …) are the
 public surface `main.ts`/input call.
 
-## i18n — IMPORTANT (sparse-overlay model; English-only PRs are legal)
+## i18n - IMPORTANT (sparse-overlay model; English-only PRs are legal)
 The locale data is split across files. Touch the right one:
 - `i18n.en.ts` (nested) is the **authoritative English source** and drives
   `TranslationKey = Leaves<typeof en, 6>`, the dotted-path type every `t()` call uses.
@@ -91,8 +91,10 @@ localized (~560 `t()` calls in hud.ts); prefer `t()` for new user-facing strings
 1. Add the key to `en` (`i18n.en.ts`) and render it through `t()`. Do NOT edit the
    13 overlays - the build fills them from English and the registry marks them `pending`.
 2. If the string originates in `src/sim/` or `server/` (which stay language-agnostic),
-   register a matcher RULE in `sim_i18n.ts` AND its `server_i18n.ts` mirror in the SAME
-   change (the S3 guard enforces this).
+   register a matcher RULE in the table matching the emit's ORIGIN (`sim_i18n.ts` for a
+   `src/sim/` emit, `server_i18n.ts` for a `server/` emit; the two are parallel mirrors)
+   in the SAME change. The S3 guard accepts recognition by either matcher and fails if a
+   new emit is recognized by neither.
 3. Run `npm run i18n:scan` (and `npm run i18n:build`; if the resolved table changed,
    also `npm run i18n:hash -- --write`) and commit the regenerated files.
 4. Open the PR. It is green at the PR-tier gate, which does not require translations;

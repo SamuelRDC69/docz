@@ -22,9 +22,11 @@ The full rule lives in `src/ui/CLAUDE.md` (the i18n section); the short version:
    the 13 overlays (`src/ui/i18n.locales/<lang>.ts`); the build fills any omitted
    key from English and the registry marks it `pending`.
 2. **If the string originates in `src/sim/` or `server/`,** those stay
-   language-agnostic - emit a stable English string and register a matcher RULE in
-   `src/ui/sim_i18n.ts` AND its `src/ui/server_i18n.ts` mirror in the SAME change,
-   so the client re-localizes it at the boundary (the S3 guard enforces this).
+   language-agnostic - emit a stable English string and register a matcher RULE in the
+   table matching the emit's ORIGIN (`src/ui/sim_i18n.ts` for a `src/sim/` emit,
+   `src/ui/server_i18n.ts` for a `server/` emit; the two are parallel mirrors) in the
+   SAME change, so the client re-localizes it at the boundary. The S3 guard accepts
+   recognition by either matcher and fails if a new emit is recognized by neither.
 3. **Run `npm run i18n:scan`** and commit the updated `src/ui/i18n.status.json`
    (it records your new key as `pending` for every locale that has no translation
    yet). `npm run i18n:build` regenerates the resolved table; if the resolved
@@ -49,7 +51,10 @@ Run before cutting a release, once `pending` is non-empty (a real fill is due):
    per language with pending work, plus a `manifest.json`. This directory is
    gitignored: it is a regenerable artifact, not committed. The tool is DATA-ONLY
    (no network, no model call); re-running on an unchanged repo is a no-op.
-   - Optional: `npm run i18n:worklist -- --lang de_DE,fr_FR` to scope a subset.
+   - Optional: `npm run i18n:worklist -- --lang de_DE,fr_FR` to scope a subset. A scoped
+     run REPLACES the worklist directory with only the named batches and a scoped
+     manifest (batches for unlisted languages are removed); do a full run before relying
+     on the directory for the whole release.
 3. **Fill `autoFillable` entries.** Each is `{ scope, key, english, placeholders,
    siblings }`. A bot or translator fills mechanical UI chrome only. Write the
    translation into the matching overlay (`scope: main` -> `src/ui/i18n.locales/<lang>.ts`)
@@ -103,6 +108,12 @@ release=false and English-fill a pending key. Not blocking while `pending` is 0.
 localized form per language from the committed overlays, and ships the result in
 EVERY batch. To add a locked term, add its key (or a pattern) here; tool logic does
 not change.
+
+The glossary is ADVISORY: it is shipped as reference so the bot or translator reuses the
+canonical wording, but the tool does not ENFORCE that a `verbatim` brand term survives in
+a filled value. The brand "World of ClaudeCraft" also appears inside some `footer.*` chrome
+strings (which are auto-fillable), so the fill owner spot-checks that the brand is preserved
+byte-identically until an automated guard exists.
 
 ---
 
