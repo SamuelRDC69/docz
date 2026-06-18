@@ -20,7 +20,7 @@ function baseEntity(id: number, pos: Vec3): Entity {
     comboPoints: 0, comboTargetId: null, overpowerUntil: -1, potionCooldownUntil: -1, savedMana: 0,
     chargeTargetId: null, chargeTimeLeft: 0, chargePath: [], followTargetId: null,
     sitting: false, eating: null, drinking: null,
-    aiState: 'idle', tappedById: null, pulseTimer: 0, stompTimer: 0, detonateTimer: Infinity, mendTimer: 0, wardTimer: 0, firedSummons: 0, summonedIds: [], enraged: false, healedThisPull: false,
+    aiState: 'idle', tappedById: null, pulseTimer: 0, stompTimer: 0, stoneskinTimer: 0, detonateTimer: Infinity, mendTimer: 0, wardTimer: 0, rallyTimer: 0, firedSummons: 0, summonedIds: [], enraged: false, healedThisPull: false,
     threat: new Map(), forcedTargetId: null, forcedTargetTimer: 0, ownerId: null, petMode: 'defensive', petTauntTimer: 0,
     spawnPos: { ...pos }, leashAnchor: null, evadeStall: 0, fleeTimer: 0, hasFled: false, wanderTarget: null, wanderTimer: 0,
     aggroTargetId: null, respawnTimer: 0, corpseTimer: 0, lootable: false, loot: null,
@@ -46,7 +46,10 @@ export type PlayerEquipment = Partial<Record<EquipSlot, string>>;
 // Vanilla rules: first 20 stamina gives 1 hp each, the rest 10 hp each.
 // First 20 intellect gives 1 mana each, the rest 15 mana each.
 function hpFromStamina(sta: number): number {
-  return Math.min(sta, 20) + Math.max(0, sta - 20) * 10;
+  // Floor at 0 so a Stamina-draining debuff (negative buff_sta) can never push
+  // the HP pool below its level-based base into negative territory.
+  const s = Math.max(0, sta);
+  return Math.min(s, 20) + Math.max(0, s - 20) * 10;
 }
 function manaFromIntellect(int: number): number {
   // Floor at 0 so an Intellect-draining debuff (negative buff_int) can never push
@@ -132,7 +135,8 @@ export function recalcPlayerStats(e: Entity, cls: PlayerClass, equipment: Player
   e.rangedPower = cls === 'hunter' ? Math.round((s.agi * 2 + bonusAp) * (1 + (mods?.stats.apPct ?? 0))) : 0;
   // Crit: ~1% per 20 agi at low level
   e.critChance = 0.05 + s.agi * 0.0005 + (mods?.stats.crit ?? 0);
-  e.dodgeChance = 0.05 + s.agi * 0.0005 + bonusDodge;
+  // Floored at 0: an off-balance debuff (negative buff_dodge) can drive dodge to nothing.
+  e.dodgeChance = Math.max(0, 0.05 + s.agi * 0.0005 + bonusDodge);
 
   const hpFrac = e.maxHp > 0 ? e.hp / e.maxHp : 1;
   e.maxHp = def.baseHp + def.hpPerLevel * (lvl - 1) + hpFromStamina(s.sta);
@@ -191,6 +195,10 @@ export function createMob(id: number, template: MobTemplate, level: number, pos:
   if (template.mendAlly) e.mendTimer = template.mendAlly.every;
   // Telegraph the first Ward the same way: one full interval after engage.
   if (template.wardAllies) e.wardTimer = template.wardAllies.every;
+  // Telegraph the first Stoneskin: one full interval after engage.
+  if (template.stoneskin) e.stoneskinTimer = template.stoneskin.every;
+  // Telegraph the first Rally the same way: one full interval after engage.
+  if (template.rally) e.rallyTimer = template.rally.every;
   return e;
 }
 

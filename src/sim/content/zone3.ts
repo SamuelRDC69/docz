@@ -49,6 +49,10 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     id: 'ridge_stalker', name: 'Ridge Stalker', minLevel: 13, maxLevel: 14, family: 'beast',
     hpBase: 58, hpPerLevel: 21, dmgBase: 10, dmgPerLevel: 2.5, attackSpeed: 1.9,
     armorPerLevel: 14, moveSpeed: 8, aggroRadius: 11,
+    // Rending Claws: the stalker's raking swipes can open a bleeding wound — a
+    // refreshing physical DoT (~5 every 3s for 9s). Distinct from poison: it is
+    // physical-school, so it bypasses poison cleanses and ignores nature resist.
+    bleed: { chance: 0.25, perTick: 5, interval: 3, duration: 9, name: 'Rending Claws', school: 'physical' },
     loot: [
       { copper: 60, chance: 1 },
       { itemId: 'ridge_stalker_pelt', chance: 0.6, questId: 'q_stalker_pelts' },
@@ -65,6 +69,9 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
       { itemId: 'tallow_candle', chance: 0.4 },
     ],
     scale: 0.85, color: 0x9c7a3c,
+    // Jarring Swing: a heavy mining-pick blow knocks the victim off-balance,
+    // cutting their dodge for 8s so the tunneler's strikes land more reliably.
+    staggerHit: { chance: 0.3, dodgeReduction: 0.05, duration: 8, name: 'Off-Balance' },
   },
   ironvein_foreman: {
     id: 'ironvein_foreman', name: 'Ironvein Foreman', minLevel: 16, maxLevel: 16, family: 'kobold', rare: true,
@@ -73,6 +80,7 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     armorPerLevel: 38, moveSpeed: 7, aggroRadius: 12,
     aoePulse: { min: 28, max: 38, radius: 8, every: 10, name: 'Powder Keg', school: 'fire' },
     summonAdds: { mobId: 'ironvein_sapper', count: 2, atHpPct: [0.50] },
+    rally: { radius: 14, every: 12, ap: 40, duration: 10, name: 'Rallying Banner' },
     enrage: { belowHpPct: 0.30, dmgMult: 1.45, hasteMult: 1.3 },
     loot: [
       { copper: 420, chance: 1 },
@@ -88,6 +96,9 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     id: 'ironvein_sapper', name: 'Ironvein Sapper', minLevel: 15, maxLevel: 16, family: 'kobold',
     hpBase: 58, hpPerLevel: 20, dmgBase: 11, dmgPerLevel: 2.6, attackSpeed: 2.0,
     armorPerLevel: 18, moveSpeed: 7.5, aggroRadius: 12,
+    smolder: { chance: 0.25, perTick: 5, interval: 3, duration: 12, name: 'Smoldering Fuse' },
+    // The sapper's blasting powder clings and smolders: a struck foe catches fire.
+    cinder: { chance: 0.3, perTick: 5, interval: 3, duration: 12, name: 'Cinderburn', school: 'fire' },
     loot: [],
     scale: 0.85, color: 0x8f6b34,
   },
@@ -95,6 +106,7 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     id: 'thornpeak_ogre', name: 'Thornpeak Ogre', minLevel: 15, maxLevel: 16, family: 'ogre',
     hpBase: 66, hpPerLevel: 23, dmgBase: 11, dmgPerLevel: 2.6, attackSpeed: 2.6,
     armorPerLevel: 22, moveSpeed: 7, aggroRadius: 11,
+    concuss: { chance: 0.2, duration: 2, name: 'Concussive Blow' },
     loot: [
       { copper: 75, chance: 1 },
       { itemId: 'ogre_toe_ring', chance: 0.35 },
@@ -105,6 +117,10 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     id: 'ogre_crusher', name: 'Thornpeak Crusher', minLevel: 16, maxLevel: 17, family: 'ogre', elite: true,
     hpBase: 64, hpPerLevel: 23, dmgBase: 11, dmgPerLevel: 2.6, attackSpeed: 2.6,
     armorPerLevel: 24, moveSpeed: 7, aggroRadius: 12,
+    // Disarming Smash: a war-camp crusher's two-handed blow can batter the weapon
+    // from your grip, cutting off auto-attack for a few seconds — a real threat to
+    // a tank holding the pack. The inverse of the Summoner's Silencing Shriek.
+    disarm: { chance: 0.25, duration: 6, name: 'Disarming Smash', school: 'physical' },
     loot: [
       { copper: 200, chance: 1 },
       { itemId: 'ogre_toe_ring', chance: 0.5 },
@@ -117,6 +133,11 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     hpBase: 200, hpPerLevel: 30, dmgBase: 12, dmgPerLevel: 2.7, attackSpeed: 2.6,
     armorPerLevel: 28, moveSpeed: 7, aggroRadius: 14,
     aoePulse: { min: 22, max: 30, radius: 10, every: 12, name: 'Ground Slam' },
+    // The longer the warlord is left to swing, the harder he hits: every landed
+    // blow stokes his Battle Fury, stacking attack power up to a hard cap. A
+    // drawn-out fight snowballs, so burn him down or kite him off you to bleed
+    // the stacks back off.
+    rampage: { ap: 20, maxStacks: 5, duration: 10, name: 'Battle Fury', school: 'physical' },
     loot: [
       { copper: 2000, chance: 1 },
       { itemId: 'drogmar_warboots', chance: 0.3 },
@@ -138,6 +159,10 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     // A touch of the storm's cold numbs the limbs: each landed swing has a
     // chance to slow the victim to half speed for a few seconds.
     chillOnHit: { chance: 0.35, mult: 0.5, duration: 6, name: 'Numbing Chill' },
+    // Static Charge: the elemental's storm clings to whatever it strikes, leaving
+    // the victim conductive so every spell that lands on them bites deeper —
+    // +18% magic damage taken from all attackers for a while.
+    spellVuln: { chance: 0.3, amp: 0.18, duration: 10, name: 'Static Charge', school: 'nature' },
   },
   shardlord_kazzix: {
     id: 'shardlord_kazzix', name: 'Shardlord Kazzix', minLevel: 18, maxLevel: 18, family: 'elemental', rare: true,
@@ -148,6 +173,9 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
       { itemId: 'kazzix_heartshard', chance: 1, questId: 'q_kazzix' },
       { itemId: 'inert_storm_shard', chance: 1 },
     ],
+    // The Shardlord's rimebound core sheathes its blows in killing cold, leaving
+    // a frost burn that gnaws at the victim long after the strike lands.
+    frostbite: { chance: 0.3, perTick: 6, interval: 3, duration: 12, name: 'Frostbite', school: 'frost' },
     scale: 1.3, color: 0xaed6f1,
   },
   wyrmcult_zealot: {
@@ -162,6 +190,10 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     // The zealot's fevered chanting claws at a caster's mind, draining Intellect
     // and shrinking their mana pool for a while.
     enfeeble: { chance: 0.3, int: 12, duration: 12, name: 'Maddening Whisper', school: 'shadow' },
+    // The Wyrmcult hoards their master's flame: a branding strike seals away the
+    // victim's fire magic so it can never rival the wyrm's, while leaving every
+    // other school free (a single-school counterspell, distinct from a full silence).
+    lockout: { chance: 0.25, duration: 6, name: 'Wyrmward Sigil', school: 'fire' },
     scale: 1.0, color: 0x76448a,
   },
   wyrmcult_necromancer: {
@@ -174,12 +206,16 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
       { itemId: 'linen_scrap', chance: 0.3 },
     ],
     manaBurn: { chance: 0.3, amount: 80, name: 'Mana Sear', school: 'shadow' },
+    // Spectral Ward: a shroud of dark wards that lashes back at any caster whose
+    // spell strikes the necromancer — the magic-school twin of melee thorns.
+    spellReflect: { value: 9, name: 'Spectral Ward', school: 'shadow' },
     scale: 1.0, color: 0x533566,
   },
   boneclad_revenant: {
     id: 'boneclad_revenant', name: 'Boneclad Revenant', minLevel: 18, maxLevel: 19, family: 'undead',
     hpBase: 66, hpPerLevel: 23, dmgBase: 12, dmgPerLevel: 2.7, attackSpeed: 2.3,
     armorPerLevel: 18, moveSpeed: 6.5, aggroRadius: 11,
+    enervate: { chance: 0.3, sta: 14, duration: 12, name: 'Soul Siphon', school: 'shadow' },
     loot: [
       { copper: 100, chance: 1 },
       { itemId: 'bone_fragments', chance: 0.6 },
@@ -268,6 +304,8 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     armorPerLevel: 44, moveSpeed: 6.5, aggroRadius: 13,
     aoePulse: { min: 30, max: 42, radius: 11, every: 9, name: 'Marrow Rot', school: 'shadow' },
     summonAdds: { mobId: 'varkas_boneguard', count: 2, atHpPct: [0.66, 0.33] },
+    knockback: { chance: 0.25, distance: 6, name: 'Crushing Sweep' },
+    stoneskin: { amount: 260, every: 14, duration: 8, name: 'Bone Carapace', school: 'shadow' },
     loot: [
       { copper: 650, chance: 1 },
       { itemId: 'bone_fragments', chance: 1 },
@@ -280,6 +318,9 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     id: 'varkas_boneguard', name: 'Varkas Boneguard', minLevel: 18, maxLevel: 19, family: 'undead',
     hpBase: 64, hpPerLevel: 22, dmgBase: 12, dmgPerLevel: 2.8, attackSpeed: 2.3,
     armorPerLevel: 20, moveSpeed: 6.5, aggroRadius: 12,
+    // Shattering Maul: a landed hit can crack the victim's guard, leaving them
+    // taking +18% physical damage from every attacker for 8s.
+    expose: { chance: 0.25, dmgIncrease: 0.18, duration: 8, name: 'Cracked Guard' },
     loot: [],
     scale: 1.0, color: 0xc9c2b5,
   },

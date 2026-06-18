@@ -47,7 +47,7 @@ export type AuraKind =
   | 'dot' | 'slow' | 'stun' | 'root' | 'incapacitate' | 'polymorph'
   | 'attackspeed' | 'debuff_ap' | 'buff_ap' | 'buff_armor' | 'buff_int' | 'buff_dodge' | 'buff_speed' | 'buff_haste'
   | 'hot' | 'absorb' | 'imbue' | 'buff_sta' | 'buff_allstats' | 'thorns' | 'form_bear'
-  | 'form_cat' | 'stealth' | 'defensive_stance' | 'righteous_fury' | 'sunder' | 'mortal_wound' | 'silence' | 'blind';
+  | 'form_cat' | 'stealth' | 'defensive_stance' | 'righteous_fury' | 'sunder' | 'mortal_wound' | 'silence' | 'blind' | 'disarm' | 'expose' | 'spellvuln' | 'lockout';
 
 export interface Aura {
   id: string; // ability id that applied it
@@ -208,6 +208,17 @@ export interface MobTemplate {
   // Mob mechanic: a one-time desperation self-heal the first time hp drops
   // below the threshold (healPct is a fraction of maxHp). Resets on evade/respawn.
   desperateHeal?: { belowHpPct: number; healPct: number };
+  // Self-buff affix ("Battle Fury" / Rampage): every landed melee swing whips the
+  // attacker into an escalating frenzy — a self-applied, stacking buff_ap aura (up
+  // to `maxStacks`) that grows its attack power, and thus its melee damage, the
+  // longer the fight drags on. Rides the existing buff_ap aura that
+  // effectiveAttackPower already folds into mob swing damage, so there is no new
+  // combat math. Unlike `enrage` (a one-shot threshold burst) or `packFrenzy` (a
+  // haste pulse on an ally's death), this ramps continuously while the mob keeps
+  // connecting. The single shared aura slot is refreshed each hit; left alone it
+  // falls off after `duration`s, undoing the ramp — so burning the mob down or
+  // kiting it out of melee both reset its fury.
+  rampage?: { ap: number; maxStacks: number; duration: number; name: string; school?: Aura['school'] };
   // Support mechanic ("Mend"): while in combat, periodically heal every wounded
   // living friendly mob within `radius` (incl. itself) for `healMin..healMax`.
   // Telegraphed: the first cast lands one full `every` interval after combat
@@ -222,10 +233,22 @@ export interface MobTemplate {
   // the first ward lands one full `every` interval after combat opens. Resets on
   // evade/respawn. Refreshes each interval, replacing any partially-soaked ward.
   wardAllies?: { radius: number; every: number; amount: number; duration: number; name: string; school?: Aura['school'] };
+  // Commander mechanic ("Rallying Banner"): periodically empowers every friendly
+  // mob in range (including the caster) with a refreshing `buff_ap` aura worth
+  // `ap` attack power for `duration`s — the support twin of mendAlly, granting
+  // offense instead of healing. Rides the existing buff_ap aura that
+  // effectiveAttackPower already folds for mobs, so no new aura kind or combat
+  // math. Telegraphed like stomp/mendAlly: the first rally only lands one full
+  // interval after combat opens.
+  rally?: { radius: number; every: number; ap: number; duration: number; name: string; school?: Aura['school'] };
   // Boss mechanic ("War Stomp"): periodic ground slam that stuns nearby players
   // for `duration`s (and optionally deals min..max damage). Telegraphed: the
   // first slam only lands one full `every` interval after combat starts.
   stomp?: { radius: number; every: number; duration: number; min?: number; max?: number; name: string; school?: string };
+  // Periodic self-shield: the mob wraps itself in a damage-absorbing barrier
+  // every `every` seconds, soaking up to `amount` damage for `duration` seconds.
+  // Reuses the existing `absorb` aura (soaked first in dealDamage) — no new combat math.
+  stoneskin?: { amount: number; every: number; duration: number; name: string; school?: string };
   // Melee mechanic: each landed swing also splashes onto other players near the
   // primary target for `mult` of the (pre-armor) hit. Classic-WoW Cleave.
   cleave?: { radius: number; mult: number; name?: string };
@@ -238,6 +261,22 @@ export interface MobTemplate {
   // undead/necrotic flavour, and it bites every class (resisted by shadow, not
   // nature/physical mitigation). Refreshes (never stacks) like venom.
   soulrot?: { chance: number; perTick: number; interval: number; duration: number; name: string; school?: Aura['school'] };
+  // On-hit bleed: a landed melee swing has `chance` to open a refreshing PHYSICAL
+  // damage-over-time wound on the victim ("Rend"). Distinct from `venom` (a
+  // nature/poison DoT) — bleeds are physical-school, the predator/beast flavour
+  // of the same on-hit DoT seam. Refreshes (never stacks) like venom.
+  bleed?: { chance: number; perTick: number; interval: number; duration: number; name: string; school?: Aura['school'] };
+  // On-hit frostbite: a landed melee swing has `chance` to open a refreshing
+  // damage-over-time frost burn on the struck target — the frost twin of venom
+  // (chilling/elemental creatures). Reuses the 'dot' aura; school defaults to 'frost'.
+  frostbite?: { chance: number; perTick: number; interval: number; duration: number; name: string; school?: string };
+  // Burning fuse: a landed swing may set a refreshing fire DoT (the fire-school
+  // sibling of venom; sappers, ember-touched creatures). Defaults to the 'fire' school.
+  smolder?: { chance: number; perTick: number; interval: number; duration: number; name: string; school?: string };
+  // On-hit debuff: the fire-school twin of `venom` — a chance per landed melee
+  // swing to set a stacking-refresh burning damage-over-time (cinder/ember mobs,
+  // demolitionists carrying blasting powder). Same DoT seam, school defaults 'fire'.
+  cinder?: { chance: number; perTick: number; interval: number; duration: number; name: string; school?: string };
   // On-death mechanic ("Death Throes"): a volatile creature does not detonate
   // the instant it dies. Its corpse destabilizes for `delay` seconds (a
   // telegraph players can run from), then bursts for min..max `school` damage
@@ -255,11 +294,31 @@ export interface MobTemplate {
   // other on-hit affixes it sustains the attacker instead of debuffing the
   // victim. Optional `chance` gates the proc (defaults to every landed hit).
   lifeleech?: { healFrac: number; chance?: number; name?: string };
+  // Melee mechanic: a landed swing has `chance` to land a concussive blow that
+  // STUNS the victim for `duration`s (can't move, cast, or act). The single-target
+  // cousin of War Stomp's AoE slam — rides the existing `stun` aura, no new kind.
+  concuss?: { chance: number; duration: number; name: string; school?: Aura['school'] };
+  // Melee mechanic: a landed swing has `chance` to crack the victim's guard with
+  // an Expose debuff that raises the physical damage they take by `dmgIncrease`
+  // (e.g. 0.15 = +15%) for `duration` seconds. Stacks multiplicatively with armor.
+  expose?: { chance: number; dmgIncrease: number; duration: number; name: string; school?: string };
   // Combat mechanic: a landed melee hit has `chance` to corrode the victim's
   // armor: a stacking `sunder` debuff (up to `maxStacks`) so the victim takes
   // more physical damage from everyone until it expires. Rides the existing
   // sunder aura; no new aura kind.
   corrode?: { chance: number; armor: number; maxStacks: number; duration: number; name: string; school?: Aura['school'] };
+  // Combat mechanic: a landed melee hit has `chance` to curse the victim with a
+  // spell-vulnerability debuff (`spellvuln`) that amplifies all NON-physical
+  // (magic) damage they take by `amp` (e.g. 0.15 = +15%) from every attacker for
+  // `duration`. The arcane twin of `corrode` — corrode shreds armor (physical
+  // mitigation); this raises magic damage taken. Holy is excluded so healing-
+  // school spells stay unaffected.
+  spellVuln?: { chance: number; amp: number; duration: number; name: string; school?: Aura['school'] };
+  // Melee mechanic: a landed swing has `chance` to knock the victim off-balance,
+  // cutting their dodge chance by `dodgeReduction` (a flat fraction, e.g. 0.05)
+  // for `duration` seconds — so the attacker (and everyone else) lands more hits.
+  // Rides the existing buff_dodge aura with a NEGATIVE value; no new aura kind.
+  staggerHit?: { chance: number; dodgeReduction: number; duration: number; name: string };
   // On-hit web mechanic: a landed melee swing has `chance` to ensnare the struck
   // player in place — a `root` aura for `duration`s (naga/spider snares). Rides the
   // existing root aura + crowd-control DR; no new aura kind. Players only; rooting a
@@ -274,6 +333,13 @@ export interface MobTemplate {
   // interval) for `duration`s. Rides the existing swingIntervalMult hook — no new
   // combat math. Distinct from a movement snare (`slow`) or an AP cut (`debuff_ap`).
   slowStrike?: { chance: number; mult: number; duration: number; name: string; school?: Aura['school'] };
+  // On-hit knockback: a landed melee swing has `chance` to physically hurl the
+  // struck player `distance` yards straight away from the mob — an instantaneous
+  // positional shove, not an aura. The displacement is terrain-clamped (it stops
+  // before deep water and cliffs, reusing the charge-movement safety checks), so a
+  // knockback can never strand the victim off the world. Players only; shoving a
+  // fellow mob is meaningless and a friendly pet shares this swing path.
+  knockback?: { chance: number; distance: number; name: string; school?: Aura['school'] };
   // On-hit mechanic ("Mana Burn"): a landed melee swing has `chance` to drain a
   // flat `amount` of mana from a mana-using victim (casters). Rage/energy users
   // are unaffected. Drains only what mana the victim still has; no overkill.
@@ -284,6 +350,13 @@ export interface MobTemplate {
   // Rides the existing buff_int aura with a NEGATIVE value, so there is no new
   // resource math. Only meaningful on mana users — applied to them alone.
   enfeeble?: { chance: number; int: number; duration: number; name: string; school?: Aura['school'] };
+  // On-hit curse: a landed melee swing has `chance` to drain `sta` Stamina from
+  // the victim for `duration`s, shrinking their maximum-HP pool (recalcPlayerStats
+  // re-derives maxHp from Stamina and scales current HP down with the smaller
+  // ceiling, clamped to a 1-HP floor — it never kills outright). Rides the
+  // existing buff_sta aura with a NEGATIVE value, so there is no new HP math.
+  // Affects every class (all players have Stamina), unlike enfeeble (mana only).
+  enervate?: { chance: number; sta: number; duration: number; name: string; school?: Aura['school'] };
   // Combat mechanic: a landed melee hit has `chance` to terrify the victim — a
   // fear that sends the struck player fleeing for `duration`s. Rides the existing
   // `fear_incap` incapacitate aura the player-cast Fear uses, so `updateFearMovement`
@@ -307,6 +380,17 @@ export interface MobTemplate {
   // `duration` seconds. The flip side of `silence`: it spoils weapon attacks
   // rather than spells. The added miss chance is carried in the aura's `value`.
   blind?: { chance: number; miss: number; duration: number; name: string; school?: string };
+  // On-hit mechanic ("Disarm"): a landed melee swing has `chance` to knock the
+  // victim's weapon from their grip — a `disarm` aura that suppresses their
+  // auto-attack (melee and ranged) for `duration` seconds. The inverse of silence:
+  // silence locks out spells, disarm locks out weapon swings; movement and
+  // instant abilities are untouched. Players only (only they auto-attack at the
+  // primary-target swing path). Refreshes by id; never stacks.
+  disarm?: { chance: number; duration: number; name: string; school?: Aura['school'] };
+  // On-hit mechanic: chance to lock out a SINGLE spell school (a school-specific
+  // counterspell) for a duration. Unlike `silence` (which blocks all non-physical
+  // casts), only casts whose `ability.school` matches `school` are denied/broken.
+  lockout?: { chance: number; duration: number; name: string; school: Aura['school'] };
   // On-hit chill: a landed melee swing has `chance` to slow the victim's
   // movement to `mult` of normal for `duration` seconds (frost school). Reuses
   // the standard `slow` aura, so it rides the same movement path as Frostbolt.
@@ -326,6 +410,10 @@ export interface MobTemplate {
   // that buffs survivors) or enrage (a fixed HP threshold), this is a per-hit
   // self-buff on the struck mob; it refreshes rather than stacks.
   frenzyOnHit?: { chance: number; hasteMult: number; duration: number; name?: string };
+  // Innate "warded" trait: casters take flat damage back on every connecting
+  // SPELL hit — the magic-school twin of `thorns` (which only punishes melee).
+  // Reflects on any non-physical damage instance the mob survives.
+  spellReflect?: { value: number; school?: Aura['school']; name?: string };
 }
 
 export type AbilityEffect =
@@ -651,9 +739,11 @@ export interface Entity {
   petTauntTimer: number; // controlled pet Growl cooldown
   pulseTimer: number; // boss aoe pulse countdown
   stompTimer: number; // boss War Stomp stun-pulse countdown
+  stoneskinTimer: number; // periodic self-absorb barrier countdown
   detonateTimer: number; // Death Throes fuse on a volatile corpse; Infinity = no pending detonation
   mendTimer: number; // mendAlly support-heal cast countdown
   wardTimer: number; // wardAllies support-shield cast countdown
+  rallyTimer: number; // rally commander-buff cast countdown
   firedSummons: number; // summonAdds thresholds already triggered
   summonedIds: number[]; // live adds this boss summoned; despawned on reset
   enraged: boolean; // enrage mechanic active

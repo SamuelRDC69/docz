@@ -145,7 +145,7 @@ const EMOTE_ALIASES: Record<string, string> = {
 // (buff_*, hot, absorb, imbue, stances, forms, stealth, thorns, attackspeed
 // haste) is treated as helpful/neutral. Used by /targetbuffs to tag each aura.
 const HARMFUL_AURA_KINDS: ReadonlySet<AuraKind> = new Set<AuraKind>([
-  'dot', 'slow', 'stun', 'root', 'incapacitate', 'polymorph', 'sunder',
+  'dot', 'slow', 'stun', 'root', 'incapacitate', 'polymorph', 'sunder', 'spellvuln',
 ]);
 
 function isHarmfulAura(kind: AuraKind): boolean {
@@ -208,7 +208,7 @@ const DEMON_HEAL_DURATION = 5;
 const DEMON_HEAL_TICK = 1;
 const TAMED_TARGET_RESPAWN_SECONDS = 60;
 const FRIENDLY_NPC_REJECTED_AURA_KINDS: ReadonlySet<AuraKind> = new Set([
-  'dot', 'slow', 'stun', 'root', 'incapacitate', 'polymorph', 'attackspeed', 'sunder',
+  'dot', 'slow', 'stun', 'root', 'incapacitate', 'polymorph', 'attackspeed', 'sunder', 'spellvuln',
 ]);
 
 function isRejectedFriendlyNpcAura(aura: Aura): boolean {
@@ -1383,6 +1383,16 @@ export class Sim {
     let bonus = 0;
     for (const a of e.auras) if (a.kind === 'blind' && a.value > bonus) bonus = a.value;
     return bonus;
+  // Disarm suppresses weapon swings (auto-attack, melee and ranged) but leaves
+  // movement, spells and instant abilities untouched — the inverse of silence.
+  private isDisarmed(e: Entity): boolean {
+    return e.auras.some((a) => a.kind === 'disarm');
+  }
+
+  // A school lockout denies casts of one specific school only (a counterspell),
+  // leaving every other school — and physical abilities — untouched.
+  private isLockedOut(e: Entity, school: Aura['school']): boolean {
+    return e.auras.some((a) => a.kind === 'lockout' && a.school === school);
   }
   private mobCanSwim(template: { family?: string; canSwim?: boolean } | undefined): boolean {
     return !!template;
@@ -1877,6 +1887,11 @@ export class Sim {
       const cast = this.resolvedAbility(p.castingAbility, p.id);
       if (cast && cast.def.school !== 'physical') { this.cancelCast(p); return; }
     }
+    // a school lockout breaks an in-progress spell only when it matches the locked school.
+    if (p.castingAbility !== FISHING_CAST_ID) {
+      const cast = this.resolvedAbility(p.castingAbility, p.id);
+      if (cast && cast.def.school !== 'physical' && this.isLockedOut(p, cast.def.school)) { this.cancelCast(p); return; }
+    }
     p.castRemaining -= DT;
 
     if (p.channeling) {
@@ -1957,6 +1972,7 @@ export class Sim {
     const ability = res.def;
     if (this.isStunned(p)) { this.error(p.id, 'You are stunned!'); return; }
     if (ability.school !== 'physical' && this.isSilenced(p)) { this.error(p.id, 'You are silenced!'); return; }
+    if (ability.school !== 'physical' && this.isLockedOut(p, ability.school)) { this.error(p.id, 'You are silenced!'); return; }
     if (p.castingAbility) { this.error(p.id, 'You are busy.'); return; }
     if (!ability.offGcd && p.gcdRemaining > 0) return; // silent, classic spams this
     const togglingOff = isToggleBuff(ability) && p.auras.some((a) => a.id === ability.id);
@@ -2691,6 +2707,43 @@ export class Sim {
     });
   }
 
+  // On-hit knockback: hurl `target` up to `distance` yards straight away from
+  // `source`. Instantaneous displacement (no aura) walked in small steps so it can
+  // be terrain-clamped exactly like a warrior charge — the shove stops at the last
+  // safe footing before deep water or a cliff rather than stranding the victim off
+  // the world. Returns the yards actually moved (0 if blocked immediately).
+  private applyKnockback(source: Entity, target: Entity, distance: number): number {
+    let dx = target.pos.x - source.pos.x;
+    let dz = target.pos.z - source.pos.z;
+    let len = Math.hypot(dx, dz);
+    if (len < 1e-4) {
+      // exactly overlapping: shove along the mob's facing so the direction is stable
+      dx = Math.sin(source.facing); dz = Math.cos(source.facing); len = 1;
+    }
+    const ux = dx / len, uz = dz / len;
+    const STEP = 0.5;
+    let moved = 0;
+    let cx = target.pos.x, cz = target.pos.z;
+    while (moved < distance) {
+      const adv = Math.min(STEP, distance - moved);
+      const nx = cx + ux * adv, nz = cz + uz * adv;
+      const h0 = groundHeight(cx, cz, this.cfg.seed);
+      const h1 = groundHeight(nx, nz, this.cfg.seed);
+      if (h1 < WATER_LEVEL - SWIM_DEPTH) break;                // would land in deep water
+      if (h1 > h0 && (h1 - h0) / adv > MAX_CLIMB_SLOPE) break; // would slam into a cliff
+      cx = nx; cz = nz; moved += adv;
+    }
+    if (moved <= 0) return 0;
+    const resolved = resolvePosition(this.cfg.seed, cx, cz, BODY_RADIUS);
+    target.pos.x = resolved.x;
+    target.pos.z = resolved.z;
+    target.pos.y = groundHeight(resolved.x, resolved.z, this.cfg.seed);
+    target.vy = 0;
+    target.onGround = true;
+    target.fallStartY = target.pos.y;
+    return moved;
+  }
+
   private diminishedCrowdControlDuration(
     source: Entity,
     target: Entity,
@@ -3212,6 +3265,7 @@ export class Sim {
     if (!t || t.dead || !this.isHostileTo(p, t)) { p.autoAttack = false; return; }
     if (p.swingTimer > 0) return;
     if (this.isStunned(p)) return;
+    if (this.isDisarmed(p)) return; // weapon knocked away: no auto-attack swings
     const d = dist2d(p.pos, t.pos);
     const facingDiff = Math.abs(normAngle(angleTo(p.pos, t.pos) - p.facing));
     if (facingDiff > MELEE_ARC) return;
@@ -3356,6 +3410,27 @@ export class Sim {
       amount = Math.round(amount * 0.9);
     }
 
+    // Expose: a cracked-guard debuff amplifies the physical damage the victim
+    // takes (from any attacker) until it expires. Armor is already applied at the
+    // swing site, so this rides on top of the post-mitigation amount.
+    if (school === 'physical' && amount > 0) {
+      let exposeMult = 1;
+      for (const a of target.auras) if (a.kind === 'expose') exposeMult += a.value;
+      if (exposeMult !== 1) amount = Math.round(amount * exposeMult);
+    }
+
+    // Spell Vulnerability: a `spellvuln` debuff amplifies all NON-physical (magic)
+    // damage the victim takes from every attacker. Holy is excluded so healing-
+    // school spells are untouched. Stacks additively across active debuffs and
+    // lands before absorb shields, so a soaked hit still soaks the amplified total.
+    if (amount > 0 && school !== 'physical' && school !== 'holy') {
+      let amp = 0;
+      for (const a of target.auras) {
+        if (a.kind === 'spellvuln') amp += a.value;
+      }
+      if (amp > 0) amount = Math.round(amount * (1 + amp));
+    }
+
     // absorb shields soak damage first
     if (amount > 0) {
       for (let i = target.auras.length - 1; i >= 0 && amount > 0; i--) {
@@ -3470,6 +3545,7 @@ export class Sim {
     if (kind === 'hit' && amount > 0 && !target.dead && target.hp > 0) {
       this.maybeFrenzyOnHit(target, source);
     }
+    this.reflectSpellWard(source, target, amount, kind, school);
 
     if (target.hp <= 0) {
       this.handleDeath(target, source);
@@ -3509,6 +3585,18 @@ export class Sim {
     this.emit({ type: 'aura', targetId: target.id, name, gained: true });
     this.emit({ type: 'log', text: `${target.name} flies into a frenzy!`, color: '#ff8c00', entityId: target.id });
     this.emit({ type: 'spellfx', sourceId: target.id, targetId: target.id, school: 'physical', fx: 'nova' });
+  /**
+   * Innate "warded" mobs reflect flat damage onto a caster whose SPELL connects
+   * — the magic-school twin of melee thorns (which only punishes melee swings).
+   * Fires for any non-physical hit the mob survives; the reflected blow is
+   * mob-sourced, so it can never re-trigger a reflect (players carry no template).
+   */
+  private reflectSpellWard(source: Entity | null, target: Entity, amount: number, kind: 'hit' | 'miss' | 'dodge', school: string): void {
+    if (!source || source.kind !== 'player' || source.id === target.id) return;
+    if (target.kind !== 'mob' || target.hp <= 0 || kind !== 'hit' || amount <= 0 || school === 'physical') return;
+    const ward = MOBS[target.templateId]?.spellReflect;
+    if (!ward) return;
+    this.dealDamage(target, source, ward.value, false, ward.school ?? 'shadow', ward.name ?? 'Spell Reflection', 'hit', true);
   }
 
   private enterCombat(a: Entity, b: Entity): void {
@@ -4190,6 +4278,25 @@ export class Sim {
             }
           }
         }
+        // Stoneskin: a periodic self-absorb barrier. Telegraphed via createMob,
+        // which seeds stoneskinTimer to one full interval so the first barrier
+        // never snaps up the instant combat opens. Reuses the `absorb` aura,
+        // which dealDamage already soaks before any health is lost.
+        const stoneskin = MOBS[mob.templateId]?.stoneskin;
+        if (stoneskin) {
+          mob.stoneskinTimer -= DT;
+          if (mob.stoneskinTimer <= 0) {
+            mob.stoneskinTimer = stoneskin.every;
+            const school = (stoneskin.school ?? 'physical') as Aura['school'];
+            this.emit({ type: 'spellfx', sourceId: mob.id, targetId: mob.id, school, fx: 'nova' });
+            this.emit({ type: 'log', text: `${mob.name} unleashes ${stoneskin.name}!`, color: '#c9c2b5', entityId: mob.id });
+            this.applyAura(mob, {
+              id: `stoneskin_${mob.templateId}`, name: stoneskin.name, kind: 'absorb',
+              remaining: stoneskin.duration, duration: stoneskin.duration, value: stoneskin.amount,
+              sourceId: mob.id, school,
+            });
+          }
+        }
         break;
       }
       case 'flee': {
@@ -4266,6 +4373,8 @@ export class Sim {
     mob.stompTimer = MOBS[mob.templateId]?.stomp?.every ?? 0;
     mob.mendTimer = MOBS[mob.templateId]?.mendAlly?.every ?? 0;
     mob.wardTimer = MOBS[mob.templateId]?.wardAllies?.every ?? 0;
+    mob.stoneskinTimer = MOBS[mob.templateId]?.stoneskin?.every ?? 0;
+    mob.rallyTimer = MOBS[mob.templateId]?.rally?.every ?? 0;
     mob.wanderTimer = this.rng.range(2, 8);
   }
 
@@ -4340,6 +4449,27 @@ export class Sim {
         this.emit({ type: 'heal', targetId: mob.id, amount: heal });
       }
     }
+    // Battle Fury (Rampage): a landed swing whips this attacker into an escalating
+    // frenzy — a self-applied, stacking buff_ap aura (up to `maxStacks`) that grows
+    // its attack power, and thus its melee damage, the longer the fight drags on.
+    // Rides the existing buff_ap aura that effectiveAttackPower already folds into
+    // mob swing damage, so there is no new combat math. Hostile mobs only, so a
+    // friendly pet (mobSwing's other caller) never self-buffs off the party's kills;
+    // skip if the mob died to the defender's thorns/reflect earlier this swing. The
+    // single shared aura slot is bumped and refreshed each hit; left alone it falls
+    // off after `duration`s, so burning the mob down or kiting it out of melee both
+    // reset the ramp.
+    const rampage = MOBS[mob.templateId]?.rampage;
+    if (rampage && mob.hostile && !mob.dead) {
+      const existing = mob.auras.find((a) => a.id === `rampage_${mob.templateId}` && a.sourceId === mob.id);
+      const stacks = Math.min(rampage.maxStacks, (existing?.stacks ?? 0) + 1);
+      this.applyAura(mob, {
+        id: `rampage_${mob.templateId}`, name: rampage.name, kind: 'buff_ap',
+        remaining: rampage.duration, duration: rampage.duration,
+        value: rampage.ap * stacks, stacks,
+        sourceId: mob.id, school: rampage.school ?? 'physical',
+      });
+    }
     // Cleave: the swing splashes onto other players standing near the primary
     // target, each taking the hit reduced by their own armor. Hostile mobs only,
     // so a friendly pet swinging through mobSwing never cleaves its owner's party.
@@ -4378,6 +4508,59 @@ export class Sim {
         value: Math.max(1, Math.round(soulrot.perTick)),
         tickInterval: soulrot.interval, tickTimer: soulrot.interval,
         sourceId: mob.id, school: (soulrot.school as Aura['school']) ?? 'shadow',
+    // bleed ("Rend"): a landed swing may open a refreshing PHYSICAL DoT wound.
+    // Same on-hit DoT seam as venom, but physical-school — the predator/beast
+    // flavour (raking claws, gore). Hostile mobs only (mobSwing is also the pet
+    // attack path, so a friendly pet must never bleed the party).
+    const bleed = MOBS[mob.templateId]?.bleed;
+    if (bleed && mob.hostile && !target.dead && this.rng.chance(bleed.chance)) {
+      this.applyAura(target, {
+        id: 'bleed_' + mob.templateId, name: bleed.name, kind: 'dot',
+        remaining: bleed.duration, duration: bleed.duration,
+        value: Math.max(1, Math.round(bleed.perTick)),
+        tickInterval: bleed.interval, tickTimer: bleed.interval,
+        sourceId: mob.id, school: (bleed.school as Aura['school']) ?? 'physical',
+      });
+    }
+
+    // frostbite: a landed swing may sear the victim with a refreshing frost DoT
+    // (the frost twin of venom — chilling elementals). Hostile mobs only, never a
+    // friendly pet (mobSwing is also the pet attack path).
+    const frostbite = MOBS[mob.templateId]?.frostbite;
+    if (frostbite && mob.hostile && !target.dead && this.rng.chance(frostbite.chance)) {
+      this.applyAura(target, {
+        id: 'frostbite_' + mob.templateId, name: frostbite.name, kind: 'dot',
+        remaining: frostbite.duration, duration: frostbite.duration,
+        value: Math.max(1, Math.round(frostbite.perTick)),
+        tickInterval: frostbite.interval, tickTimer: frostbite.interval,
+        sourceId: mob.id, school: (frostbite.school as Aura['school']) ?? 'frost',
+      });
+    }
+
+    // smoldering fuse: a landed swing may ignite a refreshing fire DoT — the
+    // fire-school sibling of venom (same guards: hostile mobs only, never a pet).
+    const smolder = MOBS[mob.templateId]?.smolder;
+    if (smolder && mob.hostile && !target.dead && this.rng.chance(smolder.chance)) {
+      this.applyAura(target, {
+        id: 'smolder_' + mob.templateId, name: smolder.name, kind: 'dot',
+        remaining: smolder.duration, duration: smolder.duration,
+        value: Math.max(1, Math.round(smolder.perTick)),
+        tickInterval: smolder.interval, tickTimer: smolder.interval,
+        sourceId: mob.id, school: (smolder.school as Aura['school']) ?? 'fire',
+      });
+    }
+
+    // cinder: the fire-school twin of venom — a landed swing may set a refreshing
+    // burning DoT (hostile mobs only, never a friendly pet — mobSwing is also the
+    // pet attack path). Reuses the same dot aura seam; school defaults 'fire'.
+    const cinder = MOBS[mob.templateId]?.cinder;
+    if (cinder && mob.hostile && !target.dead && this.rng.chance(cinder.chance)) {
+      this.applyAura(target, {
+        id: 'cinder_' + mob.templateId, name: cinder.name, kind: 'dot',
+        remaining: cinder.duration, duration: cinder.duration,
+        value: Math.max(1, Math.round(cinder.perTick)),
+        tickInterval: cinder.interval, tickTimer: cinder.interval,
+        sourceId: mob.id, school: (cinder.school as Aura['school']) ?? 'fire',
       });
     }
     // corrosive bite: a landed hit may shred the victim's armor (stacking sunder).
@@ -4407,6 +4590,27 @@ export class Sim {
         id: `blind_${mob.templateId}`, name: blind.name, kind: 'blind',
         remaining: blind.duration, duration: blind.duration, value: blind.miss,
         sourceId: mob.id, school: (blind.school ?? 'physical') as Aura['school'],
+    // disarm: a brutal swing can knock the weapon from a player's grip, suppressing
+    // their auto-attack for a duration. Players only (only they run the primary-target
+    // auto-attack path) and hostile only, so a friendly pet (mobSwing's other caller)
+    // never disarms the party. Refreshes by id; never stacks.
+    const disarm = MOBS[mob.templateId]?.disarm;
+    if (disarm && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(disarm.chance)) {
+      this.applyAura(target, {
+        id: `disarm_${mob.templateId}`, name: disarm.name, kind: 'disarm',
+        remaining: disarm.duration, duration: disarm.duration, value: 0,
+        sourceId: mob.id, school: (disarm.school ?? 'physical') as Aura['school'],
+      });
+    }
+
+    // school lockout: a counterspell-on-hit that seals a single spell school. Same
+    // hostile + alive guard as silence so a friendly pet never locks out the party.
+    const lockout = MOBS[mob.templateId]?.lockout;
+    if (lockout && mob.hostile && !target.dead && this.rng.chance(lockout.chance)) {
+      this.applyAura(target, {
+        id: `lockout_${mob.templateId}`, name: lockout.name, kind: 'lockout',
+        remaining: lockout.duration, duration: lockout.duration, value: 0,
+        sourceId: mob.id, school: lockout.school,
       });
     }
     // thorns / lightning shield on the defender
@@ -4432,6 +4636,43 @@ export class Sim {
         school: (ms.school as Aura['school']) ?? 'physical',
       });
     }
+    // Spell Vulnerability: a landed hit may curse the victim so they take more
+    // magic damage from everyone (the arcane twin of corrode's armor shred).
+    // Hostile mobs only, so a friendly pet (mobSwing's other caller) never curses
+    // the party. A single refreshing slot keyed by template, like mortal_wound.
+    const sv = MOBS[mob.templateId]?.spellVuln;
+    if (sv && mob.hostile && !target.dead && this.rng.chance(sv.chance)) {
+      this.applyAura(target, {
+        id: `spellvuln_${mob.templateId}`,
+        name: sv.name,
+        kind: 'spellvuln',
+        remaining: sv.duration,
+        duration: sv.duration,
+        value: sv.amp,
+        sourceId: mob.id,
+        school: (sv.school as Aura['school']) ?? 'arcane',
+      });
+    }
+
+    // Staggering blow: a landed hit may knock the victim off-balance, cutting their
+    // dodge for a short while so attacks land more reliably. Hostile mobs only (a
+    // friendly pet shares this swing path) and only players have a meaningful dodge
+    // chance. Rides buff_dodge with a NEGATIVE value — recalcPlayerStats already
+    // folds buff_dodge into e.dodgeChance and it recalcs on expiry (buff* kind), so
+    // no new aura kind is needed.
+    const stagger = MOBS[mob.templateId]?.staggerHit;
+    if (stagger && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(stagger.chance)) {
+      this.applyAura(target, {
+        id: `stagger_${mob.templateId}`,
+        name: stagger.name,
+        kind: 'buff_dodge',
+        remaining: stagger.duration,
+        duration: stagger.duration,
+        value: -stagger.dodgeReduction,
+        sourceId: mob.id,
+        school: 'physical',
+      });
+    }
     // Ensnare: a landed hit may web the victim in place (root). Hostile mobs only
     // (a friendly pet shares this swing path) and only roots players — `applyRootAura`
     // applies crowd-control DR so repeated webs from the same mob shrink and break.
@@ -4450,6 +4691,18 @@ export class Sim {
         remaining: stunOnHit.duration, duration: stunOnHit.duration, value: 0,
         sourceId: mob.id, school: stunOnHit.school ?? 'physical',
       });
+    // Knockback: a landed hit can physically hurl the player victim straight back.
+    // Hostile mobs only (a friendly pet shares this swing path) and players only —
+    // shoving a fellow mob is meaningless. Pure positional displacement (no aura),
+    // terrain-clamped so it never strands the victim off the world; surfaced via a
+    // spellfx nova + the same "unleashes" log line War Stomp uses.
+    const knockback = MOBS[mob.templateId]?.knockback;
+    if (knockback && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(knockback.chance)) {
+      if (this.applyKnockback(mob, target, knockback.distance) > 0) {
+        const school = (knockback.school ?? 'physical') as Aura['school'];
+        this.emit({ type: 'spellfx', sourceId: mob.id, targetId: target.id, school, fx: 'nova' });
+        this.emit({ type: 'log', text: `${mob.name} unleashes ${knockback.name}!`, color: '#ff9933', entityId: mob.id });
+      }
     }
     // slowStrike: a landed hit may mire the victim, slowing their attack speed.
     // Rides the existing `attackspeed` aura (swingIntervalMult: value > 1 = slower);
@@ -4493,6 +4746,24 @@ export class Sim {
         value: -Math.abs(enfeeble.int),
         sourceId: mob.id,
         school: enfeeble.school ?? 'shadow',
+      });
+    }
+    // Vitality drain: a landed hit can siphon the victim's Stamina, shrinking
+    // their maximum-HP pool. Hits every class (all players have Stamina), unlike
+    // the mana-only enfeeble. Hostile mobs only, so a friendly pet (mobSwing's
+    // other caller) never drains the party. Rides buff_sta with a negative value,
+    // so recalcPlayerStats folds it through to maxHp with no new HP math.
+    const enervate = MOBS[mob.templateId]?.enervate;
+    if (enervate && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(enervate.chance)) {
+      this.applyAura(target, {
+        id: `enervate_${mob.templateId}`,
+        name: enervate.name,
+        kind: 'buff_sta',
+        remaining: enervate.duration,
+        duration: enervate.duration,
+        value: -Math.abs(enervate.sta),
+        sourceId: mob.id,
+        school: enervate.school ?? 'shadow',
       });
     }
     // On-hit chill: frost-touched mobs numb the victim, slowing their movement.
@@ -4558,6 +4829,38 @@ export class Sim {
           sourceId: mob.id, school: hex.school ?? 'nature', breaksOnDamage: true,
         });
       }
+    // Concussive Blow: a landed hit can briefly STUN the victim (single-target,
+    // distinct from War Stomp's AoE slam). Hostile mobs only so a friendly pet
+    // never stuns an ally; CC DR is PvP-only so a mob source always lands full.
+    const concuss = MOBS[mob.templateId]?.concuss;
+    if (concuss && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(concuss.chance)) {
+      this.applyAura(target, {
+        id: `concuss_${mob.templateId}`,
+        name: concuss.name,
+        kind: 'stun',
+        remaining: concuss.duration,
+        duration: concuss.duration,
+        value: 0,
+        sourceId: mob.id,
+        school: concuss.school ?? 'physical',
+      });
+    }
+
+    // Expose: a landed hit can crack the victim's guard, raising the physical
+    // damage they take for a duration. Guarded on `hostile` so a friendly pet
+    // (mobSwing's other caller) never debuffs the party.
+    const expose = MOBS[mob.templateId]?.expose;
+    if (expose && mob.hostile && !target.dead && this.rng.chance(expose.chance)) {
+      this.applyAura(target, {
+        id: `expose_${mob.templateId}`,
+        name: expose.name,
+        kind: 'expose',
+        remaining: expose.duration,
+        duration: expose.duration,
+        value: expose.dmgIncrease,
+        sourceId: mob.id,
+        school: (expose.school as Aura['school']) ?? 'physical',
+      });
     }
   }
 
@@ -4793,6 +5096,8 @@ export class Sim {
     mob.stompTimer = MOBS[mob.templateId]?.stomp?.every ?? 0;
     mob.mendTimer = MOBS[mob.templateId]?.mendAlly?.every ?? 0;
     mob.wardTimer = MOBS[mob.templateId]?.wardAllies?.every ?? 0;
+    mob.stoneskinTimer = MOBS[mob.templateId]?.stoneskin?.every ?? 0;
+    mob.rallyTimer = MOBS[mob.templateId]?.rally?.every ?? 0;
     mob.wanderTimer = this.rng.range(2, 8);
     for (const meta of this.players.values()) {
       const e = this.entities.get(meta.entityId);
@@ -4886,7 +5191,7 @@ export class Sim {
   // and reset on evade/respawn.
   private updateBossMechanics(mob: Entity): void {
     const tmpl = MOBS[mob.templateId];
-    if (!tmpl || (!tmpl.summonAdds && !tmpl.enrage && !tmpl.desperateHeal && !tmpl.mendAlly && !tmpl.wardAllies)) return;
+    if (!tmpl || (!tmpl.summonAdds && !tmpl.enrage && !tmpl.desperateHeal && !tmpl.mendAlly && !tmpl.wardAllies && !tmpl.rally)) return;
     const hpFrac = mob.hp / Math.max(1, mob.maxHp);
     if (tmpl.summonAdds) {
       const thresholds = tmpl.summonAdds.atHpPct;
@@ -4960,6 +5265,35 @@ export class Sim {
               id: `ward_${mob.templateId}`, name: tmpl.wardAllies.name, kind: 'absorb',
               remaining: tmpl.wardAllies.duration, duration: tmpl.wardAllies.duration,
               value: tmpl.wardAllies.amount, sourceId: mob.id, school,
+    // Commander "Rally": periodically empower every friendly mob in range
+    // (including the caster) with a refreshing attack-power buff. The offensive
+    // twin of mendAlly — same telegraphed timer, same same-faction ally scan —
+    // but it grants buff_ap (folded by effectiveAttackPower) instead of healing.
+    if (tmpl.rally) {
+      mob.rallyTimer -= DT;
+      if (mob.rallyTimer <= 0) {
+        mob.rallyTimer = tmpl.rally.every;
+        const allies: Entity[] = [];
+        for (const ally of this.entities.values()) {
+          if (ally.kind !== 'mob' || ally.dead || ally.ownerId !== null) continue; // skip players, pets, corpses
+          if (ally.hostile !== mob.hostile) continue; // only same-faction mobs
+          if (dist2d(ally.pos, mob.pos) > tmpl.rally.radius) continue;
+          allies.push(ally);
+        }
+        if (allies.length > 0) {
+          const school = tmpl.rally.school ?? 'physical';
+          this.emit({ type: 'spellfx', sourceId: mob.id, targetId: mob.id, school, fx: 'nova' });
+          this.emit({ type: 'log', text: `${mob.name} unleashes ${tmpl.rally.name}!`, color: '#ffcc33', entityId: mob.id });
+          for (const ally of allies) {
+            this.applyAura(ally, {
+              id: `rally_${mob.templateId}`,
+              name: tmpl.rally.name,
+              kind: 'buff_ap',
+              remaining: tmpl.rally.duration,
+              duration: tmpl.rally.duration,
+              value: tmpl.rally.ap,
+              sourceId: mob.id,
+              school,
             });
           }
         }
