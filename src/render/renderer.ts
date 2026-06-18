@@ -34,6 +34,7 @@ import { isProjectedNameplateAnchorVisible, nameplateScreenTransform } from './n
 import { comboPipsFor, COMBO_PIP_MAX } from './nameplate_combo';
 import { stepCameraOcclusion, type CameraOcclusionState } from './camera_collision';
 import { castBarState } from './cast_bar';
+import { isMobThreateningViewer } from './nameplate_threat';
 
 const NAMEPLATE_RANGE = 55;
 const NAMEPLATE_RANGE_SQ = NAMEPLATE_RANGE * NAMEPLATE_RANGE;
@@ -1573,6 +1574,8 @@ export class Renderer {
         const marker = e.lootable ? '$' : elite && !e.dead ? '◆' : '';
         this.setNameplateStatic(v, `mob|${name}|${color}|${hpDisplay}|${marker}`, name, color, hpDisplay, marker, 'np-marker loot', '1');
         this.setNameplateHp(v, e);
+        // threat plate: tint the bar red when this mob is aggroed on me
+        v.nameplate.classList.toggle('np-threat', isMobThreateningViewer(e, this.sim.playerId));
       }
 
       this.updateCastBar(v, e);
