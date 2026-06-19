@@ -128,32 +128,6 @@ describe('cosmetic skin-select event', () => {
     expect(sim.countItem('amber_crimson_armor_plate')).toBe(0);
   });
 
-  it('returns a market-listable specific mech cosmetic item when unequipped', () => {
-    const sim = new Sim({ seed: 1, playerClass: 'shaman', playerName: 'Seller' });
-    const merchant = [...sim.entities.values()].find((e) => e.kind === 'npc' && e.templateId === 'the_merchant');
-    if (!merchant) throw new Error('merchant not found');
-    const pos = sim.groundPos(merchant.pos.x, merchant.pos.z);
-    sim.player.pos = { ...pos };
-    sim.player.prevPos = { ...pos };
-
-    sim.addItem('amber_crimson_armor_plate', 1);
-    sim.useItem('amber_crimson_armor_plate');
-    expect((sim as any).unequipMechChroma('amber_crimson')).toBe(true);
-
-    sim.sellItem('amber_crimson_armor_plate');
-    sim.discardItem('amber_crimson_armor_plate');
-    expect(sim.countItem('amber_crimson_armor_plate')).toBe(1);
-
-    sim.marketList('amber_crimson_armor_plate', 1, 100);
-
-    expect(sim.countItem('amber_crimson_armor_plate')).toBe(0);
-    expect(sim.marketListings.some((listing) => (
-      listing.itemId === 'amber_crimson_armor_plate'
-      && listing.sellerKey === 'Seller'
-      && listing.price === 100
-    ))).toBe(true);
-  });
-
   it('can equip a mech cosmetic as the active live appearance catalog', () => {
     const sim = new Sim({ seed: 1, playerClass: 'shaman', playerName: 'Mechwearer' });
 

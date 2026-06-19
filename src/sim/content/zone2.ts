@@ -705,7 +705,7 @@ export const ZONE2_ITEMS: Record<string, ItemDef> = {
   amber_crimson_armor_plate: {
     id: 'amber_crimson_armor_plate', name: 'Amber Crimson', kind: 'tool', quality: 'uncommon',
     use: { type: 'mechChroma', chromaId: 'amber_crimson' },
-    sellValue: 0, noVendorSell: true, noDiscard: true,
+    sellValue: 0, noVendorSell: true, noDiscard: true, noMarketList: true,
   },
   deacons_cleaver: {
     id: 'deacons_cleaver', name: "Deacon's Cleaver", kind: 'weapon', slot: 'mainhand', quality: 'uncommon',

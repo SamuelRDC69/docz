@@ -32,24 +32,17 @@ describe('appearance skin selection', () => {
     expect(sent).toEqual([{ t: 'cmd', cmd: 'change_skin', skin: 2, catalog: 'class' }]);
   });
 
-  it('sends the online mech chroma unequip command and mirrors the returned item immediately', () => {
+  it('sends the online mech chroma unequip command through the world contract', () => {
     const sent: unknown[] = [];
     const client: ClientWorld = Object.create(ClientWorld.prototype);
     Object.assign(client, {
       connected: true,
       ws: { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) },
-      playerId: 7,
-      entities: new Map([[7, { id: 7, skin: 0, skinCatalog: 'mech' }]]),
-      accountCosmetics: { completedQuestIds: [], mechChromaIds: ['amber_crimson'] },
-      inventory: [],
     });
     (globalThis as any).WebSocket = { OPEN: 1 };
 
     client.unequipMechChroma('amber_crimson');
 
-    expect(client.accountCosmetics.mechChromaIds).toEqual([]);
-    expect(client.player.skinCatalog).toBe('class');
-    expect(client.inventory).toEqual([{ itemId: 'amber_crimson_armor_plate', count: 1 }]);
     expect(sent).toEqual([{ t: 'cmd', cmd: 'unequip_mech_chroma', chroma: 'amber_crimson' }]);
   });
 });

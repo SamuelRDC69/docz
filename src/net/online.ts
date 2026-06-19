@@ -6,7 +6,6 @@ import {
   cloneAllocation, computeTalentModifiers, emptyAllocation, talentPointsAtLevel, pointsSpent,
   type TalentAllocation, type SavedLoadout, type Role,
 } from '../sim/content/talents';
-import { mechChromaItemId, mechChromaSkinIndex } from '../sim/content/skins';
 import {
   Entity, EquipSlot, InvSlot, MoveInput, PlayerClass, QuestProgress, QuestState, SimEvent,
   emptyMoveInput,
@@ -865,27 +864,6 @@ export class ClientWorld implements IWorld {
     this.cmd({ cmd: 'claim_event_skin', skin: idx });
   }
   unequipMechChroma(chromaId: string): void {
-    const itemId = mechChromaItemId(chromaId);
-    const skin = mechChromaSkinIndex(chromaId);
-    if (itemId && skin >= 0 && this.accountCosmetics.mechChromaIds.includes(chromaId)) {
-      this.accountCosmetics = {
-        ...this.accountCosmetics,
-        mechChromaIds: this.accountCosmetics.mechChromaIds.filter((id) => id !== chromaId),
-      };
-      const current = this.entities.get(this.playerId);
-      if (current?.skinCatalog === 'mech' && current.skin === skin) {
-        current.skin = 0;
-        current.skinCatalog = 'class';
-      }
-      const existing = this.inventory.find((slot) => slot.itemId === itemId);
-      this.inventory = existing
-        ? this.inventory.map((slot) => (
-          slot.itemId === itemId ? { ...slot, count: slot.count + 1 } : slot
-        ))
-        : [...this.inventory, { itemId, count: 1 }];
-      this.invChanged = true;
-      this.cosmeticsChanged = true;
-    }
     this.cmd({ cmd: 'unequip_mech_chroma', chroma: chromaId });
   }
   releaseSpirit(): void {
