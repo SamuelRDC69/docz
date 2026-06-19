@@ -1224,6 +1224,8 @@ export const ko_KR: EnTranslations = {
       "title": "마법책",
       "classSubtitle": "{className} 능력",
       "close": "마법책 닫기",
+      "resetBar": "단축바 초기화",
+      "resetBarAria": "현재 행동 단축바를 기본 능력으로 초기화",
       "trainableAtLevel": "{level}레벨에 훈련 가능",
       "learnAtLevel": "{level}레벨에 배웁니다.",
       "knownAbilityAria": "{name}, {rank} 등급. {summary}",

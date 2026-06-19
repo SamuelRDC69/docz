@@ -295,16 +295,36 @@ describe('client HTML shell', () => {
     expect(html).toContain('body.mobile-touch .action-btn.mobile-drag-source');
   });
 
-  it('falls back to the normal hotbar when a form hotbar has no saved spells', () => {
+  it('seeds druid form bars with the form kit, and only clones normal for rogue stealth', () => {
+    expect(hudTs).toContain('if (this.isFormKitBar()) {');
+    expect(hudTs).toContain('if (this.seedFormBarIfNeeded(parsed)) return;');
+    expect(hudTs).toContain('buildDefaultFormBar(this.formKitAbilityIds(this.activeHotbarForm), Hud.BAR_ABILITY_SLOTS)');
     expect(hudTs).toContain('const emptyFormMap = this.activeHotbarForm !== \'normal\' && parsed.every((action) => action === null);');
     expect(hudTs).toContain("localStorage.getItem(this.slotMapKey('normal'))");
     expect(hudTs).not.toContain('this.loadedSlotMapFromStorage = stored || this.activeHotbarForm !== \'normal\';');
+  });
+
+  it('migrates a pre-existing form bar at most once via a per-form seeded marker', () => {
+    expect(hudTs).toContain('_seeded');
+    expect(hudTs).toContain('shouldSeedFormBar(parsed, normalActions, false)');
+  });
+
+  it('only auto-places abilities that belong on the active form bar', () => {
+    expect(hudTs).toContain('if (this.shouldAutoPlaceOnForm(id, this.activeHotbarForm)) autoPlaceAbilityIds.add(id);');
   });
 
   it('keeps the active druid form toggle on its form action bar', () => {
     expect(hudTs).toContain("if (this.activeHotbarForm === 'bear') return 'bear_form';");
     expect(hudTs).toContain("if (this.activeHotbarForm === 'cat') return 'cat_form';");
     expect(hudTs).toContain('if (formToggle && knownAbilityIds.includes(formToggle)) autoPlaceAbilityIds.add(formToggle);');
+  });
+
+  it('offers a reset-to-default action bar button in the spellbook', () => {
+    expect(hudTs).toContain('data-reset-bar');
+    expect(hudTs).toContain('this.resetActiveFormBarToDefault()');
+    expect(hudTs).toContain("t('abilityUi.spellbook.resetBar')");
+    expect(html).toContain('.spellbook-reset {');
+    expect(html).toContain('body.mobile-touch #spellbook .spellbook-reset {');
   });
 
   it('shows mobile spellbook add and remove controls for the spell bar', () => {

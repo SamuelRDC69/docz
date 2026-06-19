@@ -1224,6 +1224,8 @@ export const de_DE: EnTranslations = {
       "title": "Zauberbuch",
       "classSubtitle": "Fähigkeiten: {className}",
       "close": "Zauberbuch schließen",
+      "resetBar": "Leiste zurücksetzen",
+      "resetBarAria": "Aktuelle Aktionsleiste auf Standardfähigkeiten zurücksetzen",
       "trainableAtLevel": "Ab Stufe {level} erlernbar",
       "learnAtLevel": "Ihr lernt dies auf Stufe {level}.",
       "knownAbilityAria": "{name}, Rang {rank}. {summary}",

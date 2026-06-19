@@ -1224,6 +1224,8 @@ export const ja_JP: EnTranslations = {
       "title": "魔法書",
       "classSubtitle": "{className}の能力",
       "close": "魔法書を閉じる",
+      "resetBar": "バーをリセット",
+      "resetBarAria": "現在のアクションバーを初期の能力にリセット",
       "trainableAtLevel": "レベル{level}で習得可能",
       "learnAtLevel": "レベル{level}で習得します。",
       "knownAbilityAria": "{name}、ランク{rank}。{summary}",

@@ -837,6 +837,8 @@ export const es: Partial<Record<TranslationKey, string>> = {
   "abilityUi.spellbook.title": "Libro de hechizos",
   "abilityUi.spellbook.classSubtitle": "Habilidades de {className}",
   "abilityUi.spellbook.close": "Cerrar libro de hechizos",
+  "abilityUi.spellbook.resetBar": "Restablecer barra",
+  "abilityUi.spellbook.resetBarAria": "Restablece la barra de acción actual a sus habilidades predeterminadas",
   "abilityUi.spellbook.trainableAtLevel": "Entrenable al nivel {level}",
   "abilityUi.spellbook.learnAtLevel": "Aprenderás esto al nivel {level}.",
   "abilityUi.spellbook.knownAbilityAria": "{name}, rango {rank}. {summary}",

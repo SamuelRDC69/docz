@@ -837,6 +837,8 @@ export const ja_JP: Partial<Record<TranslationKey, string>> = {
   "abilityUi.spellbook.title": "魔法書",
   "abilityUi.spellbook.classSubtitle": "{className}の能力",
   "abilityUi.spellbook.close": "魔法書を閉じる",
+  "abilityUi.spellbook.resetBar": "バーをリセット",
+  "abilityUi.spellbook.resetBarAria": "現在のアクションバーを初期の能力にリセット",
   "abilityUi.spellbook.trainableAtLevel": "レベル{level}で習得可能",
   "abilityUi.spellbook.learnAtLevel": "レベル{level}で習得します。",
   "abilityUi.spellbook.knownAbilityAria": "{name}、ランク{rank}。{summary}",

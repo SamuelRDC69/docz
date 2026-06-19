@@ -1877,8 +1877,11 @@ export const mergeStrings = {
   },
 };
 
-mergeStrings.es_ES = mergeStrings.es;
-mergeStrings.fr_CA = mergeStrings.fr_FR;
+// Legacy inline locales (unused at runtime; non-English resolves from
+// src/ui/i18n.locales/<lang>.ts). New English-only keys aren't back-filled here,
+// so assert the dialect copies to the English shape. See abilities.ts.
+mergeStrings.es_ES = mergeStrings.es as typeof mergeStringsEn;
+mergeStrings.fr_CA = mergeStrings.fr_FR as typeof mergeStringsEn;
 
 
 const mergeEntitiesEn = {

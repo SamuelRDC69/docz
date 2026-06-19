@@ -1224,6 +1224,8 @@ export const it_IT: EnTranslations = {
       "title": "Libro degli incantesimi",
       "classSubtitle": "Abilità di {className}",
       "close": "Chiudi libro degli incantesimi",
+      "resetBar": "Ripristina barra",
+      "resetBarAria": "Ripristina la barra azioni attuale alle abilità predefinite",
       "trainableAtLevel": "Addestrabile al livello {level}",
       "learnAtLevel": "Lo imparerai al livello {level}.",
       "knownAbilityAria": "{name}, grado {rank}. {summary}",

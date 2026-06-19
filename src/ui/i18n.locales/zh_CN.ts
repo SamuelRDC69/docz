@@ -837,6 +837,8 @@ export const zh_CN: Partial<Record<TranslationKey, string>> = {
   "abilityUi.spellbook.title": "法术书",
   "abilityUi.spellbook.classSubtitle": "{className}技能",
   "abilityUi.spellbook.close": "关闭法术书",
+  "abilityUi.spellbook.resetBar": "重置动作条",
+  "abilityUi.spellbook.resetBarAria": "将当前动作条重置为默认技能",
   "abilityUi.spellbook.trainableAtLevel": "{level} 级可训练",
   "abilityUi.spellbook.learnAtLevel": "你将在 {level} 级学会此技能。",
   "abilityUi.spellbook.knownAbilityAria": "{name}，等级 {rank}。{summary}",

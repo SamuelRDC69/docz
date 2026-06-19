@@ -1224,6 +1224,8 @@ export const zh_TW: EnTranslations = {
       "title": "法術書",
       "classSubtitle": "{className}技能",
       "close": "關閉法術書",
+      "resetBar": "重置動作列",
+      "resetBarAria": "將目前的動作列重置為預設技能",
       "trainableAtLevel": "{level} 級可訓練",
       "learnAtLevel": "你將在 {level} 級學會此技能。",
       "knownAbilityAria": "{name}，等級 {rank}。{summary}",

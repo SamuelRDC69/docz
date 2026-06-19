@@ -1224,6 +1224,8 @@ export const zh_CN: EnTranslations = {
       "title": "法术书",
       "classSubtitle": "{className}技能",
       "close": "关闭法术书",
+      "resetBar": "重置动作条",
+      "resetBarAria": "将当前动作条重置为默认技能",
       "trainableAtLevel": "{level} 级可训练",
       "learnAtLevel": "你将在 {level} 级学会此技能。",
       "knownAbilityAria": "{name}，等级 {rank}。{summary}",

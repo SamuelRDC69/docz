@@ -1224,6 +1224,8 @@ export const en_CA: EnTranslations = {
       "title": "Spellbook",
       "classSubtitle": "{className} abilities",
       "close": "Close spellbook",
+      "resetBar": "Reset bar",
+      "resetBarAria": "Reset the current action bar to its default abilities",
       "trainableAtLevel": "Trainable at level {level}",
       "learnAtLevel": "You will learn this at level {level}.",
       "knownAbilityAria": "{name}, rank {rank}. {summary}",

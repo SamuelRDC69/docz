@@ -970,6 +970,8 @@
     background-color: #15151f; background-size: cover; background-position: center; background-repeat: no-repeat;
     border: 2px solid #4a3d1d; }
   .spell-hotbar-toggle { display: none; }
+  .panel-title-actions { display: flex; align-items: center; gap: 6px; }
+  .spellbook-reset { font-size: 12px; padding: 3px 10px; white-space: nowrap; }
 
   /* quest log */
   #quest-log-window { width: 520px; }
@@ -5155,6 +5157,13 @@
   }
   body.mobile-touch #spellbook .spell-hotbar-toggle:disabled {
     opacity: 0.45;
+  }
+  body.mobile-touch #spellbook .spellbook-reset {
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 12px;
+    font-size: 14px;
   }
   body.mobile-touch #quest-dialog .qd-list-item,
   body.mobile-touch #quest-log-window .ql-item,

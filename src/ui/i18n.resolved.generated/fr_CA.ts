@@ -1224,6 +1224,8 @@ export const fr_CA: EnTranslations = {
       "title": "Grimoire",
       "classSubtitle": "Techniques de {className}",
       "close": "Fermer le grimoire",
+      "resetBar": "Réinitialiser la barre",
+      "resetBarAria": "Réinitialise la barre d'action actuelle avec ses techniques par défaut",
       "trainableAtLevel": "Entraînable au niveau {level}",
       "learnAtLevel": "Vous apprendrez ceci au niveau {level}.",
       "knownAbilityAria": "{name}, rang {rank}. {summary}",

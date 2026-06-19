@@ -65,8 +65,9 @@ import {
 import { talentChoiceIconDataUrl, talentNodeIconDataUrl } from './talent_icons';
 import { augmentCategory, type AugmentCategory } from '../sim/content/augments';
 import {
-  clearHotbarSlot, encodeHotbarAction, HOTBAR_ACTION_MIME, HotbarAction, parseHotbarAction, parseHotbarActions,
-  placeAbilityOnSlot, placeItemOnSlot, swapHotbarSlots, syncHotbarActions,
+  buildDefaultFormBar, clearHotbarSlot, encodeHotbarAction, HOTBAR_ACTION_MIME, HotbarAction,
+  parseHotbarAction, parseHotbarActions,
+  placeAbilityOnSlot, placeItemOnSlot, shouldSeedFormBar, swapHotbarSlots, syncHotbarActions,
 } from './hotbar';
 
 // hooks main wires after Input exists (the options menu drives input, audio,
@@ -297,6 +298,7 @@ function weaponSwingKey(cls: string): string {
 
 export class Hud {
   private static readonly BAR_ABILITY_SLOTS = 11; // bar slots 1..11; slot 0 is the fixed Attack toggle
+  private static readonly FORM_TOGGLE_IDS = new Set(['bear_form', 'cat_form']); // shift toggles, castable in any form
   private abilityButtons: { btn: HTMLButtonElement; label: HTMLSpanElement; countEl: HTMLSpanElement; keybindEl: HTMLSpanElement; cdOverlay: HTMLDivElement; cdText: HTMLDivElement; lastIcon: string }[] = [];
   private hotbarActions: HotbarAction[] = []; // index = barSlot-1
   private loadedSlotMapFromStorage = false;
@@ -1586,6 +1588,71 @@ export class Hud {
     return item?.kind === 'food' || item?.kind === 'drink' || item?.kind === 'potion' || item?.use?.type === 'fishing';
   }
 
+  // Whether an ability belongs on a given form's default bar. Bear/cat bars hold
+  // only that form's kit (its `requiresForm` abilities) plus the shift toggles;
+  // the caster ('normal') bar excludes form-only abilities so they no longer
+  // auto-dump onto it. Rogue stealth has no `requiresForm` kit, so it keeps the
+  // full caster set.
+  private shouldAutoPlaceOnForm(id: string, form: HotbarForm): boolean {
+    if (form === 'bear' || form === 'cat') {
+      return ABILITIES[id]?.requiresForm === form || Hud.FORM_TOGGLE_IDS.has(id);
+    }
+    return !ABILITIES[id]?.requiresForm;
+  }
+
+  // The known abilities that make up a form's default bar, in class/learn order.
+  private formKitAbilityIds(form: HotbarForm): string[] {
+    return this.sim.known.map((k) => k.def.id).filter((id) => this.shouldAutoPlaceOnForm(id, form));
+  }
+
+  // True for the druid form bars that own a dedicated kit (bear/cat). Rogue
+  // stealth is excluded: the sim does not lock the caster kit in stealth, so its
+  // bar legitimately mirrors the normal layout.
+  private isFormKitBar(form: HotbarForm = this.activeHotbarForm): boolean {
+    return this.sim.cfg.playerClass === 'druid' && (form === 'bear' || form === 'cat');
+  }
+
+  // Per-form one-time marker so the migration of pre-existing form bars (empty or
+  // a clone of the caster bar) runs at most once and never clobbers a layout the
+  // player deliberately customized. Mirrors the emote-wheel version marker.
+  private formBarSeededKey(form: HotbarForm = this.activeHotbarForm): string {
+    return `${this.slotMapKey(form)}_seeded`;
+  }
+
+  private markFormBarSeeded(form: HotbarForm = this.activeHotbarForm): void {
+    try { localStorage.setItem(this.formBarSeededKey(form), '1'); } catch { /* storage unavailable */ }
+  }
+
+  // Seed/migrate a druid bear/cat bar to its form kit. Returns true if it took
+  // ownership of `hotbarActions`. Runs at most once per form (guarded by the
+  // marker): on first encounter it seeds an empty bar or migrates a bar that is a
+  // byte-identical clone of the caster bar, but leaves a customized bar untouched.
+  private seedFormBarIfNeeded(parsed: HotbarAction[]): boolean {
+    let alreadySeeded = false;
+    try { alreadySeeded = localStorage.getItem(this.formBarSeededKey()) === '1'; } catch { /* storage unavailable */ }
+    if (alreadySeeded) return false;
+
+    let normalRaw: unknown = null;
+    try { normalRaw = JSON.parse(localStorage.getItem(this.slotMapKey('normal')) ?? 'null'); } catch { /* corrupt */ }
+    const normalActions = parseHotbarActions(
+      normalRaw,
+      Hud.BAR_ABILITY_SLOTS,
+      (id) => !!ABILITIES[id],
+      (id) => this.isHotbarItemId(id),
+    );
+
+    // Mark before deciding so a deliberately customized bar is left untouched and
+    // this migration is never re-evaluated for the form.
+    this.markFormBarSeeded();
+    if (!shouldSeedFormBar(parsed, normalActions, false)) return false;
+
+    this.hotbarActions = buildDefaultFormBar(this.formKitAbilityIds(this.activeHotbarForm), Hud.BAR_ABILITY_SLOTS);
+    this.loadedSlotMapFromStorage = true;
+    this.knownAbilityIdsAtLastSlotSync = null;
+    this.saveSlotMap();
+    return true;
+  }
+
   private loadSlotMap(): void {
     let arr: unknown = null;
     let stored = false;
@@ -1600,6 +1667,15 @@ export class Hud {
       (id) => !!ABILITIES[id],
       (id) => this.isHotbarItemId(id),
     );
+    // Druid bear/cat bars auto-populate with that form's kit instead of cloning
+    // the caster bar; existing characters are migrated once (see seedFormBarIfNeeded).
+    if (this.isFormKitBar()) {
+      if (this.seedFormBarIfNeeded(parsed)) return;
+      this.loadedSlotMapFromStorage = stored;
+      this.hotbarActions = parsed;
+      this.knownAbilityIdsAtLastSlotSync = null;
+      return;
+    }
     const emptyFormMap = this.activeHotbarForm !== 'normal' && parsed.every((action) => action === null);
     if (emptyFormMap) {
       let fallback: unknown = null;
@@ -1663,6 +1739,22 @@ export class Hud {
     });
   }
 
+  // Rebuild the active bar from its default kit (form bars get their form kit;
+  // the caster/stealth bar gets the form-filtered known abilities). Item
+  // shortcuts and manual arrangement are intentionally discarded — it's a reset.
+  // The per-frame update() repaints the slot icons from hotbarActions, so we only
+  // mutate state here (same as addAbilityToHotbar / drag-drop).
+  private resetActiveFormBarToDefault(): void {
+    this.hotbarActions = buildDefaultFormBar(
+      this.formKitAbilityIds(this.activeHotbarForm),
+      Hud.BAR_ABILITY_SLOTS,
+    );
+    this.knownAbilityIdsAtLastSlotSync = new Set(this.sim.known.map((k) => k.def.id));
+    this.markFormBarSeeded();
+    this.saveSlotMap();
+    this.refreshSpellbookHotbarControls();
+  }
+
   private formToggleAbilityId(): string | null {
     if (this.activeHotbarForm === 'bear') return 'bear_form';
     if (this.activeHotbarForm === 'cat') return 'cat_form';
@@ -1684,13 +1776,18 @@ export class Hud {
   private syncSlotMap(): void {
     const knownAbilityIds = this.sim.known.map((k) => k.def.id);
     const autoPlaceAbilityIds = new Set<string>();
+    // Only auto-place abilities that belong on the active form's bar, so newly
+    // learned form abilities land on their form bar and not the caster bar.
+    const consider = (id: string) => {
+      if (this.shouldAutoPlaceOnForm(id, this.activeHotbarForm)) autoPlaceAbilityIds.add(id);
+    };
     if (this.knownAbilityIdsAtLastSlotSync === null) {
       if (!this.loadedSlotMapFromStorage) {
-        for (const id of knownAbilityIds) autoPlaceAbilityIds.add(id);
+        for (const id of knownAbilityIds) consider(id);
       }
     } else {
       for (const id of knownAbilityIds) {
-        if (!this.knownAbilityIdsAtLastSlotSync.has(id)) autoPlaceAbilityIds.add(id);
+        if (!this.knownAbilityIdsAtLastSlotSync.has(id)) consider(id);
       }
     }
     const formToggle = this.formToggleAbilityId();
@@ -5976,7 +6073,7 @@ export class Hud {
     const cls = CLASSES[sim.cfg.playerClass];
     const className = classDisplayName(cls.id);
     el.setAttribute('aria-label', t('abilityUi.spellbook.title'));
-    el.innerHTML = `<div class="panel-title"><span>${esc(t('abilityUi.spellbook.title'))} <span class="spellbook-class">${esc(t('abilityUi.spellbook.classSubtitle', { className }))}</span></span><button type="button" class="x-btn" data-close aria-label="${esc(t('abilityUi.spellbook.close'))}">${svgIcon('close')}</button></div>`;
+    el.innerHTML = `<div class="panel-title"><span>${esc(t('abilityUi.spellbook.title'))} <span class="spellbook-class">${esc(t('abilityUi.spellbook.classSubtitle', { className }))}</span></span><div class="panel-title-actions"><button type="button" class="x-btn spellbook-reset" data-reset-bar aria-label="${esc(t('abilityUi.spellbook.resetBarAria'))}">${esc(t('abilityUi.spellbook.resetBar'))}</button><button type="button" class="x-btn" data-close aria-label="${esc(t('abilityUi.spellbook.close'))}">${svgIcon('close')}</button></div></div>`;
     const list = document.createElement('div');
     list.className = 'spell-list';
     list.setAttribute('role', 'list');
@@ -6047,6 +6144,14 @@ export class Hud {
       list.appendChild(empty);
     }
     el.querySelector('[data-close]')?.addEventListener('click', () => { el.style.display = 'none'; this.hideTooltip(); });
+    const resetBtn = el.querySelector('[data-reset-bar]');
+    resetBtn?.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    resetBtn?.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.resetActiveFormBarToDefault();
+      audio.click();
+    });
   }
 
   // -------------------------------------------------------------------------

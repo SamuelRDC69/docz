@@ -837,6 +837,8 @@ export const ko_KR: Partial<Record<TranslationKey, string>> = {
   "abilityUi.spellbook.title": "마법책",
   "abilityUi.spellbook.classSubtitle": "{className} 능력",
   "abilityUi.spellbook.close": "마법책 닫기",
+  "abilityUi.spellbook.resetBar": "단축바 초기화",
+  "abilityUi.spellbook.resetBarAria": "현재 행동 단축바를 기본 능력으로 초기화",
   "abilityUi.spellbook.trainableAtLevel": "{level}레벨에 훈련 가능",
   "abilityUi.spellbook.learnAtLevel": "{level}레벨에 배웁니다.",
   "abilityUi.spellbook.knownAbilityAria": "{name}, {rank} 등급. {summary}",

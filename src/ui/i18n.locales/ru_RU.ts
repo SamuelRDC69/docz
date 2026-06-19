@@ -837,6 +837,8 @@ export const ru_RU: Partial<Record<TranslationKey, string>> = {
   "abilityUi.spellbook.title": "Книга заклинаний",
   "abilityUi.spellbook.classSubtitle": "Способности: {className}",
   "abilityUi.spellbook.close": "Закрыть книгу заклинаний",
+  "abilityUi.spellbook.resetBar": "Сбросить панель",
+  "abilityUi.spellbook.resetBarAria": "Сбросить текущую панель действий до стандартных способностей",
   "abilityUi.spellbook.trainableAtLevel": "Можно обучиться на уровне {level}",
   "abilityUi.spellbook.learnAtLevel": "Вы изучите это на уровне {level}.",
   "abilityUi.spellbook.knownAbilityAria": "{name}, ранг {rank}. {summary}",

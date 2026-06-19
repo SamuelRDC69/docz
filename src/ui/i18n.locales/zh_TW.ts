@@ -837,6 +837,8 @@ export const zh_TW: Partial<Record<TranslationKey, string>> = {
   "abilityUi.spellbook.title": "法術書",
   "abilityUi.spellbook.classSubtitle": "{className}技能",
   "abilityUi.spellbook.close": "關閉法術書",
+  "abilityUi.spellbook.resetBar": "重置動作列",
+  "abilityUi.spellbook.resetBarAria": "將目前的動作列重置為預設技能",
   "abilityUi.spellbook.trainableAtLevel": "{level} 級可訓練",
   "abilityUi.spellbook.learnAtLevel": "你將在 {level} 級學會此技能。",
   "abilityUi.spellbook.knownAbilityAria": "{name}，等級 {rank}。{summary}",

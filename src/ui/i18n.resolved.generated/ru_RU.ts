@@ -1224,6 +1224,8 @@ export const ru_RU: EnTranslations = {
       "title": "Книга заклинаний",
       "classSubtitle": "Способности: {className}",
       "close": "Закрыть книгу заклинаний",
+      "resetBar": "Сбросить панель",
+      "resetBarAria": "Сбросить текущую панель действий до стандартных способностей",
       "trainableAtLevel": "Можно обучиться на уровне {level}",
       "learnAtLevel": "Вы изучите это на уровне {level}.",
       "knownAbilityAria": "{name}, ранг {rank}. {summary}",

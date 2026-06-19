@@ -1224,6 +1224,8 @@ export const en_XA: EnTranslations = {
       "title": "[Šþéļļƀóóķ]",
       "classSubtitle": "[{className} áƀíļíţíéš]",
       "close": "[Çļóšé šþéļļƀóóķ]",
+      "resetBar": "[Ŕéšéţ ƀáŕ]",
+      "resetBarAria": "[Ŕéšéţ ţĥé çúŕŕéñţ áçţíóñ ƀáŕ ţó íţš ðéƒáúļţ áƀíļíţíéš]",
       "trainableAtLevel": "[Ţŕáíñáƀļé áţ ļéʋéļ {level}]",
       "learnAtLevel": "[Ýóú ŵíļļ ļéáŕñ ţĥíš áţ ļéʋéļ {level}.]",
       "knownAbilityAria": "[{name}, ŕáñķ {rank}. {summary}]",
