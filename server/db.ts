@@ -66,6 +66,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS created_ip TEXT;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS created_user_agent TEXT;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_login_ip TEXT;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_login_user_agent TEXT;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS cosmetics JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS accounts_created_at ON accounts(created_at DESC);
 CREATE INDEX IF NOT EXISTS accounts_created_ip_created ON accounts(created_ip, created_at DESC);
 CREATE INDEX IF NOT EXISTS accounts_created_user_agent_created ON accounts(created_user_agent, created_at DESC);
@@ -215,6 +216,66 @@ export interface AccountChatMuteStatus {
 export interface RequestMetadata {
   ip?: string | null;
   userAgent?: string | null;
+}
+
+export interface AccountCosmetics {
+  completedQuestIds: string[];
+  mechChromaIds: string[];
+}
+
+function uniqueStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== 'string' || item.length === 0 || seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
+}
+
+export function normalizeAccountCosmetics(value: unknown): AccountCosmetics {
+  const src = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    completedQuestIds: uniqueStrings(src.completedQuestIds),
+    mechChromaIds: uniqueStrings(src.mechChromaIds),
+  };
+}
+
+export async function loadAccountCosmetics(accountId: number): Promise<AccountCosmetics> {
+  const res = await pool.query('SELECT cosmetics FROM accounts WHERE id = $1', [accountId]);
+  return normalizeAccountCosmetics(res.rows[0]?.cosmetics);
+}
+
+async function saveAccountCosmetics(accountId: number, cosmetics: AccountCosmetics): Promise<AccountCosmetics> {
+  const res = await pool.query(
+    'UPDATE accounts SET cosmetics = $2 WHERE id = $1 RETURNING cosmetics',
+    [accountId, cosmetics],
+  );
+  return normalizeAccountCosmetics(res.rows[0]?.cosmetics ?? cosmetics);
+}
+
+export async function markAccountQuestComplete(accountId: number, questId: string): Promise<AccountCosmetics> {
+  const cosmetics = await loadAccountCosmetics(accountId);
+  const completedQuestIds = cosmetics.completedQuestIds.includes(questId)
+    ? cosmetics.completedQuestIds
+    : [...cosmetics.completedQuestIds, questId];
+  return saveAccountCosmetics(accountId, { ...cosmetics, completedQuestIds });
+}
+
+export async function grantAccountMechChroma(accountId: number, chromaId: string): Promise<AccountCosmetics> {
+  const cosmetics = await loadAccountCosmetics(accountId);
+  const mechChromaIds = cosmetics.mechChromaIds.includes(chromaId)
+    ? cosmetics.mechChromaIds
+    : [...cosmetics.mechChromaIds, chromaId];
+  return saveAccountCosmetics(accountId, { ...cosmetics, mechChromaIds });
+}
+
+export async function revokeAccountMechChroma(accountId: number, chromaId: string): Promise<AccountCosmetics> {
+  const cosmetics = await loadAccountCosmetics(accountId);
+  const mechChromaIds = cosmetics.mechChromaIds.filter((id) => id !== chromaId);
+  return saveAccountCosmetics(accountId, { ...cosmetics, mechChromaIds });
 }
 
 function cleanMetadataText(value: string | null | undefined, max: number): string | null {

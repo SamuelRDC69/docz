@@ -12,7 +12,7 @@
 // every player-facing emit site, and fails if any is no longer recognized by a client
 // matcher — so a new unhandled sim string cannot ship silently.
 import { ITEMS, MOBS } from '../sim/data';
-import { getLanguage, supportedLanguages, t, formatNumber, type InterpolationValues, type SupportedLanguage } from './i18n';
+import { getLanguage, supportedLanguages, t, formatNumber, type InterpolationValues, type SupportedLanguage, type TranslationKey } from './i18n';
 import { tEntity } from './entity_i18n';
 
 const baseEnTable = {
@@ -69,6 +69,7 @@ const baseEnTable = {
   "log.discarded": "Discarded {item}.",
   "log.equipped": "Equipped {item}.",
   "log.noFish": "No fish are biting.",
+  "log.rareCatch": "A rare catch! Something gleams on your line.",
   "log.sitEat": "You sit down to eat.",
   "log.sitDrink": "You sit down to drink.",
   "log.quaff": "You quaff {item}.",
@@ -79,6 +80,7 @@ const baseEnTable = {
   "loot.rollWin": "{winner} wins {item} ({roll})",
   "aura.tamed": "Tamed",
   "aura.causticSpores": "Caustic Spores",
+  "aura.elixirBear": "Might of the Bear",
 } as const;
 
 const petEnTable = {
@@ -180,6 +182,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "Discarded {item}.",
     "log.equipped": "Equipped {item}.",
     "log.noFish": "No fish are biting.",
+    "log.rareCatch": "A rare catch! Something gleams on your line.",
     "log.sitEat": "You sit down to eat.",
     "log.sitDrink": "You sit down to drink.",
     "log.quaff": "You quaff {item}.",
@@ -190,6 +193,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner} wins {item} ({roll})",
     "aura.tamed": "Tamed",
     "aura.causticSpores": "Caustic Spores",
+    "aura.elixirBear": "Might of the Bear",
   },
   es: {
     "error.lineOfSight": "Sin línea de visión.",
@@ -245,6 +249,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "Has desechado {item}.",
     "log.equipped": "Has equipado {item}.",
     "log.noFish": "No pican los peces.",
+    "log.rareCatch": "¡Una captura rara! Algo brilla en tu sedal.",
     "log.sitEat": "Te sientas a comer.",
     "log.sitDrink": "Te sientas a beber.",
     "log.quaff": "Bebes {item}.",
@@ -255,6 +260,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner} gana {item} ({roll})",
     "aura.tamed": "Domado",
     "aura.causticSpores": "Esporas Cáusticas",
+    "aura.elixirBear": "Poder del Oso",
   },
   es_ES: {
     "error.lineOfSight": "Sin línea de visión.",
@@ -310,6 +316,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "Has desechado {item}.",
     "log.equipped": "Has equipado {item}.",
     "log.noFish": "No pican los peces.",
+    "log.rareCatch": "¡Una captura rara! Algo brilla en tu sedal.",
     "log.sitEat": "Te sientas a comer.",
     "log.sitDrink": "Te sientas a beber.",
     "log.quaff": "Bebes {item}.",
@@ -320,6 +327,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner} gana {item} ({roll})",
     "aura.tamed": "Domado",
     "aura.causticSpores": "Esporas Cáusticas",
+    "aura.elixirBear": "Poder del Oso",
   },
   fr_FR: {
     "error.lineOfSight": "Pas de ligne de vue.",
@@ -375,6 +383,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "{item} jeté.",
     "log.equipped": "{item} équipé.",
     "log.noFish": "Aucun poisson ne mord.",
+    "log.rareCatch": "Une prise rare ! Quelque chose scintille sur votre ligne.",
     "log.sitEat": "Vous vous asseyez pour manger.",
     "log.sitDrink": "Vous vous asseyez pour boire.",
     "log.quaff": "Vous buvez {item}.",
@@ -385,6 +394,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner} remporte {item} ({roll})",
     "aura.tamed": "Apprivoisé",
     "aura.causticSpores": "Spores Caustiques",
+    "aura.elixirBear": "Puissance de l'Ours",
   },
   fr_CA: {
     "error.lineOfSight": "Pas de ligne de vue.",
@@ -440,6 +450,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "{item} jeté.",
     "log.equipped": "{item} équipé.",
     "log.noFish": "Aucun poisson ne mord.",
+    "log.rareCatch": "Une prise rare ! Quelque chose scintille sur votre ligne.",
     "log.sitEat": "Vous vous asseyez pour manger.",
     "log.sitDrink": "Vous vous asseyez pour boire.",
     "log.quaff": "Vous buvez {item}.",
@@ -450,6 +461,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner} remporte {item} ({roll})",
     "aura.tamed": "Apprivoisé",
     "aura.causticSpores": "Spores Caustiques",
+    "aura.elixirBear": "Puissance de l'Ours",
   },
   en_CA: {
     "error.lineOfSight": "Line of sight.",
@@ -505,6 +517,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "Discarded {item}.",
     "log.equipped": "Equipped {item}.",
     "log.noFish": "No fish are biting.",
+    "log.rareCatch": "A rare catch! Something gleams on your line.",
     "log.sitEat": "You sit down to eat.",
     "log.sitDrink": "You sit down to drink.",
     "log.quaff": "You quaff {item}.",
@@ -515,6 +528,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner} wins {item} ({roll})",
     "aura.tamed": "Tamed",
     "aura.causticSpores": "Caustic Spores",
+    "aura.elixirBear": "Might of the Bear",
   },
   it_IT: {
     "error.lineOfSight": "Nessuna linea di vista.",
@@ -570,6 +584,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "{item} scartato.",
     "log.equipped": "{item} equipaggiato.",
     "log.noFish": "I pesci non abboccano.",
+    "log.rareCatch": "Una cattura rara! Qualcosa luccica sulla tua lenza.",
     "log.sitEat": "Ti siedi a mangiare.",
     "log.sitDrink": "Ti siedi a bere.",
     "log.quaff": "Tracanni {item}.",
@@ -580,6 +595,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner} vince {item} ({roll})",
     "aura.tamed": "Addomesticato",
     "aura.causticSpores": "Spore Caustiche",
+    "aura.elixirBear": "Potenza dell'Orso",
   },
   de_DE: {
     "error.lineOfSight": "Kein Sichtkontakt.",
@@ -635,6 +651,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "{item} weggeworfen.",
     "log.equipped": "{item} ausgerüstet.",
     "log.noFish": "Es beißen keine Fische.",
+    "log.rareCatch": "Ein seltener Fang! Etwas glänzt an deiner Angelschnur.",
     "log.sitEat": "Ihr setzt Euch zum Essen.",
     "log.sitDrink": "Ihr setzt Euch zum Trinken.",
     "log.quaff": "Ihr trinkt {item}.",
@@ -645,6 +662,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner} gewinnt {item} ({roll})",
     "aura.tamed": "Gezähmt",
     "aura.causticSpores": "Ätzende Sporen",
+    "aura.elixirBear": "Macht des Bären",
   },
   zh_CN: {
     "error.lineOfSight": "目标不在视线内。",
@@ -700,6 +718,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "已丢弃{item}。",
     "log.equipped": "已装备{item}。",
     "log.noFish": "没有鱼上钩。",
+    "log.rareCatch": "稀有渔获！你的鱼线上有东西在闪光。",
     "log.sitEat": "你坐下来进食。",
     "log.sitDrink": "你坐下来饮水。",
     "log.quaff": "你饮下了{item}。",
@@ -710,6 +729,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner}赢得了{item}（{roll}）",
     "aura.tamed": "已驯服",
     "aura.causticSpores": "腐蚀孢子",
+    "aura.elixirBear": "巨熊之力",
   },
   zh_TW: {
     "error.lineOfSight": "目標不在視線內。",
@@ -765,6 +785,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "已丟棄 {item}。",
     "log.equipped": "已裝備 {item}。",
     "log.noFish": "沒有魚上鉤。",
+    "log.rareCatch": "稀有漁獲！你的釣線上有東西在閃光。",
     "log.sitEat": "你坐下來進食。",
     "log.sitDrink": "你坐下來飲水。",
     "log.quaff": "你喝下了 {item}。",
@@ -775,6 +796,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner} 擲骰獲得 {item}（{roll}）",
     "aura.tamed": "馴服",
     "aura.causticSpores": "腐蝕孢子",
+    "aura.elixirBear": "巨熊之力",
   },
   ko_KR: {
     "error.lineOfSight": "시야가 막혀 있습니다.",
@@ -830,6 +852,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "{item}을(를) 버렸습니다.",
     "log.equipped": "{item}을(를) 착용했습니다.",
     "log.noFish": "입질이 없습니다.",
+    "log.rareCatch": "희귀한 낚시감! 낚싯줄에 무언가 반짝입니다.",
     "log.sitEat": "앉아서 음식을 먹습니다.",
     "log.sitDrink": "앉아서 음료를 마십니다.",
     "log.quaff": "{item}을(를) 들이켭니다.",
@@ -840,6 +863,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner}님이 {item}을(를) 획득했습니다 ({roll})",
     "aura.tamed": "길들여짐",
     "aura.causticSpores": "부식성 포자",
+    "aura.elixirBear": "곰의 힘",
   },
   ja_JP: {
     "error.lineOfSight": "視線が通っていません。",
@@ -895,6 +919,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "{item}を破棄しました。",
     "log.equipped": "{item}を装備しました。",
     "log.noFish": "魚がかかりません。",
+    "log.rareCatch": "珍しい釣果！糸の先で何かが光っている。",
     "log.sitEat": "座って食事を始めました。",
     "log.sitDrink": "座って水分補給を始めました。",
     "log.quaff": "{item}を飲み干しました。",
@@ -905,6 +930,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner}が{item}を獲得しました（{roll}）",
     "aura.tamed": "テイム",
     "aura.causticSpores": "腐食胞子",
+    "aura.elixirBear": "熊の力",
   },
   pt_BR: {
     "error.lineOfSight": "Sem linha de visão.",
@@ -960,6 +986,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "{item} descartado.",
     "log.equipped": "{item} equipado.",
     "log.noFish": "Os peixes não estão mordendo.",
+    "log.rareCatch": "Uma fisgada rara! Algo reluz na sua linha.",
     "log.sitEat": "Você se senta para comer.",
     "log.sitDrink": "Você se senta para beber.",
     "log.quaff": "Você bebe {item}.",
@@ -970,6 +997,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner} vence {item} ({roll})",
     "aura.tamed": "Domado",
     "aura.causticSpores": "Esporos Cáusticos",
+    "aura.elixirBear": "Força do Urso",
   },
   ru_RU: {
     "error.lineOfSight": "Нет прямой видимости.",
@@ -1025,6 +1053,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "log.discarded": "Выброшено: {item}.",
     "log.equipped": "Экипировано: {item}.",
     "log.noFish": "Рыба не клюёт.",
+    "log.rareCatch": "Редкий улов! Что-то блестит на вашей леске.",
     "log.sitEat": "Вы садитесь, чтобы поесть.",
     "log.sitDrink": "Вы садитесь, чтобы попить.",
     "log.quaff": "Вы выпиваете {item}.",
@@ -1035,6 +1064,7 @@ const BASE_DICT: Record<SupportedLanguage, Record<BaseSimMessageKey, string>> = 
     "loot.rollWin": "{winner} выигрывает {item} ({roll})",
     "aura.tamed": "Приручён",
     "aura.causticSpores": "Едкие споры",
+    "aura.elixirBear": "Мощь Медведя",
   },
 };
 
@@ -1500,6 +1530,7 @@ function locPetMode(mode: string): string {
 // Flavor aura names (not abilities, not talents) shown in the buff frame / combat log.
 const AURA_NAME_KEY: Record<string, SimMessageKey> = {
   Tamed: 'aura.tamed',
+  'Might of the Bear': 'aura.elixirBear',
   Summoned: 'aura.summoned',
   Fed: 'aura.fed',
   'Caustic Spores': 'aura.causticSpores',
@@ -2028,6 +2059,184 @@ function tQuestExtra(key: QuestExtraKey, params?: InterpolationValues): string {
   return interpolate(table[key] ?? QUEST_EXTRA.en[key], params);
 }
 
+// Item / equipment / world-object interaction strings emitted by src/sim: the
+// /gear self-readout frame plus the relic + quest-item pickup error toasts. Like
+// QUEST_EXTRA/ARENA_EXTRA these live here (not the DICT) and are matched by the
+// RULES below; the gear readout's per-slot LABELS reuse the already-translated
+// itemUi.slots.* keys via t(), so only the frame + "(empty)" marker are new here.
+type ItemExtraKey =
+  | 'gearReadout' | 'gearEmptySlot' | 'nothingEquipped'
+  | 'cannotTakeYet' | 'offersNothingMore'
+  | 'relicBound' | 'relicRecovered';
+
+const ITEM_EXTRA: Record<SupportedLanguage, Record<ItemExtraKey, string>> = {
+  en: {
+    gearReadout: 'Equipped ({worn}/{total}): {items}.',
+    gearEmptySlot: '(empty)',
+    nothingEquipped: 'You have nothing equipped.',
+    cannotTakeYet: 'You cannot take the {name} yet.',
+    offersNothingMore: '{name} offers nothing more.',
+    relicBound: 'The relic is bound by the sealed crypt.',
+    relicRecovered: 'You have already recovered this relic.',
+  },
+  en_CA: {
+    gearReadout: 'Equipped ({worn}/{total}): {items}.',
+    gearEmptySlot: '(empty)',
+    nothingEquipped: 'You have nothing equipped.',
+    cannotTakeYet: 'You cannot take the {name} yet.',
+    offersNothingMore: '{name} offers nothing more.',
+    relicBound: 'The relic is bound by the sealed crypt.',
+    relicRecovered: 'You have already recovered this relic.',
+  },
+  es: {
+    gearReadout: 'Equipado ({worn}/{total}): {items}.',
+    gearEmptySlot: '(vacío)',
+    nothingEquipped: 'No tienes nada equipado.',
+    cannotTakeYet: 'Aún no puedes tomar {name}.',
+    offersNothingMore: '{name} no ofrece nada más.',
+    relicBound: 'La reliquia está atada a la cripta sellada.',
+    relicRecovered: 'Ya has recuperado esta reliquia.',
+  },
+  es_ES: {
+    gearReadout: 'Equipado ({worn}/{total}): {items}.',
+    gearEmptySlot: '(vacío)',
+    nothingEquipped: 'No tienes nada equipado.',
+    cannotTakeYet: 'Aún no puedes tomar {name}.',
+    offersNothingMore: '{name} no ofrece nada más.',
+    relicBound: 'La reliquia está atada a la cripta sellada.',
+    relicRecovered: 'Ya has recuperado esta reliquia.',
+  },
+  fr_FR: {
+    gearReadout: 'Équipé ({worn}/{total}): {items}.',
+    gearEmptySlot: '(vide)',
+    nothingEquipped: "Vous n'avez rien d'équipé.",
+    cannotTakeYet: 'Vous ne pouvez pas encore prendre {name}.',
+    offersNothingMore: "{name} n'offre rien de plus.",
+    relicBound: 'La relique est liée à la crypte scellée.',
+    relicRecovered: 'Vous avez déjà récupéré cette relique.',
+  },
+  fr_CA: {
+    gearReadout: 'Équipé ({worn}/{total}): {items}.',
+    gearEmptySlot: '(vide)',
+    nothingEquipped: "Vous n'avez rien d'équipé.",
+    cannotTakeYet: 'Vous ne pouvez pas encore prendre {name}.',
+    offersNothingMore: "{name} n'offre rien de plus.",
+    relicBound: 'La relique est liée à la crypte scellée.',
+    relicRecovered: 'Vous avez déjà récupéré cette relique.',
+  },
+  it_IT: {
+    gearReadout: 'Equipaggiato ({worn}/{total}): {items}.',
+    gearEmptySlot: '(vuoto)',
+    nothingEquipped: 'Non hai nulla equipaggiato.',
+    cannotTakeYet: 'Non puoi ancora prendere {name}.',
+    offersNothingMore: "{name} non offre nient'altro.",
+    relicBound: 'La reliquia è vincolata alla cripta sigillata.',
+    relicRecovered: 'Hai già recuperato questa reliquia.',
+  },
+  de_DE: {
+    gearReadout: 'Ausgerüstet ({worn}/{total}): {items}.',
+    gearEmptySlot: '(leer)',
+    nothingEquipped: 'Ihr habt nichts ausgerüstet.',
+    cannotTakeYet: 'Ihr könnt {name} noch nicht nehmen.',
+    offersNothingMore: '{name} bietet nichts weiter.',
+    relicBound: 'Das Relikt ist an die versiegelte Krypta gebunden.',
+    relicRecovered: 'Ihr habt dieses Relikt bereits geborgen.',
+  },
+  zh_CN: {
+    gearReadout: '已装备（{worn}/{total}）：{items}。',
+    gearEmptySlot: '（空）',
+    nothingEquipped: '你没有装备任何物品。',
+    cannotTakeYet: '你还不能拿取{name}。',
+    offersNothingMore: '{name}没有更多可提供的了。',
+    relicBound: '圣物被封印的墓穴束缚着。',
+    relicRecovered: '你已经找回了这件圣物。',
+  },
+  zh_TW: {
+    gearReadout: '已裝備（{worn}/{total}）：{items}。',
+    gearEmptySlot: '（空）',
+    nothingEquipped: '你沒有裝備任何物品。',
+    cannotTakeYet: '你還不能拿取{name}。',
+    offersNothingMore: '{name}沒有更多可提供的了。',
+    relicBound: '聖物被封印的墓穴束縛著。',
+    relicRecovered: '你已經找回了這件聖物。',
+  },
+  ko_KR: {
+    gearReadout: '착용 중 ({worn}/{total}): {items}.',
+    gearEmptySlot: '(없음)',
+    nothingEquipped: '착용한 장비가 없습니다.',
+    cannotTakeYet: '아직 {name}을(를) 가져갈 수 없습니다.',
+    offersNothingMore: '{name}에게서 더 얻을 것이 없습니다.',
+    relicBound: '유물이 봉인된 묘실에 묶여 있습니다.',
+    relicRecovered: '이미 이 유물을 되찾았습니다.',
+  },
+  ja_JP: {
+    gearReadout: '装備中（{worn}/{total}）：{items}。',
+    gearEmptySlot: '（なし）',
+    nothingEquipped: '何も装備していません。',
+    cannotTakeYet: 'まだ{name}を取ることはできません。',
+    offersNothingMore: '{name}からはもう何も得られません。',
+    relicBound: '聖遺物は封印された墓所に縛られています。',
+    relicRecovered: 'この聖遺物はすでに回収しています。',
+  },
+  pt_BR: {
+    gearReadout: 'Equipado ({worn}/{total}): {items}.',
+    gearEmptySlot: '(vazio)',
+    nothingEquipped: 'Você não tem nada equipado.',
+    cannotTakeYet: 'Você ainda não pode pegar {name}.',
+    offersNothingMore: '{name} não oferece mais nada.',
+    relicBound: 'A relíquia está presa à cripta selada.',
+    relicRecovered: 'Você já recuperou esta relíquia.',
+  },
+  ru_RU: {
+    gearReadout: 'Экипировано ({worn}/{total}): {items}.',
+    gearEmptySlot: '(пусто)',
+    nothingEquipped: 'У вас ничего не экипировано.',
+    cannotTakeYet: 'Вы пока не можете взять {name}.',
+    offersNothingMore: '{name} больше ничего не предлагает.',
+    relicBound: 'Реликвия привязана к запечатанной крипте.',
+    relicRecovered: 'Вы уже нашли эту реликвию.',
+  },
+};
+
+function tItemExtra(key: ItemExtraKey, params?: InterpolationValues): string {
+  const table = ITEM_EXTRA[getLanguage()] ?? ITEM_EXTRA.en;
+  return interpolate(table[key] ?? ITEM_EXTRA.en[key], params);
+}
+
+// The /gear readout's English slot labels -> the already-translated itemUi.slots.*
+// keys the character-window paperdoll renders. Keep in sync with gearReadout() in
+// src/sim/sim.ts (the slot order/labels it emits).
+const GEAR_SLOT_KEYS: Record<string, TranslationKey> = {
+  'Main Hand': 'itemUi.slots.mainhand',
+  'Helmet': 'itemUi.slots.helmet',
+  'Shoulder': 'itemUi.slots.shoulder',
+  'Chest': 'itemUi.slots.chest',
+  'Waist': 'itemUi.slots.waist',
+  'Legs': 'itemUi.slots.legs',
+  'Gloves': 'itemUi.slots.gloves',
+  'Feet': 'itemUi.slots.feet',
+};
+
+// Rebuild the /gear readout in the active locale: localize each "Slot: value"
+// segment (slot label via itemUi.slots.*, item name via the entity dict, the
+// "(empty)" marker via ITEM_EXTRA) then re-frame via the gearReadout template.
+function locGearReadout(worn: string, total: string, body: string): string {
+  const items = body
+    .split(', ')
+    .map((seg) => {
+      const sep = seg.indexOf(': ');
+      if (sep < 0) return seg;
+      const label = seg.slice(0, sep);
+      const value = seg.slice(sep + 2);
+      const slotKey = GEAR_SLOT_KEYS[label];
+      const locLabel = slotKey ? t(slotKey) : label;
+      const locValue = value === '(empty)' ? tItemExtra('gearEmptySlot') : locItem(value);
+      return `${locLabel}: ${locValue}`;
+    })
+    .join(', ');
+  return tItemExtra('gearReadout', { worn, total, items });
+}
+
 // EXACT (no-placeholder) sim messages: English -> key (auto-built; throws on collision).
 const EXACT: Record<string, SimMessageKey> = {};
 for (const key of Object.keys(enTable) as SimMessageKey[]) {
@@ -2037,8 +2246,27 @@ for (const key of Object.keys(enTable) as SimMessageKey[]) {
   EXACT[v] = key;
 }
 
+// /talents readout (src/sim/sim.ts talentsReadout): the sim assembles an English
+// summary; rebuild it here from t() keys. Spec names splice verbatim (English
+// content names) like player/build names. The breakdown sub-grammar is "Class N"
+// or "Class N, <spec> M"; the optional tail is " N unspent.".
+function locTalentBreakdown(s: string): string {
+  let m = /^Class (.+), (.+) (.+)$/.exec(s);
+  if (m) return t('game.talents.readout.breakdownSpec', { classPts: m[1], spec: m[2], specPts: m[3] });
+  m = /^Class (.+)$/.exec(s);
+  if (m) return t('game.talents.readout.breakdownClass', { classPts: m[1] });
+  return s;
+}
+function locTalentTail(s: string): string {
+  const m = /^ (.+) unspent\.$/.exec(s);
+  return m ? t('game.talents.readout.unspent', { count: m[1] }) : s;
+}
+
 type Rule = { re: RegExp; build: (m: RegExpExecArray) => string };
 const RULES: Rule[] = [
+  { re: /^Your class has no talent tree yet\.$/, build: () => t('game.talents.readout.noTree') },
+  { re: /^You have not unlocked talents yet — they begin at level (.+)\.$/, build: (m) => t('game.talents.readout.locked', { level: m[1] }) },
+  { re: /^Talents: (.+) — (.+)\/(.+) points spent \((.+)\)\.(.*)$/, build: (m) => t('game.talents.readout.summary', { head: m[1] === 'no specialization' ? t('game.talents.readout.noSpec') : m[1], spent: m[2], total: m[3], breakdown: locTalentBreakdown(m[4]) }) + (m[5] ? locTalentTail(m[5]) : '') },
   { re: /^The ritual circle is silent without the Crypt Keystone\.$/, build: () => tQuestExtra('ritualNeedsKey') },
   { re: /^My king was a good man\.$/, build: () => tQuestExtra('aldrenVision1') },
   { re: /^I swore my blade to him\.$/, build: () => tQuestExtra('aldrenVision2') },
@@ -2052,6 +2280,7 @@ const RULES: Rule[] = [
   { re: /^If you find the crypt\.\.\. end this\.$/, build: () => tQuestExtra('vossVision4') },
   { re: /^The Crypt Keystone turns cold as the seal breaks\.$/, build: () => tQuestExtra('ritualBreaks') },
   { re: /^The crypt entrance is sealed to you\.$/, build: () => tQuestExtra('cryptSealed') },
+  { re: /^That item cannot be listed on the World Market\.$/, build: () => t('itemUi.tooltip.cannotMarket') },
   { re: /^(.+) awakens!$/, build: (m) => tQuestExtra('awakens', { name: locMob(m[1]) }) },
   { re: /^Fallen Captain Aldren yells, "None shall disturb the king's rest! For Thornpeak!"$/, build: () => tQuestExtra('aldrenYell', { name: locMob('Fallen Captain Aldren') }) },
   { re: /^Corrupted Priest Malric yells, "Death shall never claim my king! The ritual must endure!"$/, build: () => tQuestExtra('malricYell', { name: locMob('Corrupted Priest Malric') }) },
@@ -2079,7 +2308,18 @@ const RULES: Rule[] = [
   { re: /^(.+) begins to swell — get clear!$/, build: (m) => tSim('log.deathThroesArm', { name: locMob(m[1]) }) },
   { re: /^(.+) bursts in a cloud of (.+)!$/, build: (m) => tSim('log.deathThroesBurst', { name: locMob(m[1]), effect: localizeSimAuraName(m[2]) ?? m[2] }) },
   { re: /^Discarded (.+?)( x\d+)?\.$/, build: (m) => tSim('log.discarded', { item: locItemStack(m[1], m[2]) }) },
-  { re: /^Equipped (.+)\.$/, build: (m) => tSim('log.equipped', { item: locItem(m[1]) }) },
+  // /gear self-readout (must precede the single-item Equipped rule below, which is
+  // anchored with (?!\() so it can never swallow this compound readout).
+  { re: /^Equipped \(([^/]+)\/([^)]+)\): (.+)\.$/, build: (m) => locGearReadout(m[1], m[2], m[3]) },
+  { re: /^You have nothing equipped\.$/, build: () => tItemExtra('nothingEquipped') },
+  // Quest-item + relic pickup error toasts (src/sim emits these as `?? 'English'`
+  // fallbacks, so the S3 drift guard's this.error regex cannot see them — covered
+  // explicitly by tests/sim_item_i18n.test.ts instead).
+  { re: /^You cannot take the (.+) yet\.$/, build: (m) => tItemExtra('cannotTakeYet', { name: locItem(m[1]) }) },
+  { re: /^(.+) offers nothing more\.$/, build: (m) => tItemExtra('offersNothingMore', { name: locItem(m[1]) }) },
+  { re: /^The relic is bound by the sealed crypt\.$/, build: () => tItemExtra('relicBound') },
+  { re: /^You have already recovered this relic\.$/, build: () => tItemExtra('relicRecovered') },
+  { re: /^Equipped (?!\()(.+)\.$/, build: (m) => tSim('log.equipped', { item: locItem(m[1]) }) },
   { re: /^You quaff (.+)\.$/, build: (m) => tSim('log.quaff', { item: locItem(m[1]) }) },
   { re: /^(.+) wins (.+) \((\d+)\)$/, build: (m) => tSim('loot.rollWin', { winner: m[1], item: locItem(m[2]), roll: m[3] }) },
   { re: /^(.+) leaves the party\.$/, build: (m) => tSim('log.partyLeaves', { name: m[1] }) },
@@ -2099,6 +2339,19 @@ const RULES: Rule[] = [
   { re: /^(.+) cannot queue while dueling\.$/, build: (m) => tArenaExtra('memberDueling', { name: m[1] }) },
   { re: /^(.+) must finish trading before queueing\.$/, build: (m) => tArenaExtra('memberTrading', { name: m[1] }) },
   { re: /^(.+) cannot queue from inside an instance\.$/, build: (m) => tArenaExtra('memberInstance', { name: m[1] }) },
+  // 2v2 Fiesta. The leader/premade rules are wildcards so they catch both the
+  // '2v2' and 'Fiesta' label variants (the ranked exact rules above match first
+  // at runtime; this picks up Fiesta and the i18n guard's placeholder token).
+  { re: /^You join the 2v2 Fiesta queue\. Get ready to PARTY[.…]{1,3}$/, build: () => t('fiesta.queue.join') },
+  { re: /^You leave the 2v2 Fiesta queue\.$/, build: () => t('fiesta.queue.leave') },
+  { re: /^Your team leaves the 2v2 Fiesta queue\.$/, build: () => t('fiesta.queue.teamLeave') },
+  { re: /^Only the party leader may queue your team for (.+)\.$/, build: (m) => t('fiesta.error.leaderOnly', { label: m[1] }) },
+  { re: /^(.+) premade requires a party of exactly two\.$/, build: (m) => t('fiesta.error.premadeTwo', { label: m[1] }) },
+  { re: /^You have no augment to choose right now\.$/, build: () => t('fiesta.error.noAugment') },
+  { re: /^That augment is not on offer\.$/, build: () => t('fiesta.error.notOnOffer') },
+  { re: /^Welcome to the 2v2 FIESTA! Score takedowns, grab augments, survive the ring!$/, build: () => t('fiesta.log.welcome') },
+  { re: /^FIESTA — GO!$/, build: () => t('fiesta.log.go') },
+  { re: /^FIESTA OVER! What a party\. Returning to the world[.…]{1,3}$/, build: () => t('fiesta.log.over') },
 ];
 
 // Returns the localized form of a sim-emitted message, or null if not one of ours.

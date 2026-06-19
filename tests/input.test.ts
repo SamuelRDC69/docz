@@ -491,3 +491,38 @@ describe('Input emote wheel hold', () => {
     expect(cb.onEmoteWheel).toHaveBeenLastCalledWith(false);
   });
 });
+
+describe('Input touch invert-look', () => {
+  it('reverses the touch joystick pitch when inverted, leaving yaw alone', () => {
+    const { input } = makeInput();
+    input.setTouchLook(true);
+    input.setTouchLookVector({ x: 1, y: 1 });
+
+    const startPitch = input.camPitch;
+    const startYaw = input.camYaw;
+    input.updateTouchLook(1 / 60);
+    const upDelta = input.camPitch - startPitch;
+    const yawDelta = input.camYaw - startYaw;
+    expect(upDelta).toBeGreaterThan(0); // default: stick up raises pitch
+
+    input.setTouchInvertLook(true);
+    input.camPitch = startPitch;
+    input.camYaw = startYaw;
+    input.updateTouchLook(1 / 60);
+    expect(input.camPitch - startPitch).toBeCloseTo(-upDelta);
+    // yaw is unaffected by the invert toggle
+    expect(input.camYaw - startYaw).toBeCloseTo(yawDelta);
+  });
+
+  it('also inverts the swipe-look delta path', () => {
+    const { input } = makeInput();
+    const base = input.camPitch;
+    input.applyTouchLookDelta(0, 100);
+    const normal = input.camPitch - base;
+
+    input.setTouchInvertLook(true);
+    input.camPitch = base;
+    input.applyTouchLookDelta(0, 100);
+    expect(input.camPitch - base).toBeCloseTo(-normal);
+  });
+});

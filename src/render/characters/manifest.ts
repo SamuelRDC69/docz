@@ -3,6 +3,7 @@
 // Pure data + dispatch — no three.js imports, no loading.
 import type { Entity } from '../../sim/types';
 import { MOBS } from '../../sim/data';
+import { MECH_CHROMAS, type MechChroma } from '../../sim/content/skins';
 import type { OverheadEmoteId } from '../../world_api';
 
 export interface EmoteClipSpec {
@@ -68,6 +69,10 @@ export interface VisualDef {
   runRef?: number;
   attackTimeScale?: number;
   deathTimeScale?: number;
+  /** Skip the boot preload sweep (manifestUrls); the asset is fetched on demand
+   *  instead — e.g. the cosmetic-only Combat Mech, loaded via preloadMechAssets()
+   *  when the skin-select preview opens, so it never bloats every client's boot. */
+  lazyPreload?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +177,25 @@ const HUMANOID_H = 2.6;
 
 const SKINS_DIR = 'textures/skins';
 
+// ---------------------------------------------------------------------------
+// Combat Mech — a class-agnostic cosmetic body. Unlike the per-class skins
+// below (which swap a body atlas onto an existing class rig), the mech is a
+// SEPARATE model with its own visual key (`player_mech`) and a set of chroma
+// textures grouped across the three skin-event rarity tiers. Epics additionally
+// ship an emissive glow map. Cosmetic preview only for now — lazy-loaded via
+// preloadMechAssets() so it never bloats every client's boot.
+// ---------------------------------------------------------------------------
+const MECH_DIR = `${PLAYERS}/Mech/textures`;
+
+function mechChromaUrl(c: MechChroma): string {
+  if (c.rank === 'uncommon') return `${MECH_DIR}/uncommon/combatmech_${c.id}.png`;
+  if (c.rank === 'rare') return `${MECH_DIR}/rares/combatmech_rare_${c.id}.png`;
+  return `${MECH_DIR}/epics/combatmech_epic_${c.id}.png`;
+}
+function mechEmissiveUrl(c: MechChroma): string | null {
+  return c.rank === 'epic' ? `${MECH_DIR}/epics/combatmech_epic_${c.id}_emis.png` : null;
+}
+
 // Per-class alternate body textures ("skins"). Index 0 = null = the model's
 // embedded default texture (no swap). Index >0 = a full-atlas alternate applied
 // to the body material's .map (same UVs). Classes sharing a model share its skin
@@ -186,6 +210,15 @@ export const SKINS: Record<string, (string | null)[]> = {
   player_warlock: [null, `${SKINS_DIR}/mage/alt_a.png`, `${SKINS_DIR}/mage/alt_b.png`, `${SKINS_DIR}/mage/alt_c.png`],
   player_shaman: [null, `${SKINS_DIR}/barbarian/alt_a.png`, `${SKINS_DIR}/barbarian/alt_b.png`, `${SKINS_DIR}/barbarian/alt_c.png`],
   player_druid: [null, `${SKINS_DIR}/druid/alt_a.png`, `${SKINS_DIR}/druid/alt_b.png`, `${SKINS_DIR}/druid/alt_c.png`],
+  // Combat Mech chromas — every index is a real full-model texture (no null
+  // default; the embedded base texture is not one of the rewards).
+  player_mech: MECH_CHROMAS.map(mechChromaUrl),
+};
+
+// Emissive (glow) maps keyed exactly like SKINS, applied to .emissiveMap when a
+// skin index has one. Only the Combat Mech epics glow; null entries mean no glow.
+export const SKIN_EMISSIVE: Record<string, (string | null)[]> = {
+  player_mech: MECH_CHROMAS.map(mechEmissiveUrl),
 };
 
 /** Number of skins (including the default) available for a visual key — min 1. */
@@ -275,6 +308,18 @@ export const VISUALS: Record<string, VisualDef> = {
     clips: kaykit(['2H_Melee_Attack_Chop']),
     // dedicated druid model (own texture, ships a Backpack mesh)
     attach: [{ url: `${WEAPONS}/staff.glb`, bone: 'handslot.r' }],
+  },
+
+  // -- cosmetic body skin (class-agnostic; both the skin preview and a live
+  //    player whose skinCatalog === 'mech', see visualKeyFor) ----------------
+  player_mech: {
+    url: `${PLAYERS}/Mech/characters/CombatMech.glb`, height: HUMANOID_H,
+    // The mech is rigged to the same KayKit Rig_Medium skeleton as every other
+    // player class; its GLB shipped with no clips, so the full KayKit set is
+    // baked in from knight.glb (scripts/bake_mech_anims.mjs) — these names now
+    // resolve like any other class. Lazy-loaded; see preloadMechAssets().
+    clips: kaykit(['1H_Melee_Attack_Chop']),
+    lazyPreload: true,
   },
 
   // -- forms ---------------------------------------------------------------
@@ -471,6 +516,7 @@ export const VISUALS: Record<string, VisualDef> = {
 const MOB_KEYS: Record<string, string> = {
   imp: 'mob_demon',
   voidwalker: 'mob_demon',
+  succubus: 'mob_demon',
   warlock_imp: 'mob_demon_flying',
   warlock_voidwalker: 'mob_demonalt',
   wild_boar: 'mob_boar',
@@ -537,6 +583,7 @@ const NPC_KEYS: Record<string, string> = {
 
 export function visualKeyFor(e: Entity): string {
   if (e.kind === 'player') {
+    if (e.skinCatalog === 'mech') return 'player_mech';
     return VISUALS[`player_${e.templateId}`] ? `player_${e.templateId}` : 'player_warrior';
   }
   if (e.kind === 'mob') {
@@ -554,6 +601,7 @@ export function visualKeyFor(e: Entity): string {
 export function manifestUrls(): string[] {
   const urls = new Set<string>();
   for (const def of Object.values(VISUALS)) {
+    if (def.lazyPreload) continue; // fetched on demand, not at boot
     urls.add(def.url);
     for (const url of def.animUrls ?? []) urls.add(url);
     for (const a of def.attach ?? []) urls.add(a.url);

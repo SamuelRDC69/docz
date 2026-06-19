@@ -6,7 +6,7 @@ import {
   ensureSchema, pool, createAccount, findAccount, getAccountsCount, touchLogin, saveToken, accountForToken,
   listCharacters, getCharacter, createCharacterCapped, deleteCharacter, closeOrphanSessions,
   pruneChatLogs, searchCharacters, characterCountsByRealm, moderationStatusForAccount, renameCharacter,
-  findCharacterReportTargetByName, topArenaRatings, topLifetimeXp, chatMuteStatusForAccount,
+  findCharacterReportTargetByName, topArenaRatings, topLifetimeXp, chatMuteStatusForAccount, loadAccountCosmetics,
 } from './db';
 import { virtualLevel } from '../src/sim/types';
 import { Sim } from '../src/sim/sim';
@@ -642,6 +642,7 @@ async function main(): Promise<void> {
       ws.close(1008, 'Too many connections from your network');
       return;
     }
+    const accountCosmetics = await loadAccountCosmetics(accountId);
     const result = game.join(
       ws,
       accountId,
@@ -655,6 +656,7 @@ async function main(): Promise<void> {
         mutedUntil: status.chatMutedUntil ?? chatMute.mutedUntil,
         reason: chatMute.reason,
         chatStrikes: status.chatStrikes,
+        accountCosmetics,
       },
     );
     if ('error' in result) {

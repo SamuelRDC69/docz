@@ -126,9 +126,10 @@ describe('activePvpOpponentIds', () => {
         standings: {
           '1v1': { rating: 1500, wins: 0, losses: 0 },
           '2v2': { rating: 1500, wins: 0, losses: 0 },
+          'fiesta': { rating: 1500, wins: 0, losses: 0 },
         },
         ladder: [],
-        ladders: { '1v1': [], '2v2': [] },
+        ladders: { '1v1': [], '2v2': [], 'fiesta': [] },
         match: {
           oppPid: 3,
           oppName: 'Arena Rival',
@@ -164,9 +165,10 @@ describe('activePvpOpponentIds', () => {
         standings: {
           '1v1': { rating: 1500, wins: 0, losses: 0 },
           '2v2': { rating: 1500, wins: 0, losses: 0 },
+          'fiesta': { rating: 1500, wins: 0, losses: 0 },
         },
         ladder: [],
-        ladders: { '1v1': [], '2v2': [] },
+        ladders: { '1v1': [], '2v2': [], 'fiesta': [] },
         match: {
           oppPid: 3,
           oppName: 'Arena Rival',

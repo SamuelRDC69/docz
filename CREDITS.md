@@ -1,8 +1,7 @@
-# Third-Party Asset Credits
+# Asset Credits
 
-All bundled art assets are CC0 (public domain dedication) except the three.js
-water normal maps (MIT). Attribution is provided as a courtesy — thank you to
-these creators for making high-quality open assets.
+Bundled third-party art assets are CC0 (public domain dedication) except the
+three.js water normal maps (MIT). Attribution is provided as a courtesy.
 
 | Assets | Author | Source | License |
 |---|---|---|---|
@@ -19,6 +18,7 @@ these creators for making high-quality open assets.
 | Terrain PBR textures (Grass001, Ground048, Rock051, Ground071, Ground080, PavingStones046, Snow010A) | ambientCG | https://ambientcg.com | CC0 1.0 |
 | HDRI environment maps (kloofendal_48d_partly_cloudy_puresky, belfast_open_field, kiara_1_dawn, dikhololo_night) | Poly Haven | https://polyhaven.com | CC0 1.0 |
 | Water normal maps (waternormals.jpg, Water_1/2_M_Normal.jpg) | three.js authors | https://github.com/mrdoob/three.js (r165, examples/textures) | MIT |
+| Biome backdrop panoramas (vale_backdrop.webp, marsh_backdrop.webp, peaks_backdrop.webp and 4K variants) | World of ClaudeCraft | Project-generated procedural painterly sky panorama art | Project asset |
 
 Assets were optimized for shipping (animation clip pruning, meshopt compression,
 texture resizing) via `scripts/assets/build_assets.mjs`; raw packs are not

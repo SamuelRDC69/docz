@@ -8,7 +8,7 @@ import type { OverheadEmoteId } from '../../world_api';
 import { GFX } from '../gfx';
 import type { EmoteClipSpec, VisualDef } from './manifest';
 import {
-  applyMaterials, assembleModel, prepareVisual, skinTexture, tintedFarMaterials,
+  applyMaterials, assembleModel, prepareVisual, skinTexture, skinEmissiveTexture, tintedFarMaterials,
 } from './assets';
 import { desiredBaseState, locomotionTimeScale, type AnimState, type BaseState } from './anim_state';
 
@@ -99,7 +99,7 @@ export class CharacterVisual {
 
     // model: yaw/scale/feet normalization wrapper around the skinned clone
     this.model = assembleModel(prep.def);
-    applyMaterials(this.model, prep.def, entityColor, skinTexture(key, skinIndex));
+    applyMaterials(this.model, prep.def, entityColor, skinTexture(key, skinIndex), skinEmissiveTexture(key, skinIndex));
     this.model.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (mesh.isMesh) this.originalMaterials.set(mesh, mesh.material);
@@ -290,7 +290,7 @@ export class CharacterVisual {
   setSkin(skinIndex: number): void {
     if (skinIndex === this.skinIndex) return;
     this.skinIndex = skinIndex;
-    applyMaterials(this.model, this.def, this.entityColor, skinTexture(this.key, skinIndex));
+    applyMaterials(this.model, this.def, this.entityColor, skinTexture(this.key, skinIndex), skinEmissiveTexture(this.key, skinIndex));
     // re-snapshot the material map ghost/restore relies on, then re-ghost if stealthed
     this.originalMaterials.clear();
     this.model.traverse((o) => {

@@ -10,10 +10,14 @@ export interface XpBarInput {
   xp: number; // current level-bar XP (server-authoritative)
   lifetimeXp: number; // monotonic lifetime total (server-authoritative)
   showOverflow: boolean; // settings toggle; false → classic "MAX LEVEL"
+  restedXp?: number; // classic inn-rested pool; doubles kill XP until spent
 }
 
 export interface XpBarView {
   fillFrac: number; // 0..1 width of the fill
+  // 0..1 width of the rested overlay segment that sits AHEAD of the fill (the
+  // portion of the bar the rested bonus will cover). 0 when not rested / at cap.
+  restedFrac: number;
   label: string; // hover label
   postCap: boolean; // true → distinct prestige/gold styling
 }
@@ -31,9 +35,16 @@ export function xpBarView(input: XpBarInput): XpBarView {
   if (!atCap) {
     const need = xpForLevel(level);
     const frac = need > 0 ? xp / need : 0;
+    const rested = Math.max(0, input.restedXp ?? 0);
+    // Rested overlay spans from the current fill up to where the rested pool
+    // would carry the bar (clamped to the bar end), so it reads as a preview of
+    // the bonus to come.
+    const restedFrac = rested > 0 && need > 0 ? clamp01((xp + rested) / need) - clamp01(frac) : 0;
+    const restedLabel = rested > 0 ? `  ·  ${t('game.xp.rested')} +${formatXp(rested)}` : '';
     return {
       fillFrac: clamp01(frac),
-      label: `${formatXp(xp)} / ${formatXp(need)} ${t('game.xp.suffix')} (${Math.floor(frac * 100)}%)`,
+      restedFrac: Math.max(0, restedFrac),
+      label: `${formatXp(xp)} / ${formatXp(need)} ${t('game.xp.suffix')} (${Math.floor(frac * 100)}%)${restedLabel}`,
       postCap: false,
     };
   }
@@ -43,6 +54,7 @@ export function xpBarView(input: XpBarInput): XpBarView {
   if (!showOverflow) {
     return {
       fillFrac: 1,
+      restedFrac: 0,
       label: `${t('game.xp.maxLevel')}  ·  ${formatXp(lifetimeXp)} ${t('game.xp.totalXp')}`,
       postCap: false,
     };
@@ -57,7 +69,7 @@ export function xpBarView(input: XpBarInput): XpBarView {
     `${t('game.xp.lv')} ${MAX_LEVEL} (+${extra})  ·  ` +
     `${formatXp(lifetimeXp)} ${t('game.xp.totalXp')}  ·  ` +
     `${pct}% ${t('game.xp.toNext')}`;
-  return { fillFrac: clamp01(prog.into / prog.span), label, postCap: true };
+  return { fillFrac: clamp01(prog.into / prog.span), restedFrac: 0, label, postCap: true };
 }
 
 function clamp01(v: number): number {

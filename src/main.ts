@@ -7,6 +7,8 @@ import { MobileControls, PHONE_TOUCH_QUERY, isPhoneTouchDevice } from './game/mo
 import { Hud } from './ui/hud';
 import { audio } from './game/audio';
 import { music } from './game/music';
+import { voice } from './game/voice';
+import { sfx } from './game/sfx';
 import { activePvpOpponentIds, handlePickedEntity, hoverCursorKind, isAttackableEntity } from './game/interactions';
 import { clickMoveShouldCancel, clickMoveShouldWalk, clickMoveStep, distance2d, latencyAdjustedStopDistance, stepAngleToward } from './game/click_move';
 import { Api, ClientWorld, CharacterSummary, type ReleaseEntry } from './net/online';
@@ -560,6 +562,7 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
   const perf = createPerfMonitor(null);
   try {
     renderer = new Renderer(world, canvas, nameplates);
+    renderer.setAudioSink(sfx);
     perf.setRenderer(renderer);
     hud = new Hud(world, renderer, keybinds);
     perf.setHud(hud);
@@ -570,6 +573,9 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
     fatalOverlay(t('loading.rendererFailed', { error: technicalErrorMessage(err) }));
     return;
   }
+
+  // Offline only: expose the dev "2v2 Fiesta vs Bots" practice toggle to the HUD.
+  if (offlineSim) hud.setFiestaPracticeHook(() => offlineSim.startFiestaPractice());
 
   const chatInput = $('#chat-input') as unknown as HTMLInputElement;
   const clickMoveMarker = $('#click-move-marker') as HTMLDivElement;
@@ -587,14 +593,22 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
     recoverFromMobileKeyboard();
   };
   function openChat(): void {
+    // reflect the active chat-channel tab in the placeholder (e.g. "Message World")
+    chatInput.placeholder = hud.activeChatPlaceholder();
     chatInput.style.display = 'block';
     chatInput.focus();
   }
   chatInput.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.key === 'Enter') {
-      const text = chatInput.value.trim();
+      // the active channel tab supplies the send prefix, so plain text goes to
+      // that channel without the player retyping "/world" etc.
+      const raw = chatInput.value;
+      const text = hud.composeChatSend(raw);
       if (text) world.chat(text);
+      // a typed "/join world"/"/leave lfg" opens or closes its channel tab too,
+      // mirroring the "+" menu (without hijacking the active send channel)
+      hud.syncChatTabsForInput(raw);
       closeChat();
     } else if (e.key === 'Escape') {
       closeChat();
@@ -663,11 +677,21 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
       music.setEnabled(!music.enabled);
       return music.enabled;
     },
+    onRecenterCamera: () => input.recenterCameraBehind(world.player.facing),
   });
   mobileControls.start();
   // reflect the current music state on the touch toggle (it may already be off
   // from a prior session, persisted in localStorage)
   document.getElementById('mobile-music')?.classList.toggle('mm-muted', !music.enabled);
+
+  // Optional FPS readout (settings: showFps). Exponentially-smoothed so the
+  // number is readable rather than flickering every frame; throttled to ~4 Hz.
+  // Declared here (before applySetting + the startup apply loop) so toggling the
+  // setting on boot doesn't hit the const's temporal dead zone.
+  const fpsOverlay = $('#fps-overlay') as HTMLDivElement;
+  let fpsEnabled = false;
+  let fpsSmoothed = 60;
+  let fpsLastPaintMs = 0;
 
   // apply a setting to its live subsystem (also used to apply all on startup)
   function syncClickMoveInput(): void {
@@ -691,6 +715,10 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
       document.body.classList.toggle('mobile-left-handed', v);
       return;
     }
+    if (key === 'touchInvertLook') {
+      input.setTouchInvertLook(settings.set('touchInvertLook', !!value));
+      return;
+    }
     if (key === 'filterProfanity') {
       settings.set('filterProfanity', !!value);
       return;
@@ -701,18 +729,64 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
       syncAttackMoveInput();
       return;
     }
+    // Interface & Comfort booleans: each toggles a body class (CSS does the rest)
+    // or flips a live subsystem flag. No sim involvement — purely presentational.
+    if (key === 'reduceMotion') {
+      document.body.classList.toggle('reduce-motion', settings.set('reduceMotion', !!value));
+      return;
+    }
+    if (key === 'highContrastText') {
+      document.body.classList.toggle('high-contrast-text', settings.set('highContrastText', !!value));
+      return;
+    }
+    if (key === 'frostedPanels') {
+      document.body.classList.toggle('frosted-panels', settings.set('frostedPanels', !!value));
+      return;
+    }
+    if (key === 'compactChat') {
+      document.body.classList.toggle('compact-chat', settings.set('compactChat', !!value));
+      return;
+    }
+    if (key === 'showFps') {
+      fpsEnabled = settings.set('showFps', !!value);
+      fpsOverlay.style.display = fpsEnabled ? 'block' : 'none';
+      return;
+    }
+    if (key === 'invertLookY') {
+      input.setInvertLookY(settings.set('invertLookY', !!value));
+      return;
+    }
+    if (key === 'voiceEnabled') {
+      voice.setEnabled(settings.set('voiceEnabled', !!value));
+      return;
+    }
     const v = settings.set(key as keyof typeof SETTING_RANGES, value as number);
     switch (key) {
       case 'cameraSpeed': input.setCameraSpeed(v); break;
       case 'touchLookSpeed': input.setTouchLookSpeed(v); break;
-      case 'sfxVolume': audio.setVolume(v); break;
+      case 'sfxVolume': audio.setVolume(v); sfx.setVolume(v); break;
       case 'musicVolume': music.setVolume(v); break;
+      case 'voiceVolume': voice.setVolume(v); break;
       case 'brightness': renderer.setBrightness(v); break;
+      case 'cameraFov': renderer.setCameraFov(v); break;
       case 'renderScale': renderer.setRenderScale(v); break;
       case 'fullscreen': v >= 0.5 ? requestPreferredFullscreen() : exitBrowserFullscreen(); break;
       case 'clickToMove': if (v < 0.5) input.clearClickMove(); syncClickMoveInput(); break;
       case 'clickToMoveButton': syncClickMoveInput(); break;
       case 'touchOpacity': document.documentElement.style.setProperty('--touch-opacity', String(v)); break;
+      case 'weather': renderer.setWeatherEnabled(v >= 0.5); break;
+      case 'joystickScale':
+        document.getElementById('mobile-controls')?.style.setProperty('--joy-scale', String(v));
+        break;
+      case 'actionButtonScale': document.getElementById('mobile-controls')?.style.setProperty('--btn-scale', String(v)); break;
+      case 'joystickDeadzone': mobileControls.setMoveDeadzone(v); break;
+      // Interface & Comfort sliders: each drives one CSS custom property that
+      // index.html consumes. Setting them on :root keeps the HUD authoritative.
+      case 'tooltipScale': document.documentElement.style.setProperty('--tooltip-scale', String(v)); break;
+      case 'chatFontScale': document.documentElement.style.setProperty('--chat-font-scale', String(v)); break;
+      case 'chatOpacity': document.documentElement.style.setProperty('--chat-opacity', String(v)); break;
+      case 'fctScale': document.documentElement.style.setProperty('--fct-scale', String(v)); break;
+      case 'hudOpacity': document.documentElement.style.setProperty('--hud-opacity', String(v)); break;
     }
   }
   // apply persisted settings to the freshly-built subsystems
@@ -1126,12 +1200,21 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
     return !!(mi.forward || mi.back || mi.strafeLeft || mi.strafeRight) && !world.player.dead;
   }
 
+  function updateFpsOverlay(frameDt: number, nowMs: number): void {
+    if (!fpsEnabled) return;
+    if (frameDt > 0) fpsSmoothed += (1 / frameDt - fpsSmoothed) * 0.1;
+    if (nowMs - fpsLastPaintMs < 250) return;
+    fpsLastPaintMs = nowMs;
+    fpsOverlay.textContent = t('hud.options.fpsReadout', { fps: formatNumber(Math.round(fpsSmoothed)) });
+  }
+
   function frame(now: number): void {
     requestAnimationFrame(frame);
     let frameDt = (now - last) / 1000;
     last = now;
     if (frameDt > 0.25) frameDt = 0.25;
     perf.frame(frameDt);
+    updateFpsOverlay(frameDt, now);
 
     // freeze movement while the game menu is up so WASD doesn't walk the
     // character behind it (other windows stay non-modal, as before)
@@ -1152,6 +1235,7 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
         Object.assign(offlineSim.moveInput, mi);
         const stepFacing = movementFacing ?? facing;
         if (stepFacing !== null) offlineSim.player.facing = stepFacing;
+        offlineSim.updateFiestaBots(); // dev: steer Fiesta practice bots (no-op unless active)
         perf.markInputSent(performance.now());
         const events = perf.time('sim', () => offlineSim.tick());
         perf.time('events', () => hud.handleEvents(events));
@@ -1188,6 +1272,7 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
     perf.time('events', () => hud.handleEvents(net.drainEvents()));
     if (net.consumeProfanityChanged()) hud.setProfanityWords(net.profanityWords);
     if (net.consumeInventoryChanged()) hud.onInventoryChanged();
+    if (net.consumeCosmeticsChanged()) hud.onCosmeticsChanged();
     const alpha = net.lastSnapAt > 0
       ? Math.min(1.25, (performance.now() - net.lastSnapAt) / Math.max(20, net.snapInterval))
       : 1;
@@ -1918,6 +2003,7 @@ async function enterWorld(c: CharacterSummary, button?: HTMLButtonElement): Prom
     if (!(await prepareWorldEntry())) return;
     audio.init();
     music.init();
+    sfx.init();
     enterLoadingState(t('loading.connectingRealm'));
   } finally {
     if (!hasBegunWorldEntry && button) {
@@ -2680,6 +2766,7 @@ function wireStartScreens(): void {
 
     audio.init();
     music.init();
+    sfx.init();
     const name = sanitizeOfflineName(rawName);
     void startOffline(cls, name, selectedSkin('#offline-skin-row', offlineSkin));
   };

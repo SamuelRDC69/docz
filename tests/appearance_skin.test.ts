@@ -29,6 +29,20 @@ describe('appearance skin selection', () => {
     client.changeSkin(2);
 
     expect(client.player.skin).toBe(2);
-    expect(sent).toEqual([{ t: 'cmd', cmd: 'change_skin', skin: 2 }]);
+    expect(sent).toEqual([{ t: 'cmd', cmd: 'change_skin', skin: 2, catalog: 'class' }]);
+  });
+
+  it('sends the online mech chroma unequip command through the world contract', () => {
+    const sent: unknown[] = [];
+    const client: ClientWorld = Object.create(ClientWorld.prototype);
+    Object.assign(client, {
+      connected: true,
+      ws: { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) },
+    });
+    (globalThis as any).WebSocket = { OPEN: 1 };
+
+    client.unequipMechChroma('amber_crimson');
+
+    expect(sent).toEqual([{ t: 'cmd', cmd: 'unequip_mech_chroma', chroma: 'amber_crimson' }]);
   });
 });

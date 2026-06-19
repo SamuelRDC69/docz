@@ -1,6 +1,6 @@
 {
   "name": "world-of-claudecraft",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -28,6 +28,9 @@
     "server": "npm run build:server && node dist-server/server.cjs",
     "realms": "npm run build:server && node scripts/dev-realms.mjs",
     "admin:grant": "node scripts/grant_admin.mjs",
+    "voices:gen": "node scripts/gen_npc_voices.mjs",
+    "voices:lines": "node scripts/gen_npc_lines.mjs",
+    "sfx:gen": "node scripts/gen_sfx.mjs",
     "wiki:seed": "node scripts/mediawiki/build_seed.mjs"
   },
   "dependencies": {

@@ -156,7 +156,6 @@ export const V07_SLASH = [
   "You have no target to consider.",
   "You have not completed any quests yet.",
   "You have not learned any abilities yet.",
-  "You have nothing equipped.",
   "Your bags are empty. Aki",
   "Your mana is not parked — you are not shapeshifted.",
   "Your mana is regenerating (out of combat for 5s+).",

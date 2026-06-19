@@ -994,6 +994,8 @@ const ABILITY_RECIPES: Record<string, IconRecipe> = {
   // warrior
   heroic_strike: r('fury', 'steel', ['sword'], ['glow']),
   battle_shout: r('fury', 'gold', ['fist'], ['arcs']),
+  commanding_shout: r('fury', 'earthBrown', ['shield'], ['arcs']),
+  demoralizing_shout: r('shadow', 'steel', ['fist'], ['arcs']),
   charge: r('fury', 'steel', ['boot', { p: 'sword', ...BR }], ['motion']),
   rend: r('blood', 'blood', ['claw_slash'], ['drips']),
   thunder_clap: r('storm', 'sky', ['lightning'], ['arcs']),
@@ -1002,6 +1004,7 @@ const ABILITY_RECIPES: Record<string, IconRecipe> = {
   overpower: r('fury', 'gold', ['sword', { p: 'sunburst', ...TL }]),
   // mage
   fireball: r('fire', 'ember', ['bolt', { p: 'flame', ...BR }], ['glow']),
+  pyroblast: r('fire', 'ember', [{ p: 'sunburst', ...BIG }, { p: 'flame', s: 0.9 }], ['glow']),
   frost_armor: r('frost', 'ice', ['chestplate', { p: 'snowflake', ...TR }]),
   arcane_intellect: r('arcane', 'arcanePink', ['eye'], ['sparkle']),
   frostbolt: r('frost', 'ice', ['bolt', { p: 'snowflake', ...BR }], ['motion']),
@@ -1022,6 +1025,16 @@ const ABILITY_RECIPES: Record<string, IconRecipe> = {
     { p: 'dagger', x: -7, s: 0.85, rot: -0.5 }, { p: 'dagger', x: 7, s: 0.85, rot: 0.5 },
   ], ['motion']),
   sprint: r('earth', 'leather', ['boot'], ['motion']),
+  garrote: r('shadow', 'steel', [{ p: 'dagger', rot: 1.2 }], ['motion', 'drips']),
+  cheap_shot: r('shadow', 'steel', ['fist', { p: 'dagger', ...BR }], ['arcs']),
+  sap: r('shadow', 'steel', ['fist'], ['motion']),
+  crippling_poison: r('nature', 'venom', ['droplet', { p: 'claw_slash', ...BR }], ['drips']),
+  expose_armor: r('fury', 'steel', ['chestplate', { p: 'claw_slash', ...BR }]),
+  rupture: r('blood', 'blood', ['claw_slash'], ['drips']),
+  vanish: r('shadow', 'shadowPurple', ['shield'], ['motion', 'glow']),
+  instant_poison: r('nature', 'venom', ['droplet'], ['glow']),
+  deadly_poison: r('nature', 'venom', ['fang'], ['drips']),
+  blind: r('shadow', 'shadowPurple', ['eye'], ['arcs']),
   // paladin
   seal_of_righteousness: r('holy', 'holyGold', [{ p: 'sunburst', ...BIG }, 'sigil_rune'], ['glow']),
   holy_light: r('holy', 'holyGold', ['sunburst'], ['glow', 'sparkle']),
@@ -1034,6 +1047,7 @@ const ABILITY_RECIPES: Record<string, IconRecipe> = {
   // hunter
   raptor_strike: r('earth', 'blood', ['claw_slash']),
   aspect_of_the_hawk: r('storm', 'sky', ['wing'], ['glow']),
+  aspect_of_the_monkey: r('nature', 'leafGreen', ['paw'], ['motion']),
   serpent_sting: r('nature', 'venom', ['fang'], ['drips']),
   arcane_shot: r('arcane', 'arcanePink', ['arrow'], ['glow', 'sparkle']),
   concussive_shot: r('storm', 'sky', ['arrow'], ['arcs']),
@@ -1054,6 +1068,8 @@ const ABILITY_RECIPES: Record<string, IconRecipe> = {
   earth_shock: r('earth', 'earthBrown', [{ p: 'lightning', pal: 'earthBrown' }], ['crack']),
   lightning_shield: r('storm', 'sky', ['shield', { p: 'lightning', s: 0.6 }], ['glow']),
   flame_shock: r('fire', 'ember', ['flame'], ['arcs']),
+  flametongue_weapon: r('fire', 'ember', ['sword', { p: 'flame', s: 0.6 }], ['glow']),
+  frostbrand_weapon: r('frost', 'ice', ['sword', { p: 'snowflake', s: 0.6 }], ['glow']),
   // warlock
   shadow_bolt: r('shadow', 'shadowPurple', ['bolt'], ['glow']),
   demon_skin: r('shadow', 'venom', [{ p: 'chestplate', pal: 'venom' }]),
@@ -1071,6 +1087,16 @@ const ABILITY_RECIPES: Record<string, IconRecipe> = {
   thorns: r('nature', 'leafGreen', ['leaf', { p: 'claw_slash', ...BR }]),
   entangling_roots: r('nature', 'leafGreen', ['tendrils']),
   bear_form: r('earth', 'earthBrown', [{ p: 'paw', pal: 'earthBrown' }, { p: 'claw_slash', ...BR }]),
+  travel_form: r('nature', 'leafGreen', [{ p: 'paw', pal: 'leafGreen' }], ['motion']),
+  enrage: r('fury', 'blood', [{ p: 'paw', pal: 'blood' }], ['glow']),
+  bash: r('earth', 'earthBrown', ['paw', { p: 'claw_slash', ...BR }]),
+  faerie_fire: r('nature', 'leafGreen', [{ p: 'gem', pal: 'leafGreen' }], ['sparkle', 'glow']),
+  hibernate: r('arcane', 'silverWhite', [{ p: 'moon', pal: 'silverWhite' }], ['sparkle']),
+  dash: r('nature', 'leafGreen', ['paw', { p: 'claw_slash', ...TR }], ['motion']),
+  pounce: r('nature', 'leafGreen', ['fang', { p: 'claw_slash', ...BR }], ['motion']),
+  insect_swarm: r('nature', 'leafGreen', ['tendrils'], ['sparkle']),
+  tigers_fury: r('fire', 'ember', ['fang'], ['glow']),
+  rip: r('blood', 'blood', ['claw_slash'], ['drips']),
 };
 
 const ITEM_RECIPES: Record<string, IconRecipe> = {
@@ -1091,6 +1117,19 @@ const ITEM_RECIPES: Record<string, IconRecipe> = {
   oiled_boots: r('leather', 'leather', ['boot'], ['glow']),
   quilted_trousers: r('cloth', 'cloth', ['trousers']),
   greyjaw_pelt_cloak: r('leather', 'earthBrown', ['trousers', { p: 'paw', ...BR }]),
+  // Quartermaster's Consignment
+  roadwardens_helm: r('steel', 'steel', [{ p: 'helm', pal: 'steel' }]),
+  wayfarers_hood: r('leather', 'leather', [{ p: 'helm', pal: 'leather' }]),
+  acolytes_circlet: r('cloth', 'gold', [{ p: 'helm', pal: 'gold' }, { p: 'gem', ...TR }]),
+  reinforced_pauldrons: r('steel', 'steel', [{ p: 'pauldron', pal: 'steel' }]),
+  embroidered_mantle: r('cloth', 'arcanePink', [{ p: 'pauldron', pal: 'cloth' }, { p: 'sigil_rune', ...BR }]),
+  sturdy_belt: r('leather', 'leather', [{ p: 'belt', pal: 'leather' }]),
+  silk_sash: r('cloth', 'cloth', [{ p: 'belt', pal: 'cloth' }]),
+  roughspun_gloves: r('leather', 'earthBrown', [{ p: 'gauntlet', pal: 'earthBrown' }]),
+  bristlehide_spaulders: r('leather', 'earthBrown', [{ p: 'pauldron', pal: 'earthBrown' }, { p: 'fang', ...BR }]),
+  sableweb_cord: r('cloth', 'shadowPurple', [{ p: 'belt', pal: 'shadowPurple' }, { p: 'web', ...TR }]),
+  gorraks_cleaver: r('steel', 'steel', [{ p: 'axe', pal: 'steel' }], ['glow']),
+  mossy_handwraps: r('cloth', 'leafGreen', [{ p: 'gauntlet', pal: 'leafGreen' }]),
   baked_bread: r('food', 'gold', ['bread']),
   spring_water: r('drink', 'sky', [{ p: 'potion', pal: 'sky' }]),
   simple_fishing_pole: r('wood', 'earthBrown', [
@@ -1153,6 +1192,7 @@ const AURA_RECIPES: Record<string, IconRecipe> = {
   aura_incapacitate: r('storm', 'sky', ['eye']),
   aura_polymorph: r('arcane', 'pink', ['sheep_head']),
   aura_attackspeed: r('storm', 'ice', ['axe', { p: 'snowflake', ...BR }]),
+  aura_tongues: r('shadow', 'shadowPurple', ['skull'], ['motion']),
   aura_buff_sta: r('blood', 'blood', ['heart']),
   aura_buff_ap: r('fury', 'gold', ['fist']),
   aura_buff_armor: r('steel', 'steel', ['shield']),
@@ -1164,6 +1204,8 @@ const AURA_RECIPES: Record<string, IconRecipe> = {
   aura_imbue: r('holy', 'holyGold', ['sword', { p: 'sunburst', ...TL }]),
   aura_buff_allstats: r('arcane', 'arcanePink', ['gem']),
   aura_thorns: r('nature', 'leafGreen', ['leaf', { p: 'claw_slash', ...BR }]),
+  aura_cost_tax: r('shadow', 'shadowPurple', ['gem', { p: 'droplet', ...BR }], ['drips']),
+  aura_heal_absorb: r('shadow', 'shadowPurple', ['heart'], ['drips']),
   aura_form_bear: r('earth', 'earthBrown', ['paw']),
 };
 

@@ -211,6 +211,20 @@ describe('the World Market — the Merchant', () => {
     expect(sim.marketListings.some((l) => l.sellerKey === 'Seller')).toBe(false);
   });
 
+  it('will not broker items flagged as unsafe for the market', () => {
+    const sim = makeWorld();
+    const seller = sim.addPlayer('warrior', 'Seller');
+    standAtMerchant(sim, seller);
+    sim.addItem('alien_armor_plate', 1, seller);
+    sim.events.length = 0;
+
+    sim.marketList('alien_armor_plate', 1, 100, seller);
+
+    expect(errorsSince(sim).join(' ')).toMatch(/cannot be listed on the World Market/i);
+    expect(sim.countItem('alien_armor_plate', seller)).toBe(1);
+    expect(sim.marketListings.some((l) => l.sellerKey === 'Seller')).toBe(false);
+  });
+
   it('caps how many listings one seller may keep', () => {
     const sim = makeWorld();
     const seller = sim.addPlayer('warrior', 'Seller');

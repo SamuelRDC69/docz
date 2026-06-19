@@ -27,12 +27,14 @@ describe('client HTML shell', () => {
 
     expect(templateHtml).toContain('id="ui"');
     expect(templateHtml).toContain('Release Spirit');
-    expect(templateHtml).toContain('Combat Log');
+    // chat tabs (Chat / Combat Log / channels) are rendered into #chatlog-tabs
+    // by the HUD, so we assert on the container rather than a static label
+    expect(templateHtml).toContain('id="chatlog-tabs"');
     expect(templateHtml).toContain('id="chat-input"');
 
     expect(liveHtml).not.toContain('id="ui"');
     expect(liveHtml).not.toContain('Release Spirit');
-    expect(liveHtml).not.toContain('Combat Log');
+    expect(liveHtml).not.toContain('id="chatlog-tabs"');
     expect(liveHtml).not.toContain('id="chat-input"');
   });
 

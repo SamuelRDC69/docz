@@ -49,11 +49,33 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     id: 'ridge_stalker', name: 'Ridge Stalker', minLevel: 13, maxLevel: 14, family: 'beast',
     hpBase: 58, hpPerLevel: 21, dmgBase: 10, dmgPerLevel: 2.5, attackSpeed: 1.9,
     armorPerLevel: 14, moveSpeed: 8, aggroRadius: 11,
+    // Rending Claws: the stalker's raking swipes can open a bleeding wound — a
+    // refreshing physical DoT (~5 every 3s for 9s). Distinct from poison: it is
+    // physical-school, so it bypasses poison cleanses and ignores nature resist.
+    bleed: { chance: 0.25, perTick: 5, interval: 3, duration: 9, name: 'Rending Claws', school: 'physical' },
     loot: [
       { copper: 60, chance: 1 },
       { itemId: 'ridge_stalker_pelt', chance: 0.6, questId: 'q_stalker_pelts' },
     ],
     scale: 0.95, color: 0x8c8270,
+  },
+  // The apex of the southern ridge: a grizzled, scar-pelted old cat that has
+  // outlived three generations of its pack. A rare elite counterpart to the
+  // Ridge Stalkers, met first when climbing into Thornpeak. Reuses existing
+  // mechanics only — a rending pounce (aoePulse) and a wounded-beast enrage.
+  old_cragmaw: {
+    id: 'old_cragmaw', name: 'Old Cragmaw', minLevel: 14, maxLevel: 14, family: 'beast', rare: true,
+    elite: true, canSwim: true, ccImmune: true, respawnMult: 432,
+    hpBase: 320, hpPerLevel: 56, dmgBase: 16, dmgPerLevel: 4.0, attackSpeed: 1.7,
+    armorPerLevel: 24, moveSpeed: 8.6, aggroRadius: 13,
+    aoePulse: { min: 22, max: 30, radius: 8, every: 9, name: 'Savage Pounce', school: 'physical' },
+    enrage: { belowHpPct: 0.35, dmgMult: 1.4, hasteMult: 1.3 },
+    loot: [
+      { copper: 220, chance: 1 },
+      { itemId: 'ridge_stalker_pelt', chance: 1 },
+      { itemId: 'cragmaw_prowlboots', chance: 0.3 },
+    ],
+    scale: 1.3, color: 0x6e6453,
   },
   deeprock_kobold: {
     id: 'deeprock_kobold', name: 'Deeprock Tunneler', minLevel: 14, maxLevel: 15, family: 'kobold',
@@ -63,8 +85,12 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
       { copper: 65, chance: 1 },
       { itemId: 'glowing_wax', chance: 0.5, questId: 'q_glowing_wax' },
       { itemId: 'tallow_candle', chance: 0.4 },
+      { itemId: 'healing_potion', chance: 0.08 },
     ],
     scale: 0.85, color: 0x9c7a3c,
+    // Jarring Swing: a heavy mining-pick blow knocks the victim off-balance,
+    // cutting their dodge for 8s so the tunneler's strikes land more reliably.
+    staggerHit: { chance: 0.3, dodgeReduction: 0.05, duration: 8, name: 'Off-Balance' },
   },
   ironvein_foreman: {
     id: 'ironvein_foreman', name: 'Ironvein Foreman', minLevel: 16, maxLevel: 16, family: 'kobold', rare: true,
@@ -73,6 +99,7 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     armorPerLevel: 38, moveSpeed: 7, aggroRadius: 12,
     aoePulse: { min: 28, max: 38, radius: 8, every: 10, name: 'Powder Keg', school: 'fire' },
     summonAdds: { mobId: 'ironvein_sapper', count: 2, atHpPct: [0.50] },
+    rally: { radius: 14, every: 12, ap: 40, duration: 10, name: 'Rallying Banner' },
     enrage: { belowHpPct: 0.30, dmgMult: 1.45, hasteMult: 1.3 },
     loot: [
       { copper: 420, chance: 1 },
@@ -88,6 +115,9 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     id: 'ironvein_sapper', name: 'Ironvein Sapper', minLevel: 15, maxLevel: 16, family: 'kobold',
     hpBase: 58, hpPerLevel: 20, dmgBase: 11, dmgPerLevel: 2.6, attackSpeed: 2.0,
     armorPerLevel: 18, moveSpeed: 7.5, aggroRadius: 12,
+    smolder: { chance: 0.25, perTick: 5, interval: 3, duration: 12, name: 'Smoldering Fuse' },
+    // The sapper's blasting powder clings and smolders: a struck foe catches fire.
+    cinder: { chance: 0.3, perTick: 5, interval: 3, duration: 12, name: 'Cinderburn', school: 'fire' },
     loot: [],
     scale: 0.85, color: 0x8f6b34,
   },
@@ -95,6 +125,7 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     id: 'thornpeak_ogre', name: 'Thornpeak Ogre', minLevel: 15, maxLevel: 16, family: 'ogre',
     hpBase: 66, hpPerLevel: 23, dmgBase: 11, dmgPerLevel: 2.6, attackSpeed: 2.6,
     armorPerLevel: 22, moveSpeed: 7, aggroRadius: 11,
+    concuss: { chance: 0.2, duration: 2, name: 'Concussive Blow' },
     loot: [
       { copper: 75, chance: 1 },
       { itemId: 'ogre_toe_ring', chance: 0.35 },
@@ -105,6 +136,10 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     id: 'ogre_crusher', name: 'Thornpeak Crusher', minLevel: 16, maxLevel: 17, family: 'ogre', elite: true,
     hpBase: 64, hpPerLevel: 23, dmgBase: 11, dmgPerLevel: 2.6, attackSpeed: 2.6,
     armorPerLevel: 24, moveSpeed: 7, aggroRadius: 12,
+    // Disarming Smash: a war-camp crusher's two-handed blow can batter the weapon
+    // from your grip, cutting off auto-attack for a few seconds — a real threat to
+    // a tank holding the pack. The inverse of the Summoner's Silencing Shriek.
+    disarm: { chance: 0.25, duration: 6, name: 'Disarming Smash', school: 'physical' },
     loot: [
       { copper: 200, chance: 1 },
       { itemId: 'ogre_toe_ring', chance: 0.5 },
@@ -117,12 +152,39 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     hpBase: 200, hpPerLevel: 30, dmgBase: 12, dmgPerLevel: 2.7, attackSpeed: 2.6,
     armorPerLevel: 28, moveSpeed: 7, aggroRadius: 14,
     aoePulse: { min: 22, max: 30, radius: 10, every: 12, name: 'Ground Slam' },
+    // The longer the warlord is left to swing, the harder he hits: every landed
+    // blow stokes his Battle Fury, stacking attack power up to a hard cap. A
+    // drawn-out fight snowballs, so burn him down or kite him off you to bleed
+    // the stacks back off.
+    rampage: { ap: 20, maxStacks: 5, duration: 10, name: 'Battle Fury', school: 'physical' },
     loot: [
       { copper: 2000, chance: 1 },
       { itemId: 'drogmar_warboots', chance: 0.3 },
       { itemId: 'drogmars_skullcleaver', chance: 0.25 },
     ],
     scale: 1.5, color: 0x8c3b2e,
+  },
+  brutok_skullsmasher: {
+    // The ogre family's rare elite — a hulking two-fisted mauler that prowls
+    // the crags above the Crusher warbands. Slow, heavily armored and brutal:
+    // it slams the ground in a physical shockwave and goes berserk when low.
+    // Fills the ogre rare gap beside Ironvein Foreman (kobold), Shardlord
+    // Kazzix (elemental) and Marrowlord Varkas (undead).
+    id: 'brutok_skullsmasher', name: 'Brutok Skullsmasher', minLevel: 17, maxLevel: 17, family: 'ogre', rare: true,
+    elite: true, ccImmune: true, respawnMult: 432,
+    hpBase: 360, hpPerLevel: 60, dmgBase: 16, dmgPerLevel: 3.6, attackSpeed: 2.7,
+    armorPerLevel: 30, moveSpeed: 7, aggroRadius: 13,
+    aoePulse: { min: 22, max: 30, radius: 10, every: 10, name: 'Skull Smash', school: 'physical', fx: 'nova' },
+    enrage: { belowHpPct: 0.30, dmgMult: 1.5, hasteMult: 1.3 },
+    loot: [
+      { copper: 320, chance: 1 },
+      { itemId: 'cracked_ogre_tusk', chance: 1 },
+      { itemId: 'skullsmasher_warbelt', chance: 0.3 },
+      { itemId: 'brutoks_maul', chance: 0.25, rollGroup: 'brutok_chase' },
+      { itemId: 'crag_warden_cudgel', chance: 0.25, rollGroup: 'brutok_chase' },
+      { itemId: 'skullsplitter_dirk', chance: 0.25, rollGroup: 'brutok_chase' },
+    ],
+    scale: 1.45, color: 0x6e5235,
   },
   stormcrag_elemental: {
     id: 'stormcrag_elemental', name: 'Stormcrag Elemental', minLevel: 17, maxLevel: 18, family: 'elemental',
@@ -138,6 +200,10 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     // A touch of the storm's cold numbs the limbs: each landed swing has a
     // chance to slow the victim to half speed for a few seconds.
     chillOnHit: { chance: 0.35, mult: 0.5, duration: 6, name: 'Numbing Chill' },
+    // Static Charge: the elemental's storm clings to whatever it strikes, leaving
+    // the victim conductive so every spell that lands on them bites deeper —
+    // +18% magic damage taken from all attackers for a while.
+    spellVuln: { chance: 0.3, amp: 0.18, duration: 10, name: 'Static Charge', school: 'nature' },
   },
   shardlord_kazzix: {
     id: 'shardlord_kazzix', name: 'Shardlord Kazzix', minLevel: 18, maxLevel: 18, family: 'elemental', rare: true,
@@ -148,6 +214,9 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
       { itemId: 'kazzix_heartshard', chance: 1, questId: 'q_kazzix' },
       { itemId: 'inert_storm_shard', chance: 1 },
     ],
+    // The Shardlord's rimebound core sheathes its blows in killing cold, leaving
+    // a frost burn that gnaws at the victim long after the strike lands.
+    frostbite: { chance: 0.3, perTick: 6, interval: 3, duration: 12, name: 'Frostbite', school: 'frost' },
     scale: 1.3, color: 0xaed6f1,
   },
   wyrmcult_zealot: {
@@ -162,6 +231,10 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     // The zealot's fevered chanting claws at a caster's mind, draining Intellect
     // and shrinking their mana pool for a while.
     enfeeble: { chance: 0.3, int: 12, duration: 12, name: 'Maddening Whisper', school: 'shadow' },
+    // The Wyrmcult hoards their master's flame: a branding strike seals away the
+    // victim's fire magic so it can never rival the wyrm's, while leaving every
+    // other school free (a single-school counterspell, distinct from a full silence).
+    lockout: { chance: 0.25, duration: 6, name: 'Wyrmward Sigil', school: 'fire' },
     scale: 1.0, color: 0x76448a,
   },
   wyrmcult_necromancer: {
@@ -174,12 +247,16 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
       { itemId: 'linen_scrap', chance: 0.3 },
     ],
     manaBurn: { chance: 0.3, amount: 80, name: 'Mana Sear', school: 'shadow' },
+    // Spectral Ward: a shroud of dark wards that lashes back at any caster whose
+    // spell strikes the necromancer — the magic-school twin of melee thorns.
+    spellReflect: { value: 9, name: 'Spectral Ward', school: 'shadow' },
     scale: 1.0, color: 0x533566,
   },
   boneclad_revenant: {
     id: 'boneclad_revenant', name: 'Boneclad Revenant', minLevel: 18, maxLevel: 19, family: 'undead',
     hpBase: 66, hpPerLevel: 23, dmgBase: 12, dmgPerLevel: 2.7, attackSpeed: 2.3,
     armorPerLevel: 18, moveSpeed: 6.5, aggroRadius: 11,
+    enervate: { chance: 0.3, sta: 14, duration: 12, name: 'Soul Siphon', school: 'shadow' },
     loot: [
       { copper: 100, chance: 1 },
       { itemId: 'bone_fragments', chance: 0.6 },
@@ -269,6 +346,8 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     armorPerLevel: 44, moveSpeed: 6.5, aggroRadius: 13,
     aoePulse: { min: 30, max: 42, radius: 11, every: 9, name: 'Marrow Rot', school: 'shadow' },
     summonAdds: { mobId: 'varkas_boneguard', count: 2, atHpPct: [0.66, 0.33] },
+    knockback: { chance: 0.25, distance: 6, name: 'Crushing Sweep' },
+    stoneskin: { amount: 260, every: 14, duration: 8, name: 'Bone Carapace', school: 'shadow' },
     loot: [
       { copper: 650, chance: 1 },
       { itemId: 'bone_fragments', chance: 1 },
@@ -281,8 +360,31 @@ export const ZONE3_MOBS: Record<string, MobTemplate> = {
     id: 'varkas_boneguard', name: 'Varkas Boneguard', minLevel: 18, maxLevel: 19, family: 'undead',
     hpBase: 64, hpPerLevel: 22, dmgBase: 12, dmgPerLevel: 2.8, attackSpeed: 2.3,
     armorPerLevel: 20, moveSpeed: 6.5, aggroRadius: 12,
+    // Shattering Maul: a landed hit can crack the victim's guard, leaving them
+    // taking +18% physical damage from every attacker for 8s.
+    expose: { chance: 0.25, dmgIncrease: 0.18, duration: 8, name: 'Cracked Guard' },
     loot: [],
     scale: 1.0, color: 0xc9c2b5,
+  },
+  // Voskar the Emberwing — a young drake the Wyrmcult chained above the Sanctum
+  // and starved into a weapon. The only dragonkin rare on the peaks: it breathes
+  // fire in a wide cone, and its searing bite leaves wounds that refuse to close.
+  voskar_emberwing: {
+    id: 'voskar_emberwing', name: 'Voskar the Emberwing', minLevel: 19, maxLevel: 19, family: 'dragonkin', rare: true,
+    elite: true, canSwim: true, ccImmune: true, respawnMult: 864,
+    hpBase: 470, hpPerLevel: 78, dmgBase: 22, dmgPerLevel: 4.9, attackSpeed: 2.5,
+    armorPerLevel: 42, moveSpeed: 7, aggroRadius: 13,
+    aoePulse: { min: 30, max: 44, radius: 10, every: 9, name: 'Ember Breath', school: 'fire', fx: 'nova' },
+    // Searing Maw: the drake's molten bite cauterizes flesh shut, blunting healing.
+    mortalStrike: { chance: 0.35, healReduction: 0.5, duration: 8, name: 'Searing Maw', school: 'fire' },
+    enrage: { belowHpPct: 0.3, dmgMult: 1.5, hasteMult: 1.3 },
+    loot: [
+      { copper: 700, chance: 1 },
+      { itemId: 'emberwing_cinderscale', chance: 1 },
+      { itemId: 'emberwing_legguards', chance: 0.25, rollGroup: 'voskar_emberwing_chase' },
+      { itemId: 'emberfang_warblade', chance: 0.25, rollGroup: 'voskar_emberwing_chase' },
+    ],
+    scale: 1.3, color: 0xe8702a,
   },
 };
 
@@ -320,6 +422,7 @@ export const ZONE3_NPCS: Record<string, NpcDef> = {
     questIds: ['q_stalker_pelts', 'q_glowing_wax'],
     vendorItems: [
       'trail_hardtack', 'meltwater_flask', 'roast_mountain_goat', 'glacier_melt',
+      'healing_potion', 'mana_potion',
       'highwatch_breastplate', 'peakwool_robe', 'stalkerhide_jerkin', 'cragwalker_boots', 'windguard_leggings',
     ],
     greeting: 'Wool, hardtack, and steel-shod boots — Highwatch runs on all three, and I am short of everything.',
@@ -654,6 +757,7 @@ export const ZONE3_CAMPS: CampDef[] = [
   // Ridge stalkers: the ridge flanking the road from the pass
   { mobId: 'ridge_stalker', center: { x: -50, z: 590 }, radius: 22, count: 7 },
   { mobId: 'ridge_stalker', center: { x: 45, z: 600 }, radius: 20, count: 6 },
+  { mobId: 'old_cragmaw', center: { x: -82, z: 575 }, radius: 5, count: 1 },
   // Kobolds: Deeprock Burrows, west
   { mobId: 'deeprock_kobold', center: { x: 75, z: 625 }, radius: 18, count: 8 },
   { mobId: 'deeprock_kobold', center: { x: 105, z: 600 }, radius: 14, count: 6 },
@@ -663,6 +767,8 @@ export const ZONE3_CAMPS: CampDef[] = [
   { mobId: 'thornpeak_ogre', center: { x: -60, z: 730 }, radius: 18, count: 6 },
   { mobId: 'ogre_crusher', center: { x: -125, z: 740 }, radius: 18, count: 8 },
   { mobId: 'warlord_drogmar', center: { x: -132, z: 748 }, radius: 2, count: 1 },
+  // A lone rare ogre prowls the ridge north of the warband
+  { mobId: 'brutok_skullsmasher', center: { x: -45, z: 768 }, radius: 4, count: 1 },
   // Elementals: Stormcrag, far west
   { mobId: 'stormcrag_elemental', center: { x: 110, z: 760 }, radius: 20, count: 8 },
   { mobId: 'stormcrag_elemental', center: { x: 135, z: 795 }, radius: 16, count: 6 },
@@ -675,6 +781,10 @@ export const ZONE3_CAMPS: CampDef[] = [
   { mobId: 'boneclad_revenant', center: { x: -40, z: 830 }, radius: 20, count: 8 },
   { mobId: 'boneclad_revenant', center: { x: -15, z: 860 }, radius: 16, count: 6 },
   { mobId: 'marrowlord_varkas', center: { x: -34, z: 842 }, radius: 5, count: 1 },
+  // Voskar the Emberwing: perched on a scorched crag east of the Sanctum tents,
+  // with two zealot drakebinders posted to keep their captive on its chain.
+  { mobId: 'voskar_emberwing', center: { x: 80, z: 845 }, radius: 4, count: 1 },
+  { mobId: 'wyrmcult_zealot', center: { x: 80, z: 845 }, radius: 7, count: 2 },
 ];
 
 export const ZONE3_OBJECTS: GroundObjectDef[] = [
@@ -756,6 +866,12 @@ export const ZONE3_ITEMS: Record<string, ItemDef> = {
     id: 'ridgestalker_treads', name: 'Ridgestalker Treads', kind: 'armor', slot: 'feet', quality: 'uncommon',
     stats: { armor: 50, agi: 3, sta: 2 }, sellValue: 600,
   },
+  // Old Cragmaw's rare drop — a notch above the Ridgestalker Treads. Leather,
+  // so it stays unrestricted by class.
+  cragmaw_prowlboots: {
+    id: 'cragmaw_prowlboots', name: 'Cragmaw Prowlboots', kind: 'armor', slot: 'feet', quality: 'rare',
+    stats: { armor: 58, agi: 5, sta: 3 }, sellValue: 750,
+  },
   boneplate_vest: {
     id: 'boneplate_vest', name: 'Boneplate Vest', kind: 'armor', slot: 'chest', quality: 'uncommon',
     stats: { armor: 170, sta: 6, str: 3 }, sellValue: 800, requiredClass: ['warrior', 'paladin', 'shaman'],
@@ -796,7 +912,38 @@ export const ZONE3_ITEMS: Record<string, ItemDef> = {
     id: 'marrowlord_boneboots', name: 'Marrowlord Boneboots', kind: 'armor', slot: 'feet', quality: 'uncommon',
     stats: { armor: 90, sta: 5, str: 2 }, sellValue: 1050, requiredClass: ['warrior', 'paladin', 'shaman'],
   },
+  // Brutok Skullsmasher (rare ogre) — guaranteed trophy + warbelt
+  skullsmasher_warbelt: {
+    id: 'skullsmasher_warbelt', name: "Skullsmasher's Warbelt", kind: 'armor', slot: 'chest', quality: 'uncommon',
+    stats: { armor: 96, sta: 5, str: 3 }, sellValue: 1050,
+  },
+  // Voskar the Emberwing drops (rare elite dragonkin)
+  emberwing_cinderscale: {
+    id: 'emberwing_cinderscale', name: 'Emberwing Cinderscale', kind: 'junk', quality: 'common',
+    sellValue: 320,
+  },
+  emberwing_legguards: {
+    id: 'emberwing_legguards', name: 'Emberwing Legguards', kind: 'armor', slot: 'legs', quality: 'rare',
+    stats: { armor: 120, sta: 6, str: 4 }, sellValue: 2200, requiredClass: ['warrior', 'paladin', 'shaman'],
+  },
+  emberfang_warblade: {
+    id: 'emberfang_warblade', name: 'Emberfang Warblade', kind: 'weapon', slot: 'mainhand', quality: 'rare',
+    weapon: { min: 26, max: 41, speed: 2.5 }, stats: { str: 8, sta: 3 }, sellValue: 2400, requiredClass: ['warrior', 'paladin', 'shaman'],
+  },
   // --- quest & dungeon blues (rare) ---
+  // Brutok Skullsmasher chase weapons (mutually exclusive: brutok_chase)
+  brutoks_maul: {
+    id: 'brutoks_maul', name: "Brutok's Maul", kind: 'weapon', slot: 'mainhand', quality: 'rare',
+    weapon: { min: 24, max: 37, speed: 2.7 }, stats: { str: 8, sta: 3 }, sellValue: 2000, requiredClass: ['warrior', 'paladin', 'shaman'],
+  },
+  crag_warden_cudgel: {
+    id: 'crag_warden_cudgel', name: 'Crag Warden Cudgel', kind: 'weapon', slot: 'mainhand', quality: 'rare',
+    weapon: { min: 23, max: 36, speed: 3.0 }, stats: { int: 8, spi: 4 }, sellValue: 2000, requiredClass: ['mage', 'priest', 'warlock', 'druid'],
+  },
+  skullsplitter_dirk: {
+    id: 'skullsplitter_dirk', name: 'Skullsplitter Dirk', kind: 'weapon', slot: 'mainhand', quality: 'rare',
+    weapon: { min: 15, max: 23, speed: 1.7, dagger: true }, stats: { agi: 8, sta: 3 }, sellValue: 2000, requiredClass: ['rogue', 'hunter'],
+  },
   drogmars_skullcleaver: {
     id: 'drogmars_skullcleaver', name: "Drogmar's Skullcleaver", kind: 'weapon', slot: 'mainhand', quality: 'rare',
     weapon: { min: 22, max: 35, speed: 2.6 }, stats: { str: 7, sta: 4 }, sellValue: 2000, requiredClass: ['warrior', 'paladin', 'shaman'],
@@ -970,6 +1117,7 @@ export const ZONE3_ITEMS: Record<string, ItemDef> = {
   },
   // --- junk (gray) ---
   ogre_toe_ring: { id: 'ogre_toe_ring', name: 'Ogre Toe Ring', kind: 'junk', quality: 'poor', sellValue: 25 },
+  cracked_ogre_tusk: { id: 'cracked_ogre_tusk', name: 'Cracked Ogre Tusk', kind: 'junk', quality: 'poor', sellValue: 42 },
   inert_storm_shard: { id: 'inert_storm_shard', name: 'Inert Storm Shard', kind: 'junk', quality: 'poor', sellValue: 28 },
   frayed_prayer_beads: { id: 'frayed_prayer_beads', name: 'Frayed Prayer Beads', kind: 'junk', quality: 'poor', sellValue: 30 },
   cracked_wyrm_scale: { id: 'cracked_wyrm_scale', name: 'Cracked Wyrm Scale', kind: 'junk', quality: 'poor', sellValue: 35 },

@@ -13,7 +13,7 @@ import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { loadGltf, loadTexture } from '../assets/loader';
 import { registerPreload } from '../assets/preload';
 import { GFX, addRimGlow } from '../gfx';
-import { manifestUrls, SKINS, VISUALS, VisualDef, type AttachDef } from './manifest';
+import { manifestUrls, SKINS, SKIN_EMISSIVE, VISUALS, VisualDef, type AttachDef } from './manifest';
 
 const DEFAULT_TINT_STRENGTH = 0.4;
 
@@ -175,14 +175,26 @@ for (const url of preloadUrls) {
 // they line up with the glTF-embedded UVs. Standard tier only — low tier aliases
 // character models and keeps the default look.
 const skinTexByUrl = new Map<string, THREE.Texture>();
+const skinEmisTexByUrl = new Map<string, THREE.Texture>();
+
+/** Load a skin/emissive atlas with the glTF body-UV conventions (sRGB, no flip). */
+function loadSkinTexInto(url: string, into: Map<string, THREE.Texture>): Promise<void> {
+  return loadTexture(url, { srgb: true }).then((t) => {
+    t.flipY = false;
+    t.needsUpdate = true;
+    into.set(url, t);
+  });
+}
+
 if (GFX.standardMaterials) {
-  for (const url of [...new Set(Object.values(SKINS).flat().filter((u): u is string => !!u))]) {
-    registerPreload(loadTexture(url, { srgb: true }).then((t) => {
-      t.flipY = false;
-      t.needsUpdate = true;
-      skinTexByUrl.set(url, t);
-    }));
+  // Boot sweep skips lazyPreload keys (e.g. the cosmetic mech) — those load on
+  // demand via preloadMechAssets().
+  const bootUrls = new Set<string>();
+  for (const [key, list] of Object.entries(SKINS)) {
+    if (VISUALS[key]?.lazyPreload) continue;
+    for (const u of list) if (u) bootUrls.add(u);
   }
+  for (const url of bootUrls) registerPreload(loadSkinTexInto(url, skinTexByUrl));
 }
 
 /** Resolved skin texture for a visual key + skin index, or null for the model's
@@ -190,6 +202,40 @@ if (GFX.standardMaterials) {
 export function skinTexture(key: string, skinIndex: number): THREE.Texture | null {
   const url = SKINS[key]?.[skinIndex] ?? null;
   return url ? skinTexByUrl.get(url) ?? null : null;
+}
+
+/** Resolved emissive (glow) map for a visual key + skin index, or null when the
+ *  skin has no glow (most do) / it isn't loaded / low tier. */
+export function skinEmissiveTexture(key: string, skinIndex: number): THREE.Texture | null {
+  const url = SKIN_EMISSIVE[key]?.[skinIndex] ?? null;
+  return url ? skinEmisTexByUrl.get(url) ?? null : null;
+}
+
+// Lazy fetch for cosmetic-only bodies (the Combat Mech) — the GLB plus every
+// chroma + emissive map. Memoized: opening the preview repeatedly is free. Kept
+// out of the boot sweep so the ~4 MB asset set never delays every client's load.
+let mechAssetsPromise: Promise<void> | null = null;
+export function preloadMechAssets(): Promise<void> {
+  if (mechAssetsPromise) return mechAssetsPromise;
+  const def = VISUALS.player_mech;
+  if (!def) return Promise.resolve();
+  const jobs: Promise<unknown>[] = [
+    loadGltf(def.url).then((g) => { gltfByUrl.set(def.url, g); }),
+  ];
+  if (GFX.standardMaterials) {
+    for (const url of SKINS.player_mech ?? []) if (url) jobs.push(loadSkinTexInto(url, skinTexByUrl));
+    for (const url of SKIN_EMISSIVE.player_mech ?? []) if (url) jobs.push(loadSkinTexInto(url, skinEmisTexByUrl));
+  }
+  mechAssetsPromise = Promise.all(jobs).then(() => undefined);
+  return mechAssetsPromise;
+}
+
+export function mechAssetsReady(): boolean {
+  const def = VISUALS.player_mech;
+  if (!def || !gltfByUrl.has(assetUrl(def.url))) return false;
+  if (!GFX.standardMaterials) return true;
+  return (SKINS.player_mech ?? []).every((url) => !url || skinTexByUrl.has(url))
+    && (SKIN_EMISSIVE.player_mech ?? []).every((url) => !url || skinEmisTexByUrl.has(url));
 }
 
 function resolvedGltf(url: string): GLTF {
@@ -310,8 +356,8 @@ export function assembleModel(def: VisualDef): THREE.Object3D {
 const matCache = new Map<string, THREE.Material>();
 const tintScratch = new THREE.Color();
 
-export function tintedMaterial(src: THREE.Material, tint: number | null, strength: number, skinTex: THREE.Texture | null = null): THREE.Material {
-  const key = `${src.uuid}|${tint ?? 'n'}|${tint === null ? 0 : strength}|${GFX.standardMaterials ? 's' : 'l'}|${skinTex ? skinTex.uuid : 'n'}`;
+export function tintedMaterial(src: THREE.Material, tint: number | null, strength: number, skinTex: THREE.Texture | null = null, emisTex: THREE.Texture | null = null): THREE.Material {
+  const key = `${src.uuid}|${tint ?? 'n'}|${tint === null ? 0 : strength}|${GFX.standardMaterials ? 's' : 'l'}|${skinTex ? skinTex.uuid : 'n'}|${emisTex ? emisTex.uuid : 'n'}`;
   const cached = matCache.get(key);
   if (cached) return cached;
 
@@ -340,6 +386,15 @@ export function tintedMaterial(src: THREE.Material, tint: number | null, strengt
     mat.color.lerp(tintScratch.set(tint), strength);
   }
   if (skinTex) mat.map = skinTex; // alternate body atlas, same UVs as the default
+  // Emissive glow map (mech epics): standard tier only — Lambert/Basic don't
+  // glow, and adding a map where none existed needs a shader recompile.
+  if (emisTex && GFX.standardMaterials) {
+    const sm = mat as THREE.MeshStandardMaterial;
+    sm.emissiveMap = emisTex;
+    sm.emissive = new THREE.Color(0xffffff);
+    sm.emissiveIntensity = 1.0;
+    sm.needsUpdate = true;
+  }
   matCache.set(key, mat);
   return mat;
 }
@@ -351,18 +406,19 @@ function tintFor(def: VisualDef, entityColor: number): number | null {
 
 /** Swap every mesh material in an assembled clone for the shared tinted
  *  (and tier-appropriate) variant. Returns nothing — mutates the clone. */
-export function applyMaterials(root: THREE.Object3D, def: VisualDef, entityColor: number, skinTex: THREE.Texture | null = null): void {
+export function applyMaterials(root: THREE.Object3D, def: VisualDef, entityColor: number, skinTex: THREE.Texture | null = null, emisTex: THREE.Texture | null = null): void {
   const tint = tintFor(def, entityColor);
   const strength = def.tintStrength ?? DEFAULT_TINT_STRENGTH;
   root.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (!mesh.isMesh) return;
-    // skin override only touches the character's own atlas meshes, not weapons
+    // skin/emissive override only touches the character's own atlas meshes, not weapons
     const sk = skinTex && mesh.userData.bodyMesh ? skinTex : null;
+    const em = emisTex && mesh.userData.bodyMesh ? emisTex : null;
     if (Array.isArray(mesh.material)) {
-      mesh.material = mesh.material.map((m) => tintedMaterial(m, tint, strength, sk));
+      mesh.material = mesh.material.map((m) => tintedMaterial(m, tint, strength, sk, em));
     } else {
-      mesh.material = tintedMaterial(mesh.material, tint, strength, sk);
+      mesh.material = tintedMaterial(mesh.material, tint, strength, sk, em);
     }
   });
 }

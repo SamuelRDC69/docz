@@ -89,6 +89,12 @@ export class CharacterPreview {
 
   /** Set the active character model by player class. */
   setClass(cls: PlayerClass): void {
+    this.setVisualKey(`player_${cls}`);
+  }
+
+  /** Set the active model by raw visual key (e.g. `player_mech` for the cosmetic
+   *  turntable). The asset must already be loaded — callers preload first. */
+  setVisualKey(visualKey: string): void {
     // Clean up current visual if it exists
     if (this.currentVisual) {
       this.characterGroup.remove(this.currentVisual.root);
@@ -97,8 +103,6 @@ export class CharacterPreview {
     }
 
     try {
-      // Load the CharacterVisual from preloaded assets (e.g. player_warrior)
-      const visualKey = `player_${cls}`;
       this.currentVisual = new CharacterVisual(visualKey, 0xffffff, this.currentSkin);
       this.characterGroup.add(this.currentVisual.root);
 
@@ -106,7 +110,7 @@ export class CharacterPreview {
       // Resetting Y rotation is cleanest for transitions.
       this.characterGroup.rotation.y = 0;
     } catch (err) {
-      console.error(`Failed to load preview character visual for ${cls}:`, err);
+      console.error(`Failed to load preview character visual for ${visualKey}:`, err);
     }
   }
 
