@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { paintTerrainRows, mapCanvasHeight, type MapRegion } from '../src/ui/map_terrain';
-import { ZONES, WORLD_MIN_X, WORLD_MAX_X } from '../src/sim/data';
+import { ZONES, WORLD_MIN_X, WORLD_MAX_X, zoneAt } from '../src/sim/data';
+import { zoneBiomeAt } from '../src/sim/world';
 
 const SEED = 20061;
 
@@ -51,5 +52,18 @@ describe('map terrain painter', () => {
     const a = renderFull(W, zoneRegion(ZONES[0].id), SEED);
     const b = renderFull(W, zoneRegion(ZONES[ZONES.length - 1].id), SEED);
     expect(a).not.toEqual(b);
+  });
+
+  // The painter swapped the inline `zoneAt(z).biome` for `zoneBiomeAt(z)`; pin
+  // them as equivalent across the world's z-range so the swap can't silently
+  // drift the map colours.
+  it('zoneBiomeAt(z) matches zoneAt(z).biome across the world', () => {
+    const minZ = ZONES[0].zMin;
+    const maxZ = ZONES[ZONES.length - 1].zMax;
+    for (let z = minZ; z < maxZ; z += 0.5) {
+      expect(zoneBiomeAt(z)).toBe(zoneAt(z).biome);
+    }
+    // and just past the far edge, where both clamp to the last zone
+    expect(zoneBiomeAt(maxZ + 50)).toBe(zoneAt(maxZ + 50).biome);
   });
 });

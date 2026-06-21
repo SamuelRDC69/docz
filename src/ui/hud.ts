@@ -2667,8 +2667,12 @@ export class Hud {
 
   private cancelMapPrewarm(): void {
     if (this.mapPrewarmHandle) {
+      // the handle came from one of the two schedulers; cancel via both, since a
+      // browser with requestIdleCallback but no cancelIdleCallback would
+      // otherwise leak the pending callback (harmless rework, but avoidable).
       const cancel = (window as typeof window & { cancelIdleCallback?: (h: number) => void }).cancelIdleCallback;
-      if (cancel) cancel(this.mapPrewarmHandle); else clearTimeout(this.mapPrewarmHandle);
+      if (cancel) cancel(this.mapPrewarmHandle);
+      clearTimeout(this.mapPrewarmHandle);
       this.mapPrewarmHandle = 0;
     }
     this.mapPrewarm = null;
@@ -2685,6 +2689,10 @@ export class Hud {
   // Paint a budgeted slice of the in-flight prewarm, then reschedule until the
   // zone is fully rendered. Whole rows per slice keeps it byte-identical to a
   // one-shot render (the only per-row state — hillshade — resets each row).
+  // With an idle deadline we paint as many slices as fit; without one (the
+  // setTimeout fallback) we paint a single slice and let the reschedule pace it,
+  // so the no-requestIdleCallback path stays sliced instead of rendering the
+  // whole canvas in one ~200ms hitch.
   private pumpMapPrewarm = (deadline?: { timeRemaining(): number }): void => {
     const job = this.mapPrewarm;
     if (!job) return;
@@ -2694,7 +2702,7 @@ export class Hud {
       const end = Math.min(job.H, job.row + ROWS_PER_SLICE);
       paintTerrainRows(job.img.data, job.W, job.H, job.region, seed, job.row, end);
       job.row = end;
-    } while (job.row < job.H && (!deadline || deadline.timeRemaining() > 3));
+    } while (job.row < job.H && deadline !== undefined && deadline.timeRemaining() > 3);
     if (job.row >= job.H) {
       job.ctx.putImageData(job.img, 0, 0);
       this.mapBgCache.set(job.zoneId, job.canvas);
