@@ -232,6 +232,74 @@ export const en: EnTranslations = {
       "showWalletOnCharacterScreen": "Show Wallet on Character Screen",
       "showWalletOnPlayerCard": "Show Wallet on Player Card"
     },
+    "perf": {
+      "title": "Performance Overlay",
+      "enable": "Show Performance Overlay",
+      "description": "Choose which stats to show, where the overlay sits, and how it looks.",
+      "sectionPosition": "Position",
+      "sectionAppearance": "Appearance",
+      "sectionStats": "Stats",
+      "positionX": "Horizontal",
+      "positionY": "Vertical",
+      "resetPosition": "Reset Position",
+      "dragHint": "Drag the overlay to move it, or use the sliders below.",
+      "opacity": "Background Opacity",
+      "solidBg": "Solid Background",
+      "fontScale": "Text Size",
+      "textColor": "Text Color",
+      "bgColor": "Background Color",
+      "colorTheme": "Color Theme",
+      "graph": "Frame-Time Graph",
+      "thresholds": "Color-Coded Warnings",
+      "presetsLabel": "Quick Presets",
+      "presetMinimal": "Minimal",
+      "presetStandard": "Standard",
+      "presetEverything": "Everything",
+      "groups": {
+        "frame": "Frame & Timing",
+        "network": "Network",
+        "renderer": "Renderer",
+        "system": "System"
+      },
+      "labels": {
+        "fps": "FPS",
+        "frameTime": "Frame Time",
+        "fps1Low": "1% Low",
+        "fps01Low": "0.1% Low",
+        "ping": "Ping",
+        "jitter": "Jitter",
+        "snapshot": "Snapshot Rate",
+        "connection": "Connection",
+        "drawCalls": "Draw Calls",
+        "triangles": "Triangles",
+        "geometries": "Geometries",
+        "textures": "Textures",
+        "programs": "Shaders",
+        "renderScale": "Render Scale",
+        "gpu": "GPU",
+        "memory": "Memory",
+        "hitches": "Hitches",
+        "entities": "Entities"
+      },
+      "themes": {
+        "gold": "Gold",
+        "frost": "Frost",
+        "ember": "Ember",
+        "jade": "Jade",
+        "crimson": "Crimson",
+        "mono": "Mono"
+      },
+      "units": {
+        "ms": "{value} ms",
+        "mb": "{value} MB",
+        "memPair": "{used} / {limit} MB",
+        "hz": "{value} Hz"
+      },
+      "badges": {
+        "backgrounded": "Backgrounded",
+        "offline": "Offline"
+      }
+    },
     "playerCard": {
       "showWalletBadge": "Show wallet badge"
     },

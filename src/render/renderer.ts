@@ -1127,6 +1127,7 @@ export class Renderer {
     height: number;
     calls: number;
     triangles: number;
+    geometries: number;
     textures: number;
     programs: number;
     views: number;
@@ -1173,6 +1174,7 @@ export class Renderer {
       height: this.viewport.height,
       calls: info.render.calls,
       triangles: info.render.triangles,
+      geometries: info.memory.geometries,
       textures: info.memory.textures,
       programs: info.programs?.length ?? 0,
       views: this.views.size,

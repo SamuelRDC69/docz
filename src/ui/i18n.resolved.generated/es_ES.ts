@@ -232,6 +232,74 @@ export const es_ES: EnTranslations = {
       "showWalletOnCharacterScreen": "Mostrar cartera en la pantalla de personajes",
       "showWalletOnPlayerCard": "Mostrar cartera en la tarjeta de jugador"
     },
+    "perf": {
+      "title": "Superposición de rendimiento",
+      "enable": "Mostrar superposición de rendimiento",
+      "description": "Elige qué estadísticas mostrar, dónde se ubica la superposición y cómo se ve.",
+      "sectionPosition": "Posición",
+      "sectionAppearance": "Apariencia",
+      "sectionStats": "Estadísticas",
+      "positionX": "Horizontal",
+      "positionY": "Vertical",
+      "resetPosition": "Restablecer posición",
+      "dragHint": "Arrastra la superposición para moverla o usa los deslizadores de abajo.",
+      "opacity": "Opacidad del fondo",
+      "solidBg": "Fondo sólido",
+      "fontScale": "Tamaño del texto",
+      "textColor": "Color del texto",
+      "bgColor": "Color del fondo",
+      "colorTheme": "Tema de color",
+      "graph": "Gráfica de tiempo de fotograma",
+      "thresholds": "Advertencias por color",
+      "presetsLabel": "Preajustes rápidos",
+      "presetMinimal": "Mínimo",
+      "presetStandard": "Estándar",
+      "presetEverything": "Completo",
+      "groups": {
+        "frame": "Fotogramas y tiempo",
+        "network": "Red",
+        "renderer": "Renderizador",
+        "system": "Sistema"
+      },
+      "labels": {
+        "fps": "FPS",
+        "frameTime": "Tiempo de fotograma",
+        "fps1Low": "1% inferior",
+        "fps01Low": "0.1% inferior",
+        "ping": "Ping",
+        "jitter": "Fluctuación",
+        "snapshot": "Tasa de instantáneas",
+        "connection": "Conexión",
+        "drawCalls": "Llamadas de dibujado",
+        "triangles": "Triángulos",
+        "geometries": "Geometrías",
+        "textures": "Texturas",
+        "programs": "Sombreadores",
+        "renderScale": "Escala de renderizado",
+        "gpu": "GPU",
+        "memory": "Memoria",
+        "hitches": "Tirones",
+        "entities": "Entidades"
+      },
+      "themes": {
+        "gold": "Oro",
+        "frost": "Escarcha",
+        "ember": "Brasa",
+        "jade": "Jade",
+        "crimson": "Carmesí",
+        "mono": "Mono"
+      },
+      "units": {
+        "ms": "{value} ms",
+        "mb": "{value} MB",
+        "memPair": "{used} / {limit} MB",
+        "hz": "{value} Hz"
+      },
+      "badges": {
+        "backgrounded": "En segundo plano",
+        "offline": "Sin conexión"
+      }
+    },
     "playerCard": {
       "showWalletBadge": "Mostrar insignia de cartera"
     },

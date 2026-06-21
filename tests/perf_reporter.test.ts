@@ -247,6 +247,7 @@ function snapshot(): PerfSnapshot {
       height: 900,
       calls: 500,
       triangles: 300000,
+      geometries: 120,
       textures: 80,
       programs: 30,
       views: 40,

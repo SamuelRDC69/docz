@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const playHtml = readFileSync(new URL('../play.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const mainTs = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const hudTs = readFileSync(new URL('../src/ui/hud.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const mobileControlsTs = readFileSync(new URL('../src/game/mobile_controls.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
@@ -50,6 +51,20 @@ describe('client HTML shell', () => {
     expect(robotsTxt).toContain('Sitemap: https://worldofclaudecraft.com/sitemap.xml');
     expect(sitemapXml).toContain('<loc>https://worldofclaudecraft.com/</loc>');
     expect(sitemapXml).toContain('<loc>https://worldofclaudecraft.com/links</loc>');
+    expect(sitemapXml).toContain('<loc>https://worldofclaudecraft.com/play</loc>');
+    expect(playHtml).toContain('<link rel="canonical" href="https://worldofclaudecraft.com/play" />');
+    expect(playHtml).toContain('<meta property="og:url" content="https://worldofclaudecraft.com/play" />');
+    expect(playHtml).toContain('"url": "https://worldofclaudecraft.com/play"');
+  });
+
+  it('loads Meta Pixel outside local development and tracks level 5', () => {
+    expect(html).toContain('https://connect.facebook.net/en_US/fbevents.js');
+    expect(html).toContain("fbq('init', '1692101265042180');");
+    expect(html).toContain("fbq('track', 'PageView');");
+    expect(html).toContain('https://www.facebook.com/tr?id=1692101265042180&ev=PageView&noscript=1');
+    expect(html).toContain("if (!['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) {");
+    expect(hudTs).toContain("fbq('trackCustom', eventName, data ?? {});");
+    expect(hudTs).toContain("if (ev.level === 5) trackMetaPixel('ReachedLevel5', { level: ev.level });");
   });
 
   it('offers the quest log in the mobile controls drawer', () => {

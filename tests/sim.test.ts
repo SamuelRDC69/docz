@@ -505,6 +505,29 @@ describe('combat', () => {
     expect(wolf.hp).toBeLessThan(hpBefore);
   });
 
+  it('tags a cast on a dead target with reason target_dead (and not on a live one)', () => {
+    const sim = makeSim('mage');
+    const wolf = nearestMob(sim, 'forest_wolf');
+    teleportTo(sim, wolf.pos.x + 15, wolf.pos.z);
+    sim.targetEntity(wolf.id);
+    facePlayerAt(sim, wolf);
+
+    // focus stays on the corpse → cast rejected with the structured reason (the
+    // reject returns before any cast state is set, so the player stays idle)
+    wolf.dead = true;
+    sim.events = [];
+    sim.castAbility('fireball');
+    expect(sim.events).toContainEqual(
+      expect.objectContaining({ type: 'error', reason: 'target_dead' }),
+    );
+
+    // a live target: the cast proceeds, no dead-target rejection
+    wolf.dead = false;
+    sim.events = [];
+    sim.castAbility('fireball');
+    expect(sim.events.find((e: any) => e.type === 'error' && e.reason === 'target_dead')).toBeUndefined();
+  });
+
   it('polymorph sheeps a beast and breaks on damage', () => {
     const sim = makeSim('mage');
     sim.setPlayerLevel(8);

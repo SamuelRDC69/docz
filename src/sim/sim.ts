@@ -35,7 +35,7 @@ import {
   angleTo, armorReduction, dist2d, emptyMoveInput, isConsuming, meleeMissChance, mobXpValue, normAngle,
   rageFromDealing, rageFromTaking, spellHitChance, xpForLevel,
   MILESTONES, virtualLevel, xpToReachLevel, canPrestige,
-  ArenaFormat, ArenaStanding, ArenaCombatant, SkinCatalog, SkinRank,
+  ArenaFormat, ArenaStanding, ArenaCombatant, SkinCatalog, SkinRank, ErrorReason
 } from './types';
 import {
   EVENT_SKIN_TOKEN_ID, MECH_CHROMAS, classHasSkin, mechChromaItemId, mechChromaSkinIndex,
@@ -2374,7 +2374,10 @@ export class Sim {
       if (this.lineOfSightBlocked(p, target, ability)) { this.error(p.id, 'Line of sight.'); return; }
     } else if (ability.requiresTarget) {
       target = p.targetId !== null ? this.entities.get(p.targetId) ?? null : null;
-      if (!target || target.dead || !this.isHostileTo(p, target)) { this.error(p.id, 'You have no target.'); return; }
+      if (!target || target.dead || !this.isHostileTo(p, target)) {
+        this.error(p.id, 'You have no target.', target?.dead ? 'target_dead' : undefined);
+        return;
+      }
       const d = dist2d(p.pos, target.pos);
       const maxRange = ability.range > 0 ? ability.range : MELEE_RANGE;
       if (d > maxRange) { this.error(p.id, 'Out of range.'); return; }
@@ -10127,8 +10130,8 @@ export class Sim {
     return `You have ${Math.round(e.savedMana)} mana parked while shifted; it returns when you leave your form.`;
   }
 
-  private error(pid: number, text: string): void {
-    this.emit({ type: 'error', text, pid });
+  private error(pid: number, text: string, reason?: ErrorReason): void {
+    this.emit(reason ? { type: 'error', text, pid, reason } : { type: 'error', text, pid });
   }
 
   // Lines shown by the "/help" command, one system notice per entry. Keep this

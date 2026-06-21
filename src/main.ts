@@ -5,6 +5,10 @@ import { Keybinds } from './game/keybinds';
 import { Settings, GameSettings, SETTING_RANGES, normalizeClickMoveButton } from './game/settings';
 import { MobileControls, PHONE_TOUCH_QUERY, isPhoneTouchDevice } from './game/mobile_controls';
 import { Hud } from './ui/hud';
+import { PerfOverlay } from './ui/perf_overlay';
+import { PerfOverlayConfigStore, type PerfOverlayConfig } from './ui/perf_overlay_config';
+import { FrameMeter, buildPerfOverlayView } from './ui/perf_overlay_model';
+import { createMetricsSampler } from './ui/perf_metrics_sampler';
 import { audio } from './game/audio';
 import { music } from './game/music';
 import { voice } from './game/voice';
@@ -28,6 +32,7 @@ import { skinCount } from './render/characters/manifest';
 import { DT, INTERACT_RANGE, MELEE_RANGE, PlayerClass, RUN_SPEED, dist2d } from './sim/types';
 import { togglePasswordVisibility, syncInputAriaState, validateForm, handleKeyboardActivation, validateCharacterName } from './ui/auth_utils';
 import { CLASSES, ABILITIES } from './sim/content/classes';
+import { CLASS_DETAILS, SIGNATURE_ABILITIES } from './ui/class_details_data';
 import { iconDataUrl } from './ui/icons';
 import { ensureLocaleLoaded, formatDateTime, formatNumber, getLanguage, isLocaleResident, isSupportedLanguage, languageTag, setLanguage, t, tPlural, type SupportedLanguage, type TranslationKey } from './ui/i18n';
 import { tServer } from './ui/server_i18n';
@@ -710,14 +715,33 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
   // from a prior session, persisted in localStorage)
   document.getElementById('mobile-music')?.classList.toggle('mm-muted', !music.enabled);
 
-  // Optional FPS readout (settings: showFps). Exponentially-smoothed so the
-  // number is readable rather than flickering every frame; throttled to ~4 Hz.
-  // Declared here (before applySetting + the startup apply loop) so toggling the
-  // setting on boot doesn't hit the const's temporal dead zone.
-  const fpsOverlay = $('#fps-overlay') as HTMLDivElement;
-  let fpsEnabled = false;
-  let fpsSmoothed = 60;
-  let fpsLastPaintMs = 0;
+  // Customizable performance overlay (master toggle: showFps, kept for back-compat
+  // with the old FPS switch). The pure metrics + view core lives in
+  // ui/perf_overlay_model; this owns the frame meter, the persisted appearance/
+  // layout config (ui/perf_overlay_config, its own localStorage key), and the thin
+  // DOM painter (ui/perf_overlay). Declared here (before applySetting + the startup
+  // apply loop) so toggling showFps on boot doesn't hit a const's temporal dead zone.
+  const perfOverlay = new PerfOverlay($('#perf-overlay') as HTMLDivElement);
+  const perfConfig = new PerfOverlayConfigStore();
+  const perfMeter = new FrameMeter();
+  function toPerfViewCfg(c: PerfOverlayConfig): { metrics: typeof c.metrics; thresholds: boolean; graph: boolean } {
+    return { metrics: c.metrics, thresholds: c.thresholds, graph: c.graph };
+  }
+  let perfViewCfg = toPerfViewCfg(perfConfig.get());
+  function applyPerfOverlayConfig(): void {
+    const c = perfConfig.get();
+    perfOverlay.applyConfig(c);
+    perfViewCfg = toPerfViewCfg(c);
+  }
+  // Settle a drag-to-move from the overlay: persist the dropped position, refresh
+  // the overlay's live cfg (so reposition() does not snap it back on the next
+  // render), and push the new X/Y into the open Performance panel's sliders.
+  perfOverlay.onPositionChange = (x, y) => {
+    perfConfig.patch({ posX: x, posY: y });
+    applyPerfOverlayConfig();
+    hud.onPerfOverlayMoved(x, y);
+  };
+  applyPerfOverlayConfig();
 
   // apply a setting to its live subsystem (also used to apply all on startup)
   function syncClickMoveInput(): void {
@@ -774,8 +798,7 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
       return;
     }
     if (key === 'showFps') {
-      fpsEnabled = settings.set('showFps', !!value);
-      fpsOverlay.style.display = fpsEnabled ? 'block' : 'none';
+      perfOverlay.setEnabled(settings.set('showFps', !!value));
       return;
     }
     if (key === 'showWalletOnCharacterScreen') {
@@ -840,6 +863,14 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
     settings,
     onSettingChange: (key, value) => applySetting(key, value),
     changeLanguage: (lang, onStatus) => changeLanguage(lang, onStatus),
+    perfOverlay: {
+      get: () => perfConfig.get(),
+      patch: (p) => { perfConfig.patch(p); applyPerfOverlayConfig(); },
+      setMetric: (k, on) => { perfConfig.setMetric(k, on); applyPerfOverlayConfig(); },
+      reset: () => { perfConfig.reset(); applyPerfOverlayConfig(); },
+      resetPosition: () => { perfConfig.resetPosition(); applyPerfOverlayConfig(); },
+      setPlacement: (on) => perfOverlay.setPlacementMode(on),
+    },
   });
   if (online) {
     hud.attachReporting({
@@ -1067,6 +1098,9 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
   let last = performance.now();
   let acc = 0;
   let onlineInputEchoMs = 0;
+  // Smoothed input-echo jitter (mean absolute deviation of RTT samples) for the
+  // perf overlay's Jitter row.
+  let onlineJitterMs = 0;
   let gameInputReady = false;
 
   // Camera follow state: keyboard turning advances facing in 20Hz sim steps,
@@ -1240,13 +1274,28 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
     return !!(mi.forward || mi.back || mi.strafeLeft || mi.strafeRight) && !world.player.dead;
   }
 
-  function updateFpsOverlay(frameDt: number, nowMs: number): void {
-    if (!fpsEnabled) return;
-    if (frameDt > 0) fpsSmoothed += (1 / frameDt - fpsSmoothed) * 0.1;
-    if (nowMs - fpsLastPaintMs < 250) return;
-    fpsLastPaintMs = nowMs;
-    fpsOverlay.textContent = t('hud.options.fpsReadout', { fps: formatNumber(Math.round(fpsSmoothed)) });
+  // Feed the frame meter every frame (so stats stay warm even when hidden) and,
+  // when the overlay is on, repaint at the meter's throttle (~4 Hz). Sample
+  // assembly + the DOM paint only happen on a repaint tick, never per frame.
+  function syncPerfOverlay(frameDt: number, nowMs: number): void {
+    const repaint = perfMeter.step(frameDt, nowMs);
+    if (!perfOverlay.isEnabled() || !repaint) return;
+    perfOverlay.render(buildPerfOverlayView(sampleMetrics(), perfViewCfg));
   }
+
+  // Gather the raw, nullable signals the overlay can surface. Renderer/browser
+  // fields reflect the last rendered frame (fine at 4 Hz); network fields are
+  // online-only and null offline; Chromium-only sources (heap, connection) report
+  // null elsewhere so their rows simply hide. The pure assembly lives in
+  // perf_metrics_sampler.ts; here we inject the live sources.
+  const sampleMetrics = createMetricsSampler({
+    renderer,
+    meter: perfMeter,
+    getOnline: () => online,
+    getEntityCount: () => world.entities.size,
+    getEchoMs: () => onlineInputEchoMs,
+    getJitterMs: () => onlineJitterMs,
+  });
 
   function frame(now: number): void {
     requestAnimationFrame(frame);
@@ -1254,7 +1303,7 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
     last = now;
     if (frameDt > 0.25) frameDt = 0.25;
     perf.frame(frameDt);
-    updateFpsOverlay(frameDt, now);
+    syncPerfOverlay(frameDt, now);
 
     // freeze movement while the game menu is up so WASD doesn't walk the
     // character behind it (other windows stay non-modal, as before)
@@ -1315,7 +1364,12 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
     const echoSamples = net.consumeInputEchoSamples();
     for (const sample of echoSamples) {
       if (Number.isFinite(sample) && sample >= 0) {
-        onlineInputEchoMs = onlineInputEchoMs === 0 ? sample : onlineInputEchoMs + 0.2 * (sample - onlineInputEchoMs);
+        // Jitter is the mean absolute deviation against the PRIOR mean (measuring
+        // it after the EMA update would bias it low).
+        const prevMean = onlineInputEchoMs;
+        onlineInputEchoMs = prevMean === 0 ? sample : prevMean + 0.2 * (sample - prevMean);
+        const dev = prevMean === 0 ? 0 : Math.abs(sample - prevMean);
+        onlineJitterMs = onlineJitterMs === 0 ? dev : onlineJitterMs + 0.2 * (dev - onlineJitterMs);
       }
       perf.markInputEcho(sample);
     }
@@ -2157,91 +2211,8 @@ async function enterWorld(c: CharacterSummary, button?: HTMLButtonElement): Prom
   };
 }
 
-interface ClassDetails {
-  roleKey: TranslationKey;
-  roleType: 'tank' | 'dps' | 'ranged' | 'healer' | 'hybrid';
-  armorKey: TranslationKey;
-  weaponsKey: TranslationKey;
-  loreKey: TranslationKey;
-}
-
-const CLASS_DETAILS: Record<PlayerClass, ClassDetails> = {
-  warrior: {
-    roleKey: 'classDetails.roles.warrior',
-    roleType: 'hybrid',
-    armorKey: 'classDetails.armor.chainLeatherCloth',
-    weaponsKey: 'classDetails.weapons.swordsMacesAxes',
-    loreKey: 'classDetails.lore.warrior',
-  },
-  paladin: {
-    roleKey: 'classDetails.roles.paladin',
-    roleType: 'hybrid',
-    armorKey: 'classDetails.armor.chainLeatherCloth',
-    weaponsKey: 'classDetails.weapons.swordsMaces',
-    loreKey: 'classDetails.lore.paladin',
-  },
-  hunter: {
-    roleKey: 'classDetails.roles.hunter',
-    roleType: 'ranged',
-    armorKey: 'classDetails.armor.leatherCloth',
-    weaponsKey: 'classDetails.weapons.axesSwords',
-    loreKey: 'classDetails.lore.hunter',
-  },
-  rogue: {
-    roleKey: 'classDetails.roles.rogue',
-    roleType: 'dps',
-    armorKey: 'classDetails.armor.leatherCloth',
-    weaponsKey: 'classDetails.weapons.daggersSwords',
-    loreKey: 'classDetails.lore.rogue',
-  },
-  priest: {
-    roleKey: 'classDetails.roles.priest',
-    roleType: 'healer',
-    armorKey: 'classDetails.armor.cloth',
-    weaponsKey: 'classDetails.weapons.staves',
-    loreKey: 'classDetails.lore.priest',
-  },
-  shaman: {
-    roleKey: 'classDetails.roles.shaman',
-    roleType: 'hybrid',
-    armorKey: 'classDetails.armor.chainLeatherCloth',
-    weaponsKey: 'classDetails.weapons.macesAxes',
-    loreKey: 'classDetails.lore.shaman',
-  },
-  mage: {
-    roleKey: 'classDetails.roles.mage',
-    roleType: 'ranged',
-    armorKey: 'classDetails.armor.cloth',
-    weaponsKey: 'classDetails.weapons.staves',
-    loreKey: 'classDetails.lore.mage',
-  },
-  warlock: {
-    roleKey: 'classDetails.roles.warlock',
-    roleType: 'ranged',
-    armorKey: 'classDetails.armor.cloth',
-    weaponsKey: 'classDetails.weapons.staves',
-    loreKey: 'classDetails.lore.warlock',
-  },
-  druid: {
-    roleKey: 'classDetails.roles.druid',
-    roleType: 'hybrid',
-    armorKey: 'classDetails.armor.leatherCloth',
-    weaponsKey: 'classDetails.weapons.staves',
-    loreKey: 'classDetails.lore.druid',
-  }
-};
-
-const SIGNATURE_ABILITIES: Record<PlayerClass, string[]> = {
-  warrior: ['charge', 'heroic_strike', 'rend'],
-  paladin: ['holy_light', 'judgement', 'seal_of_righteousness'],
-  hunter: ['serpent_sting', 'aimed_shot', 'aspect_of_the_hawk'],
-  rogue: ['sinister_strike', 'eviscerate', 'evasion'],
-  priest: ['smite', 'power_word_shield', 'shadow_word_pain'],
-  shaman: ['lightning_bolt', 'rockbiter_weapon', 'ghost_wolf'],
-  mage: ['fireball', 'frostbolt', 'polymorph'],
-  warlock: ['shadow_bolt', 'corruption', 'life_tap'],
-  druid: ['wrath', 'bear_form', 'rejuvenation']
-};
+// CLASS_DETAILS / SIGNATURE_ABILITIES live in a pure module so a Vitest guard
+// can verify they never drift from the sim's class/ability definitions.
 
 const activeClassDetailsTimeouts: Record<string, number | null> = {};
 

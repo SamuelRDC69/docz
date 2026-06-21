@@ -232,6 +232,74 @@ export const ko_KR: EnTranslations = {
       "showWalletOnCharacterScreen": "캐릭터 화면에 지갑 표시",
       "showWalletOnPlayerCard": "플레이어 카드에 지갑 표시"
     },
+    "perf": {
+      "title": "성능 오버레이",
+      "enable": "성능 오버레이 표시",
+      "description": "표시할 통계, 오버레이 위치, 모양을 선택하세요.",
+      "sectionPosition": "위치",
+      "sectionAppearance": "모양",
+      "sectionStats": "통계",
+      "positionX": "가로",
+      "positionY": "세로",
+      "resetPosition": "위치 초기화",
+      "dragHint": "오버레이를 드래그하여 옮기거나 아래 슬라이더를 사용하세요.",
+      "opacity": "배경 투명도",
+      "solidBg": "불투명 배경",
+      "fontScale": "글자 크기",
+      "textColor": "글자 색상",
+      "bgColor": "배경 색상",
+      "colorTheme": "색상 테마",
+      "graph": "프레임 시간 그래프",
+      "thresholds": "색상별 경고",
+      "presetsLabel": "빠른 설정",
+      "presetMinimal": "간소",
+      "presetStandard": "표준",
+      "presetEverything": "전체",
+      "groups": {
+        "frame": "프레임 및 시간",
+        "network": "네트워크",
+        "renderer": "렌더러",
+        "system": "시스템"
+      },
+      "labels": {
+        "fps": "FPS",
+        "frameTime": "프레임 시간",
+        "fps1Low": "1% 최저",
+        "fps01Low": "0.1% 최저",
+        "ping": "핑",
+        "jitter": "지터",
+        "snapshot": "스냅샷 전송률",
+        "connection": "연결",
+        "drawCalls": "드로우 콜",
+        "triangles": "삼각형",
+        "geometries": "지오메트리",
+        "textures": "텍스처",
+        "programs": "셰이더",
+        "renderScale": "렌더링 배율",
+        "gpu": "GPU",
+        "memory": "메모리",
+        "hitches": "버벅임",
+        "entities": "개체"
+      },
+      "themes": {
+        "gold": "황금",
+        "frost": "서리",
+        "ember": "잔불",
+        "jade": "비취",
+        "crimson": "진홍",
+        "mono": "단색"
+      },
+      "units": {
+        "ms": "{value} ms",
+        "mb": "{value} MB",
+        "memPair": "{used} / {limit} MB",
+        "hz": "{value} Hz"
+      },
+      "badges": {
+        "backgrounded": "백그라운드",
+        "offline": "오프라인"
+      }
+    },
     "playerCard": {
       "showWalletBadge": "지갑 배지 표시"
     },

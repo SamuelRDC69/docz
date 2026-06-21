@@ -232,6 +232,74 @@ export const zh_TW: EnTranslations = {
       "showWalletOnCharacterScreen": "在角色畫面顯示錢包",
       "showWalletOnPlayerCard": "在玩家卡片顯示錢包"
     },
+    "perf": {
+      "title": "效能監視器",
+      "enable": "顯示效能監視器",
+      "description": "選擇要顯示的數據、監視器的位置及其外觀。",
+      "sectionPosition": "位置",
+      "sectionAppearance": "外觀",
+      "sectionStats": "數據",
+      "positionX": "水平",
+      "positionY": "垂直",
+      "resetPosition": "重設位置",
+      "dragHint": "拖曳監視器即可移動，或使用下方的滑桿。",
+      "opacity": "背景透明度",
+      "solidBg": "不透明背景",
+      "fontScale": "文字大小",
+      "textColor": "文字顏色",
+      "bgColor": "背景顏色",
+      "colorTheme": "配色主題",
+      "graph": "影格時間圖表",
+      "thresholds": "顏色標示警告",
+      "presetsLabel": "快速預設",
+      "presetMinimal": "精簡",
+      "presetStandard": "標準",
+      "presetEverything": "全部",
+      "groups": {
+        "frame": "影格與時間",
+        "network": "網路",
+        "renderer": "渲染器",
+        "system": "系統"
+      },
+      "labels": {
+        "fps": "FPS",
+        "frameTime": "影格時間",
+        "fps1Low": "1% 最低",
+        "fps01Low": "0.1% 最低",
+        "ping": "延遲",
+        "jitter": "抖動",
+        "snapshot": "快照速率",
+        "connection": "連線",
+        "drawCalls": "繪製呼叫",
+        "triangles": "三角形",
+        "geometries": "幾何體",
+        "textures": "紋理",
+        "programs": "著色器",
+        "renderScale": "渲染縮放",
+        "gpu": "GPU",
+        "memory": "記憶體",
+        "hitches": "卡頓",
+        "entities": "實體"
+      },
+      "themes": {
+        "gold": "黃金",
+        "frost": "冰霜",
+        "ember": "餘燼",
+        "jade": "翡翠",
+        "crimson": "緋紅",
+        "mono": "單色"
+      },
+      "units": {
+        "ms": "{value} ms",
+        "mb": "{value} MB",
+        "memPair": "{used} / {limit} MB",
+        "hz": "{value} Hz"
+      },
+      "badges": {
+        "backgrounded": "背景執行中",
+        "offline": "離線"
+      }
+    },
     "playerCard": {
       "showWalletBadge": "顯示錢包徽章"
     },

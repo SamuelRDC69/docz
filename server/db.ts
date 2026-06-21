@@ -134,6 +134,23 @@ CREATE TABLE IF NOT EXISTS account_moderation_actions (
   expires_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS account_moderation_actions_account ON account_moderation_actions(account_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS blocked_ips (
+  id SERIAL PRIMARY KEY,
+  ip TEXT NOT NULL UNIQUE,
+  reason TEXT NOT NULL DEFAULT '',
+  created_by_account_id INT REFERENCES accounts(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS blocked_ip_actions (
+  id BIGSERIAL PRIMARY KEY,
+  ip TEXT NOT NULL,
+  action TEXT NOT NULL,
+  admin_account_id INT REFERENCES accounts(id) ON DELETE SET NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS blocked_ip_actions_ip ON blocked_ip_actions(ip, created_at DESC);
 CREATE TABLE IF NOT EXISTS world_state (
   key TEXT PRIMARY KEY,
   data JSONB NOT NULL,

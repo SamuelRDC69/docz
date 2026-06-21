@@ -842,12 +842,36 @@ export class ClientWorld implements IWorld {
     return v;
   }
 
+  // Refuse a hostile-target cast at an already-dead target: near-monotonic +
+  // locally authoritative state, so it only drops casts the server would reject
+  // anyway. The exception is a same-id revive (graveyard release, Fiesta respawn)
+  // that flips a known-dead target back to alive without clearing attackers'
+  // targetId — there the client can drop one hostile cast for a snapshot+RTT and
+  // self-heals on the next GCD. (Mob respawn clears attackers' targetId, so it
+  // has no such window.)
+  private deadTargetCast(def: ResolvedAbility['def'] | undefined): boolean {
+    if (!def || !def.requiresTarget || def.targetType === 'friendly') return false;
+    const tid = this.player.targetId;
+    const target = tid !== null ? this.entities.get(tid) : undefined;
+    return !!target && target.dead;
+  }
+
   castAbility(abilityId: string): void {
+    if (this.deadTargetCast(this.known.find((k) => k.def.id === abilityId)?.def)) {
+      this.eventQueue.push({ type: 'error', text: 'You have no target.', reason: 'target_dead' });
+      return;
+    }
     this.cmd({ cmd: 'cast', ability: abilityId });
   }
+
   castAbilityBySlot(slot: number): void {
+    if (this.deadTargetCast(this.known[slot]?.def)) {
+      this.eventQueue.push({ type: 'error', text: 'You have no target.', reason: 'target_dead' });
+      return;
+    }
     this.cmd({ cmd: 'castSlot', slot });
   }
+
   targetEntity(id: number | null): void {
     // optimistic local update for snappy UI
     const p = this.entities.get(this.playerId);

@@ -232,6 +232,74 @@ export const de_DE: EnTranslations = {
       "showWalletOnCharacterScreen": "Wallet auf dem Charakterbildschirm anzeigen",
       "showWalletOnPlayerCard": "Wallet auf der Spielerkarte anzeigen"
     },
+    "perf": {
+      "title": "Leistungsanzeige",
+      "enable": "Leistungsanzeige anzeigen",
+      "description": "Wähle, welche Werte angezeigt werden, wo die Anzeige sitzt und wie sie aussieht.",
+      "sectionPosition": "Position",
+      "sectionAppearance": "Darstellung",
+      "sectionStats": "Werte",
+      "positionX": "Horizontal",
+      "positionY": "Vertikal",
+      "resetPosition": "Position zurücksetzen",
+      "dragHint": "Ziehe die Anzeige zum Verschieben oder nutze die Regler unten.",
+      "opacity": "Hintergrunddeckkraft",
+      "solidBg": "Undurchsichtiger Hintergrund",
+      "fontScale": "Textgröße",
+      "textColor": "Textfarbe",
+      "bgColor": "Hintergrundfarbe",
+      "colorTheme": "Farbschema",
+      "graph": "Frame-Zeit-Diagramm",
+      "thresholds": "Farbcodierte Warnungen",
+      "presetsLabel": "Schnellvorgaben",
+      "presetMinimal": "Minimal",
+      "presetStandard": "Standard",
+      "presetEverything": "Alles",
+      "groups": {
+        "frame": "Frames & Zeit",
+        "network": "Netzwerk",
+        "renderer": "Renderer",
+        "system": "System"
+      },
+      "labels": {
+        "fps": "FPS",
+        "frameTime": "Frame-Zeit",
+        "fps1Low": "1 % Min.",
+        "fps01Low": "0,1 % Min.",
+        "ping": "Ping",
+        "jitter": "Jitter",
+        "snapshot": "Snapshot-Rate",
+        "connection": "Verbindung",
+        "drawCalls": "Draw Calls",
+        "triangles": "Dreiecke",
+        "geometries": "Geometrien",
+        "textures": "Texturen",
+        "programs": "Shader",
+        "renderScale": "Renderskalierung",
+        "gpu": "GPU",
+        "memory": "Speicher",
+        "hitches": "Ruckler",
+        "entities": "Entitäten"
+      },
+      "themes": {
+        "gold": "Gold",
+        "frost": "Frost",
+        "ember": "Glut",
+        "jade": "Jade",
+        "crimson": "Karmesin",
+        "mono": "Mono"
+      },
+      "units": {
+        "ms": "{value} ms",
+        "mb": "{value} MB",
+        "memPair": "{used} / {limit} MB",
+        "hz": "{value} Hz"
+      },
+      "badges": {
+        "backgrounded": "Im Hintergrund",
+        "offline": "Offline"
+      }
+    },
     "playerCard": {
       "showWalletBadge": "Wallet-Abzeichen anzeigen"
     },

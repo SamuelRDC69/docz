@@ -232,6 +232,74 @@ export const pt_BR: EnTranslations = {
       "showWalletOnCharacterScreen": "Mostrar carteira na tela de personagens",
       "showWalletOnPlayerCard": "Mostrar carteira no cartão de jogador"
     },
+    "perf": {
+      "title": "Sobreposição de Desempenho",
+      "enable": "Mostrar Sobreposição de Desempenho",
+      "description": "Escolha quais estatísticas exibir, onde a sobreposição fica e como ela aparece.",
+      "sectionPosition": "Posição",
+      "sectionAppearance": "Aparência",
+      "sectionStats": "Estatísticas",
+      "positionX": "Horizontal",
+      "positionY": "Vertical",
+      "resetPosition": "Redefinir Posição",
+      "dragHint": "Arraste a sobreposição para movê-la ou use os controles deslizantes abaixo.",
+      "opacity": "Opacidade do Fundo",
+      "solidBg": "Fundo Sólido",
+      "fontScale": "Tamanho do Texto",
+      "textColor": "Cor do Texto",
+      "bgColor": "Cor do Fundo",
+      "colorTheme": "Tema de Cores",
+      "graph": "Gráfico de Tempo de Quadro",
+      "thresholds": "Avisos por Cores",
+      "presetsLabel": "Predefinições Rápidas",
+      "presetMinimal": "Mínimo",
+      "presetStandard": "Padrão",
+      "presetEverything": "Tudo",
+      "groups": {
+        "frame": "Quadro e Tempo",
+        "network": "Rede",
+        "renderer": "Renderizador",
+        "system": "Sistema"
+      },
+      "labels": {
+        "fps": "FPS",
+        "frameTime": "Tempo de Quadro",
+        "fps1Low": "1% Mín.",
+        "fps01Low": "0,1% Mín.",
+        "ping": "Ping",
+        "jitter": "Jitter",
+        "snapshot": "Taxa de Snapshot",
+        "connection": "Conexão",
+        "drawCalls": "Chamadas de Desenho",
+        "triangles": "Triângulos",
+        "geometries": "Geometrias",
+        "textures": "Texturas",
+        "programs": "Shaders",
+        "renderScale": "Escala de Renderização",
+        "gpu": "GPU",
+        "memory": "Memória",
+        "hitches": "Travamentos",
+        "entities": "Entidades"
+      },
+      "themes": {
+        "gold": "Ouro",
+        "frost": "Gélido",
+        "ember": "Brasa",
+        "jade": "Jade",
+        "crimson": "Carmesim",
+        "mono": "Mono"
+      },
+      "units": {
+        "ms": "{value} ms",
+        "mb": "{value} MB",
+        "memPair": "{used} / {limit} MB",
+        "hz": "{value} Hz"
+      },
+      "badges": {
+        "backgrounded": "Em segundo plano",
+        "offline": "Offline"
+      }
+    },
     "playerCard": {
       "showWalletBadge": "Mostrar selo da carteira"
     },

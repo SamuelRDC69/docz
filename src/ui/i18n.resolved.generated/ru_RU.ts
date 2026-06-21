@@ -232,6 +232,74 @@ export const ru_RU: EnTranslations = {
       "showWalletOnCharacterScreen": "Показывать кошелек на экране персонажей",
       "showWalletOnPlayerCard": "Показывать кошелек на карточке игрока"
     },
+    "perf": {
+      "title": "Оверлей производительности",
+      "enable": "Показывать оверлей производительности",
+      "description": "Выберите, какие показатели отображать, где разместить оверлей и как он выглядит.",
+      "sectionPosition": "Положение",
+      "sectionAppearance": "Внешний вид",
+      "sectionStats": "Показатели",
+      "positionX": "По горизонтали",
+      "positionY": "По вертикали",
+      "resetPosition": "Сбросить положение",
+      "dragHint": "Перетащите оверлей, чтобы переместить его, или используйте ползунки ниже.",
+      "opacity": "Прозрачность фона",
+      "solidBg": "Сплошной фон",
+      "fontScale": "Размер текста",
+      "textColor": "Цвет текста",
+      "bgColor": "Цвет фона",
+      "colorTheme": "Цветовая тема",
+      "graph": "График времени кадра",
+      "thresholds": "Цветовая индикация",
+      "presetsLabel": "Готовые наборы",
+      "presetMinimal": "Минимум",
+      "presetStandard": "Стандарт",
+      "presetEverything": "Всё",
+      "groups": {
+        "frame": "Кадры и время",
+        "network": "Сеть",
+        "renderer": "Рендер",
+        "system": "Система"
+      },
+      "labels": {
+        "fps": "FPS",
+        "frameTime": "Время кадра",
+        "fps1Low": "1% мин.",
+        "fps01Low": "0,1% мин.",
+        "ping": "Пинг",
+        "jitter": "Джиттер",
+        "snapshot": "Частота снимков",
+        "connection": "Соединение",
+        "drawCalls": "Вызовы отрисовки",
+        "triangles": "Треугольники",
+        "geometries": "Геометрия",
+        "textures": "Текстуры",
+        "programs": "Шейдеры",
+        "renderScale": "Масштаб рендера",
+        "gpu": "GPU",
+        "memory": "Память",
+        "hitches": "Подвисания",
+        "entities": "Объекты"
+      },
+      "themes": {
+        "gold": "Золото",
+        "frost": "Иней",
+        "ember": "Жар",
+        "jade": "Нефрит",
+        "crimson": "Багрянец",
+        "mono": "Моно"
+      },
+      "units": {
+        "ms": "{value} мс",
+        "mb": "{value} МБ",
+        "memPair": "{used} / {limit} МБ",
+        "hz": "{value} Гц"
+      },
+      "badges": {
+        "backgrounded": "В фоне",
+        "offline": "Не в сети"
+      }
+    },
     "playerCard": {
       "showWalletBadge": "Показывать значок кошелька"
     },

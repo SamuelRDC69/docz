@@ -105,6 +105,84 @@ export const hudChromeStrings = {
     showWalletOnCharacterScreen: "Show Wallet on Character Screen",
     showWalletOnPlayerCard: "Show Wallet on Player Card",
   },
+  // Performance overlay (the customizable in-game stats panel + its Options
+  // sub-view). Player-facing, so every label is a key here; the live numbers in
+  // the overlay run through formatNumber and these unit strings. Distinct from
+  // the dev `?perf` diagnostic, which stays English like console.*.
+  perf: {
+    title: "Performance Overlay",
+    enable: "Show Performance Overlay",
+    description: "Choose which stats to show, where the overlay sits, and how it looks.",
+    sectionPosition: "Position",
+    sectionAppearance: "Appearance",
+    sectionStats: "Stats",
+    positionX: "Horizontal",
+    positionY: "Vertical",
+    resetPosition: "Reset Position",
+    dragHint: "Drag the overlay to move it, or use the sliders below.",
+    opacity: "Background Opacity",
+    solidBg: "Solid Background",
+    fontScale: "Text Size",
+    textColor: "Text Color",
+    bgColor: "Background Color",
+    colorTheme: "Color Theme",
+    graph: "Frame-Time Graph",
+    thresholds: "Color-Coded Warnings",
+    presetsLabel: "Quick Presets",
+    presetMinimal: "Minimal",
+    presetStandard: "Standard",
+    presetEverything: "Everything",
+    // Category subheads the Stats toggles are grouped under (mirrors the metric
+    // registry's groups: frame/timing, network, renderer, system).
+    groups: {
+      frame: "Frame & Timing",
+      network: "Network",
+      renderer: "Renderer",
+      system: "System",
+    },
+    // Short metric labels shown in the overlay's left column and the Stats toggles.
+    labels: {
+      fps: "FPS",
+      frameTime: "Frame Time",
+      fps1Low: "1% Low",
+      fps01Low: "0.1% Low",
+      ping: "Ping",
+      jitter: "Jitter",
+      snapshot: "Snapshot Rate",
+      connection: "Connection",
+      drawCalls: "Draw Calls",
+      triangles: "Triangles",
+      geometries: "Geometries",
+      textures: "Textures",
+      programs: "Shaders",
+      renderScale: "Render Scale",
+      gpu: "GPU",
+      memory: "Memory",
+      hitches: "Hitches",
+      entities: "Entities",
+    },
+    // Color-theme preset names (also the swatches' accessible names).
+    themes: {
+      gold: "Gold",
+      frost: "Frost",
+      ember: "Ember",
+      jade: "Jade",
+      crimson: "Crimson",
+      mono: "Mono",
+    },
+    // Value units — the digits are spliced in via formatNumber at the call site.
+    units: {
+      ms: "{value} ms",
+      mb: "{value} MB",
+      memPair: "{used} / {limit} MB",
+      hz: "{value} Hz",
+    },
+    // Inline status badges shown when the relevant condition is active.
+    badges: {
+      backgrounded: "Backgrounded",
+      offline: "Offline",
+    },
+  },
   playerCard: {
     showWalletBadge: "Show wallet badge",
   },

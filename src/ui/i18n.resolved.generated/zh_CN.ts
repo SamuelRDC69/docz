@@ -232,6 +232,74 @@ export const zh_CN: EnTranslations = {
       "showWalletOnCharacterScreen": "在角色界面显示钱包",
       "showWalletOnPlayerCard": "在玩家卡片显示钱包"
     },
+    "perf": {
+      "title": "性能监视器",
+      "enable": "显示性能监视器",
+      "description": "选择要显示的信息、监视器的位置及其外观。",
+      "sectionPosition": "位置",
+      "sectionAppearance": "外观",
+      "sectionStats": "数据",
+      "positionX": "水平",
+      "positionY": "垂直",
+      "resetPosition": "重置位置",
+      "dragHint": "拖动监视器即可移动，或使用下方滑块。",
+      "opacity": "背景不透明度",
+      "solidBg": "纯色背景",
+      "fontScale": "文字大小",
+      "textColor": "文字颜色",
+      "bgColor": "背景颜色",
+      "colorTheme": "配色主题",
+      "graph": "帧时间图表",
+      "thresholds": "颜色编码警告",
+      "presetsLabel": "快速预设",
+      "presetMinimal": "精简",
+      "presetStandard": "标准",
+      "presetEverything": "全部",
+      "groups": {
+        "frame": "帧与计时",
+        "network": "网络",
+        "renderer": "渲染器",
+        "system": "系统"
+      },
+      "labels": {
+        "fps": "FPS",
+        "frameTime": "帧时间",
+        "fps1Low": "1% 低帧",
+        "fps01Low": "0.1% 低帧",
+        "ping": "延迟",
+        "jitter": "抖动",
+        "snapshot": "快照频率",
+        "connection": "连接",
+        "drawCalls": "绘制调用",
+        "triangles": "三角面",
+        "geometries": "几何体",
+        "textures": "纹理",
+        "programs": "着色器",
+        "renderScale": "渲染比例",
+        "gpu": "GPU",
+        "memory": "内存",
+        "hitches": "卡顿",
+        "entities": "实体"
+      },
+      "themes": {
+        "gold": "金色",
+        "frost": "冰霜",
+        "ember": "余烬",
+        "jade": "翡翠",
+        "crimson": "绯红",
+        "mono": "单色"
+      },
+      "units": {
+        "ms": "{value} ms",
+        "mb": "{value} MB",
+        "memPair": "{used} / {limit} MB",
+        "hz": "{value} Hz"
+      },
+      "badges": {
+        "backgrounded": "后台运行",
+        "offline": "离线"
+      }
+    },
     "playerCard": {
       "showWalletBadge": "显示钱包徽章"
     },
