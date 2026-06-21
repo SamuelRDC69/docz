@@ -23,6 +23,9 @@ import { xpBarView, formatXp } from './xp_bar';
 import { lowHealthVignette } from './low_health';
 import { absorbBarView } from './absorb_bar';
 import { itemStatDeltas } from './item_compare';
+import { buildStatTooltip, weaponDps, type StatId, type StatTooltipModel } from './stat_tooltip';
+import { statCellHtml, statTooltipHtml, type StatTooltipI18n } from './stat_tooltip_view';
+import { esc } from './esc';
 import { formatClockTime } from './clock';
 import { formatMinimapCoords } from './coords';
 import { compassView, type CardinalId } from './compass';
@@ -118,16 +121,16 @@ export interface ReportHooks {
 }
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string): T => document.querySelector(sel) as T;
-const esc = (value: unknown): string => String(value ?? '')
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;')
-  .replace(/'/g, '&#39;');
 const trackMetaPixel = (eventName: string, data?: Record<string, unknown>): void => {
   const fbq = (window as Window & { fbq?: (...args: unknown[]) => void }).fbq;
   if (typeof fbq !== 'function') return;
   fbq('trackCustom', eventName, data ?? {});
+};
+// The HUD's i18n + number-formatting surface, handed to the pure stat-tooltip
+// view so it can render localized breakdowns without importing the i18n runtime.
+const STAT_VIEW_DEPS: StatTooltipI18n = {
+  t: (key, params) => t(key as TranslationKey, params),
+  fmt: (value, opts) => formatNumber(value, opts),
 };
 const castDisplayName = (id: string): string => {
   if (id === FISHING_CAST_ID) return t('abilityUi.cast.fishing');
@@ -1528,6 +1531,26 @@ export class Hud {
     if (deltas) html += `<div class="tt-cmp-head">${esc(t('itemUi.tooltip.ifYouEquip'))}</div>${deltas}`;
     html += `</div>`;
     return html;
+  }
+
+  // Build the pure stat-breakdown model for the currently-shown player, the bridge
+  // from the live sim to the host-agnostic stat_tooltip core. The HTML + aria
+  // rendering lives in the unit-tested stat_tooltip_view module; this only feeds
+  // it the current numbers, so the visual tooltip and the screen-reader text read
+  // identical, live values.
+  private statModel(stat: StatId): StatTooltipModel {
+    const sim = this.sim;
+    const p = sim.player;
+    const wpn = sim.equipment.mainhand ? ITEMS[sim.equipment.mainhand] : null;
+    return buildStatTooltip(stat, {
+      cls: sim.cfg.playerClass,
+      stats: p.stats,
+      level: p.level,
+      attackPower: p.attackPower,
+      critChance: p.critChance,
+      dodgeChance: p.dodgeChance,
+      dps: weaponDps(wpn?.weapon, p.attackPower),
+    });
   }
 
   private questNumber(value: number): string {
@@ -5698,14 +5721,18 @@ export class Hud {
       </div>
       <div class="equip-col equip-col-right" id="equip-col-right"></div>
     </div>`;
-    const wpn = sim.equipment.mainhand ? ITEMS[sim.equipment.mainhand] : null;
-    const dps = wpn?.weapon ? ((wpn.weapon.min + wpn.weapon.max) / 2 + (p.attackPower / 14) * wpn.weapon.speed) / wpn.weapon.speed : 0;
+    // Ten focusable stat cells, primaries down the left column and derived stats
+    // down the right. The cell markup, value formatting, and the visually-hidden
+    // aria breakdown all come from the pure, unit-tested stat_tooltip_view module;
+    // each cell's value is read from the model so it cannot drift from the tooltip
+    // it opens, and the post-render pass below attaches the floating breakdown.
+    const statCell = (stat: StatId) => statCellHtml(this.statModel(stat), STAT_VIEW_DEPS);
     html += `<div class="char-stats">
-      <span>${esc(t('itemUi.stats.str'))}: <b>${formatNumber(p.stats.str, { maximumFractionDigits: 0 })}</b></span><span>${esc(t('itemUi.stats.armor'))}: <b>${formatNumber(p.stats.armor, { maximumFractionDigits: 0 })}</b></span>
-      <span>${esc(t('itemUi.stats.agi'))}: <b>${formatNumber(p.stats.agi, { maximumFractionDigits: 0 })}</b></span><span>${esc(t('itemUi.stats.attackPower'))}: <b>${formatNumber(p.attackPower, { maximumFractionDigits: 0 })}</b></span>
-      <span>${esc(t('itemUi.stats.sta'))}: <b>${formatNumber(p.stats.sta, { maximumFractionDigits: 0 })}</b></span><span>${esc(t('itemUi.stats.dps'))}: <b>${formatNumber(dps, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</b></span>
-      <span>${esc(t('itemUi.stats.int'))}: <b>${formatNumber(p.stats.int, { maximumFractionDigits: 0 })}</b></span><span>${esc(t('itemUi.stats.critChance'))}: <b>${formatNumber(p.critChance * 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%</b></span>
-      <span>${esc(t('itemUi.stats.spi'))}: <b>${formatNumber(p.stats.spi, { maximumFractionDigits: 0 })}</b></span><span>${esc(t('itemUi.stats.dodge'))}: <b>${formatNumber(p.dodgeChance * 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%</b></span>
+      ${statCell('str')}${statCell('armor')}
+      ${statCell('agi')}${statCell('attackPower')}
+      ${statCell('sta')}${statCell('dps')}
+      ${statCell('int')}${statCell('critChance')}
+      ${statCell('spi')}${statCell('dodge')}
     </div>`;
     html += this.talentSummaryHtml();
     html += this.progressionHtml(p.level);
@@ -5746,6 +5773,12 @@ export class Hud {
     };
     for (const slot of leftSlots) leftCol.appendChild(buildSlotRow(slot));
     for (const slot of rightSlots) rightCol.appendChild(buildSlotRow(slot));
+    for (const cell of el.querySelectorAll<HTMLElement>('.char-stats [data-stat]')) {
+      const stat = cell.dataset.stat as StatId;
+      // Resolve the model lazily, on show, so the breakdown reflects the player's
+      // current stats (gear/buffs/talents) at the moment they hover, not at render.
+      this.attachTooltip(cell, () => statTooltipHtml(this.statModel(stat), STAT_VIEW_DEPS));
+    }
     this.renderCharPreview();
     this.renderCharSkinPicker();
     el.querySelector('[data-close]')?.addEventListener('click', () => { el.style.display = 'none'; this.hideTooltip(); });
@@ -6522,9 +6555,7 @@ export class Hud {
     }
 
     const wpn = sim.equipment.mainhand ? ITEMS[sim.equipment.mainhand] : null;
-    const dps = wpn?.weapon
-      ? ((wpn.weapon.min + wpn.weapon.max) / 2 + (p.attackPower / 14) * wpn.weapon.speed) / wpn.weapon.speed
-      : 0;
+    const dps = weaponDps(wpn?.weapon, p.attackPower);
 
     const primaryStats: PlayerCardStat[] = [
       { label: t('itemUi.stats.str'), value: num(p.stats.str) },

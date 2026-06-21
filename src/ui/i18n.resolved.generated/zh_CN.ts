@@ -303,6 +303,40 @@ export const zh_CN: EnTranslations = {
     "playerCard": {
       "showWalletBadge": "显示钱包徽章"
     },
+    "statInfo": {
+      "fromYour": "来自你的 {value} 点{stat}：",
+      "desc": {
+        "str": "提高你的攻击强度，使你的武器攻击造成更高的伤害。",
+        "agi": "提高你的反应和准度，强化你的多项战斗属性。",
+        "sta": "强健你的体魄，提高你的最大生命值以及休息时恢复生命值的速度。",
+        "int": "扩大施法者的法力值上限，并提高其造成法术暴击的几率。",
+        "spi": "加快施法者在脱离战斗、休息时恢复法力值的速度。",
+        "armor": "减轻受到的物理打击。对等级较低的攻击者减伤效果更强，最高减伤上限为75%。",
+        "attackPower": "强化你的武器攻击。每14点攻击强度可提高1点每秒伤害。",
+        "dps": "你的预估武器每秒伤害，由武器的伤害与速度以及你的攻击强度共同计算得出。",
+        "critChance": "你的攻击造成暴击的几率，暴击将造成双倍伤害。",
+        "dodge": "你完全躲开来袭近战攻击、不受任何伤害的几率。"
+      },
+      "effects": {
+        "attackPower": "+{value} 攻击强度",
+        "rangedAttackPower": "+{value} 远程攻击强度",
+        "critPct": "+{value}% 暴击",
+        "dodgePct": "+{value}% 躲闪",
+        "armor": "+{value} 护甲",
+        "maxHealth": "+{value} 最大生命值",
+        "maxMana": "+{value} 最大法力值",
+        "spellCritPct": "+{value}% 法术暴击",
+        "healthRegen": "休息时每5秒约恢复 {value} 点生命值",
+        "manaRegen": "休息时每5秒约恢复 {value} 点法力",
+        "damageReduction": "对{level}级攻击者的伤害减免：{value}%",
+        "dpsFromAp": "为你的攻击增加 {value} 点每秒伤害"
+      },
+      "notes": {
+        "minorForClass": "对你的职业益处不大。",
+        "baseChance": "包含所有冒险者共享的5%基础几率。",
+        "dpsApprox": "此为预估值，不计入暴击和技能伤害。"
+      }
+    },
     "talents": {
       "defaultBuildName": "配置 {n}"
     },

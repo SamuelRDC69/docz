@@ -303,6 +303,40 @@ export const ko_KR: EnTranslations = {
     "playerCard": {
       "showWalletBadge": "지갑 배지 표시"
     },
+    "statInfo": {
+      "fromYour": "당신의 {value} {stat}에서:",
+      "desc": {
+        "str": "전투력을 증가시켜 무기 공격이 더 강하게 적중하도록 합니다.",
+        "agi": "반사 신경과 조준 능력을 예리하게 하여 여러 전투 능력치를 향상시킵니다.",
+        "sta": "신체를 강인하게 하여 최대 생명력과 휴식 중 생명력 회복 속도를 높입니다.",
+        "int": "시전자의 마나 총량을 늘리고 주문 치명타율을 향상시킵니다.",
+        "spi": "비전투 중 휴식할 때 시전자의 마나가 회복되는 속도를 빠르게 합니다.",
+        "armor": "들어오는 물리 공격을 완화합니다. 낮은 레벨의 공격자에게 더 큰 효과를 발휘하며, 최대 75%까지 적용됩니다.",
+        "attackPower": "무기 공격을 강화합니다. 전투력 14당 초당 피해 1이 추가됩니다.",
+        "dps": "무기의 피해와 속도, 전투력을 종합한 예상 무기 초당 피해입니다.",
+        "critChance": "공격이 치명적으로 적중하여 두 배의 피해를 입힐 확률입니다.",
+        "dodge": "들어오는 근접 공격을 완전히 피해 피해를 전혀 입지 않을 확률입니다."
+      },
+      "effects": {
+        "attackPower": "+{value} 전투력",
+        "rangedAttackPower": "+{value} 원거리 전투력",
+        "critPct": "+{value}% 치명타",
+        "dodgePct": "+{value}% 회피",
+        "armor": "+{value} 방어도",
+        "maxHealth": "+{value} 최대 생명력",
+        "maxMana": "+{value} 최대 마나",
+        "spellCritPct": "+{value}% 주문 치명타",
+        "healthRegen": "휴식 중 5초마다 약 {value} 생명력 회복",
+        "manaRegen": "휴식 중 5초마다 약 {value} 마나 회복",
+        "damageReduction": "{level} 레벨 공격자에 대한 피해 감소: {value}%",
+        "dpsFromAp": "공격에 초당 피해 {value} 추가"
+      },
+      "notes": {
+        "minorForClass": "당신의 직업에는 거의 도움이 되지 않습니다.",
+        "baseChance": "모든 모험가가 공유하는 5%의 기본 확률이 포함되어 있습니다.",
+        "dpsApprox": "추정치이며, 치명타와 기술 피해는 제외됩니다."
+      }
+    },
     "talents": {
       "defaultBuildName": "빌드 {n}"
     },

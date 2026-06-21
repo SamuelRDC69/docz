@@ -316,7 +316,7 @@ export const itemStrings = {
       slots: { mainhand: "主手", helmet: "頭部", shoulder: "肩部", chest: "胸部", waist: "腰部", legs: "腿部", gloves: "手部", feet: "腳部" },
       quality: { poor: "粗糙", common: "普通", uncommon: "優秀", rare: "精良", epic: "史詩" },
       kind: { weapon: "武器", armor: "護甲", quest: "任務物品", junk: "雜物", food: "食物", drink: "飲料" },
-      stats: { armor: "護甲", str: "力量", agi: "敏捷", sta: "耐力", int: "智力", spi: "精神", attackPower: "攻擊強度", dps: "每秒傷害", critChance: "爆擊機率", dodge: "閃躲" },
+      stats: { armor: "護甲", str: "力量", agi: "敏捷", sta: "耐力", int: "智力", spi: "精神", attackPower: "攻擊強度", dps: "每秒傷害", critChance: "暴擊機率", dodge: "閃躲" },
       tooltip: {
         qualityKind: "{quality}{kind}", currentlyEquipped: "目前裝備", ifYouEquip: "裝備後", damageSpeed: "{min} - {max} 傷害  速度 {speed}", dps: "（每秒 {dps} 傷害）", dagger: "匕首", armorStat: "{value} 護甲", stat: "+{value} {stat}",
         useFood: "使用：在 {seconds} 秒內恢復 {amount} 點生命值。進食時必須保持坐下。", useDrink: "使用：在 {seconds} 秒內恢復 {amount} 點法力值。飲水時必須保持坐下。", questItem: "任務物品", classes: "職業：{classes}", sellPrice: "出售價格：{money}",

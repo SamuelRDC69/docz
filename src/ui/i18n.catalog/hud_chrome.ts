@@ -186,6 +186,47 @@ export const hudChromeStrings = {
   playerCard: {
     showWalletBadge: "Show wallet badge",
   },
+  // Character-screen stat tooltips (hover a stat on the C panel). The stat NAMES
+  // reuse itemUi.stats.*; only these descriptions / effect lines / notes are new.
+  // The breakdown numbers are recomputed live from the player's current stats
+  // (src/ui/stat_tooltip.ts) and spliced in via formatNumber at the call site, so
+  // the {value}/{level} placeholders carry no baked formatting.
+  statInfo: {
+    // Header above a primary stat's live breakdown, e.g. "From your 22 Agility:".
+    fromYour: "From your {value} {stat}:",
+    desc: {
+      str: "Increases your attack power, so your weapon strikes land harder.",
+      agi: "Sharpens your reflexes and aim, improving several of your combat stats.",
+      sta: "Toughens your body, raising your maximum health and how quickly you recover health while resting.",
+      int: "Expands a spellcaster's mana pool and improves their chance to land a spell critical strike.",
+      spi: "Quickens how fast a spellcaster's mana returns while resting, out of combat.",
+      armor: "Softens incoming physical blows. The reduction is greater against lower-level attackers and is capped at 75%.",
+      attackPower: "Powers your weapon attacks. Every 14 attack power adds 1 damage per second.",
+      dps: "Your estimated weapon damage per second, combining your weapon's damage and speed with your attack power.",
+      critChance: "Your chance for an attack to strike critically, dealing double damage.",
+      dodge: "Your chance to completely avoid an incoming melee attack, taking no damage.",
+    },
+    // One line per derived effect a stat contributes. {value} is a live number.
+    effects: {
+      attackPower: "+{value} Attack Power",
+      rangedAttackPower: "+{value} Ranged Attack Power",
+      critPct: "+{value}% Critical Strike",
+      dodgePct: "+{value}% Dodge",
+      armor: "+{value} Armor",
+      maxHealth: "+{value} Maximum Health",
+      maxMana: "+{value} Maximum Mana",
+      spellCritPct: "+{value}% Spell Critical Strike",
+      healthRegen: "About {value} health every 5 sec while resting",
+      manaRegen: "About {value} mana every 5 sec while resting",
+      damageReduction: "Damage reduction against a level {level} attacker: {value}%",
+      dpsFromAp: "Adds {value} damage per second to your attacks",
+    },
+    notes: {
+      minorForClass: "Of little benefit to your class.",
+      baseChance: "Includes a 5% base chance shared by all adventurers.",
+      dpsApprox: "An estimate, it excludes critical strikes and ability damage.",
+    },
+  },
   // Default name pre-filled into the Save-Build-As dialog, e.g. "Build 3".
   talents: {
     defaultBuildName: "Build {n}",

@@ -1043,6 +1043,19 @@
   .char-stats { font-size: 12px; line-height: 1.65; color: #cfc6a8; margin-top: 10px; border-top: 1px solid #463a1c; padding-top: 8px;
     display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
   .char-stats b { color: #fff; font-weight: normal; }
+  /* Each stat is a hoverable/focusable cell that opens a class-aware breakdown
+     tooltip. The padding + matching negative margin turn the hover/focus tint into
+     a padded pill WITHOUT moving the text (layout-neutral: the margin box equals the
+     content box, so rows never reflow between states). Color/background only (no
+     transform) per the motion-sickness rule; keyboard focus gets the same pill as
+     hover so the affordance is identical for mouse and keyboard. */
+  .char-stats .stat-cell { cursor: help; border-radius: 4px; padding: 1px 5px; margin: -1px -5px;
+    transition: color .12s, background-color .12s; }
+  .char-stats .stat-cell:hover { color: #fff; background: rgba(255, 215, 120, 0.1); }
+  .char-stats .stat-cell:focus-visible { outline: 2px solid var(--color-border-focus); outline-offset: 1px;
+    color: #fff; background: rgba(255, 215, 120, 0.1); }
+  /* Honor the OS-level reduced-motion preference too, not just the in-app toggle. */
+  @media (prefers-reduced-motion: reduce) { .char-stats .stat-cell { transition: none; } }
 
   /* spellbook */
   #spellbook { width: 430px; }
@@ -1678,6 +1691,10 @@
   #tooltip .tt-stat { color: #fff; font-size: 11.5px; }
   #tooltip .tt-green { color: #1eff00; font-size: 11.5px; }
   #tooltip .tt-red { color: #ff5040; font-size: 11.5px; }
+  /* stat-tooltip prose (what a stat does) + the "From your N {stat}:" breakdown head */
+  #tooltip .tt-body { color: #cfc6a8; font-size: 11.5px; margin-top: 3px; }
+  #tooltip .tt-bd-head { color: #c2a86a; font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+    margin-top: 6px; padding-top: 5px; border-top: 1px solid #3a3526; }
   /* item comparison block (hover an equippable item to see the worn one + deltas) */
   #tooltip .tt-cmp { margin-top: 6px; padding-top: 5px; border-top: 1px solid #3a3526; }
   #tooltip .tt-cmp-head { color: #8a7f5e; font-size: 10px; text-transform: uppercase; letter-spacing: .5px; margin-top: 3px; }
@@ -1703,7 +1720,8 @@
   #tooltip { font-size: calc(12px * var(--tooltip-scale, 1)); }
   #tooltip .tt-title { font-size: calc(13.5px * var(--tooltip-scale, 1)); }
   #tooltip .tt-sub { font-size: calc(11px * var(--tooltip-scale, 1)); }
-  #tooltip .tt-desc, #tooltip .tt-stat, #tooltip .tt-green { font-size: calc(11.5px * var(--tooltip-scale, 1)); }
+  #tooltip .tt-desc, #tooltip .tt-stat, #tooltip .tt-green, #tooltip .tt-body { font-size: calc(11.5px * var(--tooltip-scale, 1)); }
+  #tooltip .tt-bd-head { font-size: calc(10px * var(--tooltip-scale, 1)); }
   /* Chat Text Size (--chat-font-scale) + Chat Background Opacity (--chat-opacity). */
   .chat-pane { font-size: calc(11px * var(--chat-font-scale, 1)); }
   #chatlog-frame { background: linear-gradient(170deg,
@@ -5738,6 +5756,16 @@
   body.mobile-touch .equip-col { width: 108px; }
   body.mobile-touch .equip-slot .slot-name { font-size: 9px; }
   body.mobile-touch .equip-slot .slot-item { font-size: 10px; }
+  /* Phones (the long-press peek audience, same body.mobile-touch gate attachTooltip
+     uses) get a comfortable >=40px long-press target per .stat-cell. Symmetric
+     vertical padding both reaches the touch floor and optically centers the single
+     line, so no flex is needed; the -5px side margins are unchanged, preserving the
+     hover/focus pill's bleed into the 12px column gap. Because the sizing applies in
+     every state (rest/hover/focus alike), rows still never reflow between states, and
+     the compact desktop sheet (no mobile-touch) is untouched. */
+  body.mobile-touch .char-stats .stat-cell {
+    min-height: 40px; box-sizing: border-box; padding: 10px 5px; margin: 0 -5px;
+  }
   body.mobile-touch .mkt-price-row {
     flex-wrap: wrap;
   }
