@@ -365,9 +365,13 @@ export async function signMessageBase58(message: string): Promise<string> {
 // and any API key embedded in it live ONLY on the server (see
 // server/woc_balance.ts), so nothing secret is inlined into this bundle. The
 // request is same-origin: the server that served this page holds the key.
-export async function fetchWocBalance(owner: string): Promise<number | null> {
+// `fresh` adds &fresh=1 to bypass the server's per-wallet cache, used when the
+// player opens a surface that shows the balance so an on-chain token change is
+// reflected (still subject to the route's IP rate-limit).
+export async function fetchWocBalance(owner: string, fresh = false): Promise<number | null> {
   try {
-    const res = await fetch(`/api/woc/balance?owner=${encodeURIComponent(owner)}`);
+    const q = `owner=${encodeURIComponent(owner)}${fresh ? '&fresh=1' : ''}`;
+    const res = await fetch(`/api/woc/balance?${q}`);
     if (!res.ok) return null;
     const data = (await res.json()) as { balance?: number | null };
     return typeof data.balance === 'number' ? data.balance : null;

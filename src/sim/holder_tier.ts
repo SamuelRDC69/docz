@@ -8,7 +8,7 @@
 export const WOC_MAX_SUPPLY = 1_000_000_000;
 
 export interface HolderTierCore {
-  /** 1-based rung (1 = Ember, 10 = Sovereign). */
+  /** 1-based rung (1 = Ember, 18 = Sovereign). */
   index: number;
   /** Stable machine key used for CSS hooks, analytics, and presentation lookup. */
   key: string;
@@ -16,6 +16,10 @@ export interface HolderTierCore {
   threshold: number;
 }
 
+// Rungs 1-8 climb 10× (1 $WOC up to 1% of supply); rungs 9-16 then step linearly
+// by whole percents of supply (2%-9%, i.e. 20M-90M $WOC) so big holders get a
+// per-percent badge; the top two are the 10% and 100%-of-supply marks. Comments
+// note each rung's share of WOC_MAX_SUPPLY where it's a round percent.
 export const HOLDER_TIER_DEFS = [
   { index: 1, key: 'ember', threshold: 1 },
   { index: 2, key: 'coinbearer', threshold: 10 },
@@ -24,9 +28,17 @@ export const HOLDER_TIER_DEFS = [
   { index: 5, key: 'gilded', threshold: 10_000 },
   { index: 6, key: 'vaultwarden', threshold: 100_000 },
   { index: 7, key: 'whale', threshold: 1_000_000 },
-  { index: 8, key: 'leviathan', threshold: 10_000_000 },
-  { index: 9, key: 'worldbearer', threshold: 100_000_000 },
-  { index: 10, key: 'sovereign', threshold: WOC_MAX_SUPPLY },
+  { index: 8, key: 'leviathan', threshold: 10_000_000 }, // 1% of supply
+  { index: 9, key: 'tidelord', threshold: 20_000_000 }, // 2%
+  { index: 10, key: 'stormcaller', threshold: 30_000_000 }, // 3%
+  { index: 11, key: 'krakencrown', threshold: 40_000_000 }, // 4%
+  { index: 12, key: 'titanforged', threshold: 50_000_000 }, // 5%
+  { index: 13, key: 'starhoard', threshold: 60_000_000 }, // 6%
+  { index: 14, key: 'voidwarden', threshold: 70_000_000 }, // 7%
+  { index: 15, key: 'realmshaper', threshold: 80_000_000 }, // 8%
+  { index: 16, key: 'worldforger', threshold: 90_000_000 }, // 9%
+  { index: 17, key: 'worldbearer', threshold: 100_000_000 }, // 10%
+  { index: 18, key: 'sovereign', threshold: WOC_MAX_SUPPLY }, // 100%
 ] as const satisfies readonly HolderTierCore[];
 
 export type HolderTierKey = typeof HOLDER_TIER_DEFS[number]['key'];
@@ -50,7 +62,7 @@ export function holderTierIndexForBalance(balance: number | null): number {
   return holderTierForBalance(balance)?.index ?? 0;
 }
 
-/** The rung at a 1-based index (1-10), or undefined for 0/out-of-range. */
+/** The rung at a 1-based index (1-18), or undefined for 0/out-of-range. */
 export function holderTierByIndex(index: number): HolderTierCore | undefined {
   return Number.isInteger(index) && index >= 1 && index <= HOLDER_TIER_DEFS.length
     ? HOLDER_TIER_DEFS[index - 1]

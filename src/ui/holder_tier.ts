@@ -21,7 +21,7 @@ import { t, type TranslationKey } from './i18n';
 export { WOC_MAX_SUPPLY } from '../sim/holder_tier';
 
 export interface HolderTier extends Omit<HolderTierCore, 'key'> {
-  /** 1-based rung (1 = Ember … 10 = Sovereign). */
+  /** 1-based rung (1 = Ember … 18 = Sovereign). */
   index: number;
   /** Stable machine key (used for CSS hooks / analytics). */
   key: HolderTierKey;
@@ -42,6 +42,26 @@ export interface HolderTier extends Omit<HolderTierCore, 'key'> {
 // Glyphs are filled with the cream tone below so they read on the dark card and
 // against any ring colour.
 const GLYPH_FILL = '#fff6df';
+
+// The 2%-9% supply-whale band (rungs 9-16) shares one parametric device: a gem
+// crowned by `percent` pips along the top arc, so the pip count reads as the
+// holder's whole-percent share of supply (2 pips = 2%, … 9 pips = 9%). Distinct
+// per rung by count + ring colour; font-free so it rasterises onto the card.
+function supplyTierGlyph(percent: number): string {
+  const cx = 32, cy = 33, r = 19, spanDeg = percent <= 1 ? 0 : Math.min(132, percent * 16);
+  let pips = '';
+  for (let i = 0; i < percent; i++) {
+    const frac = percent === 1 ? 0.5 : i / (percent - 1);
+    const rad = ((frac - 0.5) * spanDeg - 90) * (Math.PI / 180); // centred on top (−90°)
+    const px = cx + r * Math.cos(rad);
+    const py = cy + r * Math.sin(rad);
+    pips += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="2.3" fill="${GLYPH_FILL}"/>`;
+  }
+  const gem =
+    `<path d="M32 33l10 8-10 15-10-15z" fill="${GLYPH_FILL}"/>` +
+    `<path d="M22 41h20M32 33v23" stroke="#1c140a" stroke-opacity="0.28" stroke-width="1.4" fill="none"/>`;
+  return pips + gem;
+}
 
 type HolderTierPresentation = Omit<HolderTier, keyof HolderTierCore>;
 
@@ -94,6 +114,54 @@ const HOLDER_TIER_PRESENTATION: Record<HolderTierKey, HolderTierPresentation> = 
     ring: '#9b6cff', glow: '#6a37e0',
     glyph: `<path d="M8 40c4 0 6-6 10-6s6 6 10 6 6-9 10-9 6 9 10 9 5-4 8-4" fill="none" stroke="${GLYPH_FILL}" stroke-width="4" stroke-linecap="round"/><path d="M48 30c3-4 9-4 9-4s-2 6-6 7" fill="none" stroke="${GLYPH_FILL}" stroke-width="3.4" stroke-linecap="round"/><circle cx="51" cy="26" r="2" fill="${GLYPH_FILL}"/>`,
   },
+  tidelord: {
+    name: 'Tidelord',
+    flavor: 'The tide answers your call: 2% of supply.',
+    ring: '#a66af2', glow: '#7736d1',
+    glyph: supplyTierGlyph(2),
+  },
+  stormcaller: {
+    name: 'Stormcaller',
+    flavor: 'Storms gather at your name: 3% of supply.',
+    ring: '#b168e5', glow: '#8434c3',
+    glyph: supplyTierGlyph(3),
+  },
+  krakencrown: {
+    name: 'Krakencrown',
+    flavor: 'Crowned by the deep: 4% of supply.',
+    ring: '#bc67d8', glow: '#9133b4',
+    glyph: supplyTierGlyph(4),
+  },
+  titanforged: {
+    name: 'Titanforged',
+    flavor: 'Forged among titans: 5% of supply.',
+    ring: '#c765cb', glow: '#9e31a5',
+    glyph: supplyTierGlyph(5),
+  },
+  starhoard: {
+    name: 'Starhoard',
+    flavor: 'A hoard that bends starlight: 6% of supply.',
+    ring: '#d363be', glow: '#ab3096',
+    glyph: supplyTierGlyph(6),
+  },
+  voidwarden: {
+    name: 'Voidwarden',
+    flavor: "Keeper at the void's edge: 7% of supply.",
+    ring: '#de61b1', glow: '#b82e88',
+    glyph: supplyTierGlyph(7),
+  },
+  realmshaper: {
+    name: 'Realmshaper',
+    flavor: 'You reshape the realm: 8% of supply.',
+    ring: '#e95fa4', glow: '#c52d79',
+    glyph: supplyTierGlyph(8),
+  },
+  worldforger: {
+    name: 'Worldforger',
+    flavor: 'Forging a world of your own: 9% of supply.',
+    ring: '#f45e97', glow: '#d22b6a',
+    glyph: supplyTierGlyph(9),
+  },
   worldbearer: {
     name: 'Worldbearer',
     flavor: 'You carry a piece of the world: 10% of supply.',
@@ -108,9 +176,9 @@ const HOLDER_TIER_PRESENTATION: Record<HolderTierKey, HolderTierPresentation> = 
   },
 };
 
-// The ten rungs. Shared thresholds climb by 10× per rung so the ladder spans a
-// single $WOC up to the entire supply. Rungs 6-10 also call out their share of
-// supply in the UI flavor text.
+// The eighteen rungs. Thresholds climb 10× up to Leviathan (1% of supply), then
+// step by whole percents through the 2%-9% whale band, then 10% and the full
+// supply. Rungs from Vaultwarden up call out their share of supply in the flavor.
 export const HOLDER_TIERS: readonly HolderTier[] = HOLDER_TIER_DEFS.map((tier) => ({
   ...tier,
   ...HOLDER_TIER_PRESENTATION[tier.key],
@@ -125,6 +193,14 @@ const HOLDER_TIER_TEXT_KEYS = {
   vaultwarden: { name: 'wallet.holderTiers.vaultwarden.name', flavor: 'wallet.holderTiers.vaultwarden.flavor' },
   whale: { name: 'wallet.holderTiers.whale.name', flavor: 'wallet.holderTiers.whale.flavor' },
   leviathan: { name: 'wallet.holderTiers.leviathan.name', flavor: 'wallet.holderTiers.leviathan.flavor' },
+  tidelord: { name: 'wallet.holderTiers.tidelord.name', flavor: 'wallet.holderTiers.tidelord.flavor' },
+  stormcaller: { name: 'wallet.holderTiers.stormcaller.name', flavor: 'wallet.holderTiers.stormcaller.flavor' },
+  krakencrown: { name: 'wallet.holderTiers.krakencrown.name', flavor: 'wallet.holderTiers.krakencrown.flavor' },
+  titanforged: { name: 'wallet.holderTiers.titanforged.name', flavor: 'wallet.holderTiers.titanforged.flavor' },
+  starhoard: { name: 'wallet.holderTiers.starhoard.name', flavor: 'wallet.holderTiers.starhoard.flavor' },
+  voidwarden: { name: 'wallet.holderTiers.voidwarden.name', flavor: 'wallet.holderTiers.voidwarden.flavor' },
+  realmshaper: { name: 'wallet.holderTiers.realmshaper.name', flavor: 'wallet.holderTiers.realmshaper.flavor' },
+  worldforger: { name: 'wallet.holderTiers.worldforger.name', flavor: 'wallet.holderTiers.worldforger.flavor' },
   worldbearer: { name: 'wallet.holderTiers.worldbearer.name', flavor: 'wallet.holderTiers.worldbearer.flavor' },
   sovereign: { name: 'wallet.holderTiers.sovereign.name', flavor: 'wallet.holderTiers.sovereign.flavor' },
 } satisfies Record<HolderTierKey, { name: TranslationKey; flavor: TranslationKey }>;
@@ -148,7 +224,7 @@ export function holderTierForBalance(balance: number | null): HolderTier | null 
   return shared ? holderTierByIndex(shared.index) ?? null : null;
 }
 
-/** The rung at a 1-based index (1-10), or undefined for 0/out-of-range. */
+/** The rung at a 1-based index (1-18), or undefined for 0/out-of-range. */
 export function holderTierByIndex(index: number): HolderTier | undefined {
   const shared = sharedHolderTierByIndex(index);
   return shared ? HOLDER_TIERS[shared.index - 1] : undefined;

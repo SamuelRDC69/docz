@@ -24,9 +24,12 @@ import {
 
 const WOC_MINT = (process.env.WOC_MINT ?? process.env.VITE_WOC_MINT ?? '3WjLscH2JsXLEFJZRA9z8ti8yRGxWGKbqymPd7UicRth').trim();
 const SOLANA_RPC_URL = (process.env.SOLANA_RPC_URL ?? process.env.VITE_SOLANA_RPC_URL ?? 'https://api.mainnet-beta.solana.com').trim();
-// Balances move slowly relative to a play session; one RPC per wallet per this
-// window is plenty and keeps us well under public-RPC rate limits.
-const CACHE_TTL_MS = 5 * 60 * 1000;
+// How long a per-wallet balance is reused before the next RPC. This is the
+// freshness floor for the in-world holder-tier badge (the broadcast path reads
+// through this cache); the player's own card/bag bypass it with `fresh=1` on
+// open. 2 min keeps token changes visible within a couple minutes while staying
+// well under public-RPC rate limits (≈ online-players / 2 min in RPC reads).
+export const CACHE_TTL_MS = 2 * 60 * 1000;
 export const WOC_BALANCE_CACHE_MAX_ENTRIES = 1024;
 
 interface CacheEntry { balance: number; at: number; }
@@ -179,15 +182,19 @@ export async function fetchWocBalance(pubkey: string): Promise<number | null> {
  * read successfully (so callers can omit the figure). One per-wallet cache backs
  * both the holder-tier broadcast and the client balance proxy.
  */
-export async function cachedWocBalance(pubkey: string): Promise<number | null> {
+export async function cachedWocBalance(pubkey: string, fresh = false): Promise<number | null> {
   const now = Date.now();
   const hit = cache.get(pubkey);
-  if (hit && now - hit.at < CACHE_TTL_MS) {
+  if (!fresh && hit && now - hit.at < CACHE_TTL_MS) {
     recordUsageCacheEvent('woc.balance', 'hit');
     rememberCacheEntry(pubkey, hit);
     return hit.balance;
   }
-  recordUsageCacheEvent('woc.balance', hit ? 'stale' : 'miss');
+  // Genuine staleness only. A fresh=1 bypass of a still-in-TTL entry reaches here
+  // too, but it's a deliberate skip — not a stale refresh — so it records neither
+  // 'stale' nor 'miss' (the ensuing fetch still records 'store'/'failure').
+  if (!hit) recordUsageCacheEvent('woc.balance', 'miss');
+  else if (now - hit.at >= CACHE_TTL_MS) recordUsageCacheEvent('woc.balance', 'stale');
   const balance = await fetchWocBalance(pubkey);
   if (balance === null) {
     recordUsageCacheEvent('woc.balance', 'failure');
@@ -212,16 +219,31 @@ export async function holderInfoForPubkey(pubkey: string): Promise<{ tier: numbe
 }
 
 /**
- * GET /api/woc/balance?owner=<pubkey> → { balance: number | null }
+ * Parse the /api/woc/balance query string into its `{ owner, fresh }` inputs.
+ * `fresh` is true ONLY for the exact `fresh=1` opt-in — any other value, or its
+ * absence, is a normal cached read, so a stray `fresh=true`/`fresh=0` can't be
+ * used to force an RPC. `owner` defaults to '' so the handler's address
+ * validation rejects a missing owner with a 400. Pure + import-safe (unlike the
+ * route in main.ts, which self-runs the server on import), so it's unit-tested.
+ */
+export function parseWocBalanceQuery(rawUrl: string): { owner: string; fresh: boolean } {
+  const params = new URLSearchParams(rawUrl.split('?')[1] ?? '');
+  return { owner: params.get('owner') ?? '', fresh: params.get('fresh') === '1' };
+}
+
+/**
+ * GET /api/woc/balance?owner=<pubkey>[&fresh=1] → { balance: number | null }
  *
  * Public proxy that keeps the RPC endpoint server-side. On-chain balances are
  * public, and this is narrow (only the $WOC mint, for one owner); the address is
  * validated before any RPC, the per-wallet cache plus the route's IP rate-limit
- * bound load, so it can't be abused as a general RPC passthrough.
+ * bound load, so it can't be abused as a general RPC passthrough. `fresh` skips
+ * the per-wallet TTL (used when the player opens a balance surface so a token
+ * change shows up) — still behind the route's IP rate-limit.
  */
-export async function handleWocBalance(res: http.ServerResponse, owner: string): Promise<void> {
+export async function handleWocBalance(res: http.ServerResponse, owner: string, fresh = false): Promise<void> {
   recordUsageMetric('woc.balance.api');
   if (!isSolanaAddress(owner)) return json(res, 400, { error: 'invalid Solana wallet address' });
-  const balance = await cachedWocBalance(owner);
+  const balance = await cachedWocBalance(owner, fresh);
   return json(res, 200, { balance });
 }

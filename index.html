@@ -1167,11 +1167,19 @@
   .pc-share-ico { flex: none; }
   #player-card-modal { z-index: 320; }
   #player-card-modal .pc-modal { width: min(680px, 96vw); max-height: calc(100vh - 32px);
-    padding: 16px; display: flex; flex-direction: column; }
-  #player-card-modal .pc-preview { margin: 12px 0; min-height: 200px; display: flex;
-    align-items: center; justify-content: center; overflow: auto; }
+    max-height: calc(100dvh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    padding: 16px; display: flex; flex-direction: column;
+    overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  /* keep the action row / status from being squished to zero on short viewports —
+     the panel scrolls instead (BUG: mobile clipped the lower controls). */
+  #player-card-modal .pc-modal > * { flex: none; }
+  #player-card-modal .pc-preview { margin: 12px 0; min-height: 120px; display: flex;
+    align-items: center; justify-content: center; overflow: hidden; }
   #player-card-modal .pc-preview.pc-loading { color: #c8b888; font-size: 13px; font-style: italic; }
-  #player-card-modal .pc-card-canvas { width: 100%; height: auto; display: block; border-radius: 8px;
+  /* cap the 1200×630 preview's on-screen height so it doesn't fill the whole panel
+     on landscape phones, pushing the buttons below the fold. */
+  #player-card-modal .pc-card-canvas { width: 100%; height: auto; max-height: min(46vh, 360px);
+    object-fit: contain; display: block; border-radius: 8px;
     box-shadow: 0 8px 28px rgba(0,0,0,.55); }
   #player-card-modal .pc-poses { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-bottom: 10px; }
   #player-card-modal .pc-pose { min-width: 84px; padding: 5px 12px; font-size: 12px; opacity: 0.72; }
@@ -2436,7 +2444,9 @@
   }
 
   /* Footer donate link keeps the social-link shape but warms up on hover. */
-  .footer-lang-row { display: flex; justify-content: center; }
+  .footer-lang-row,
+  .footer-legal-row { display: flex; justify-content: center; }
+  .footer-legal-row { gap: 14px; flex-wrap: wrap; }
   .social-link.donate:hover,
   .social-link.donate:focus-visible { color: #ff9db3; border-color: #ff6b8b; box-shadow: 0 0 10px rgba(255, 107, 139, 0.35); }
 
@@ -7997,6 +8007,10 @@
         </a>
       </div>
       <div id="game-version">v0.10</div>
+      </div>
+      <div class="footer-legal-row">
+        <a href="/terms" class="footer-link" data-i18n="footer.terms">Terms of Service</a>
+        <a href="/privacy" class="footer-link" data-i18n="footer.privacy">Privacy Policy</a>
       </div>
       <div class="footer-lang-row">
         <div class="language-selector">

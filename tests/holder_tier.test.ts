@@ -9,15 +9,27 @@ import {
 } from '../src/ui/holder_tier';
 
 describe('holder-tier ladder', () => {
-  it('has ten rungs with strictly increasing 10× thresholds and 1-based indexes', () => {
-    expect(HOLDER_TIERS.length).toBe(10);
+  it('has eighteen rungs with strictly increasing thresholds and 1-based indexes', () => {
+    expect(HOLDER_TIERS.length).toBe(18);
     expect(WOC_MAX_SUPPLY).toBe(1_000_000_000);
     for (let i = 0; i < HOLDER_TIERS.length; i++) {
       expect(HOLDER_TIERS[i].index).toBe(i + 1);
       if (i > 0) expect(HOLDER_TIERS[i].threshold).toBeGreaterThan(HOLDER_TIERS[i - 1].threshold);
     }
     expect(HOLDER_TIERS[0].threshold).toBe(1);
-    expect(HOLDER_TIERS[9].threshold).toBe(WOC_MAX_SUPPLY);
+    expect(HOLDER_TIERS[HOLDER_TIERS.length - 1].threshold).toBe(WOC_MAX_SUPPLY);
+  });
+
+  it('fills the 2%-9% supply-whale band with one rung per whole percent (20M-90M $WOC)', () => {
+    for (let percent = 2; percent <= 9; percent++) {
+      const tier = holderTierForBalance(percent * 10_000_000)!; // 20M..90M
+      expect(tier).not.toBeNull();
+      expect(tier.threshold).toBe(percent * 10_000_000);
+      expect(tierSupplyShare(tier)).toBeCloseTo(percent / 100, 10); // 2%..9%
+      // The band sits strictly between Leviathan (1%) and Worldbearer (10%).
+      expect(tier.index).toBeGreaterThan(8);
+      expect(tier.index).toBeLessThan(17);
+    }
   });
 
   it('keeps UI presentation rungs aligned with the shared pure tier definitions', () => {
@@ -58,6 +70,9 @@ describe('holder-tier ladder', () => {
     expect(holderTierForBalance(100_000)!.name).toBe('Vaultwarden');
     expect(holderTierForBalance(1_000_000)!.name).toBe('Whale');
     expect(holderTierForBalance(10_000_000)!.name).toBe('Leviathan');
+    expect(holderTierForBalance(20_000_000)!.name).toBe('Tidelord');
+    expect(holderTierForBalance(50_000_000)!.name).toBe('Titanforged');
+    expect(holderTierForBalance(90_000_000)!.name).toBe('Worldforger');
     expect(holderTierForBalance(100_000_000)!.name).toBe('Worldbearer');
     expect(holderTierForBalance(1_000_000_000)!.name).toBe('Sovereign');
   });
@@ -70,12 +85,13 @@ describe('holder-tier ladder', () => {
     expect(holderTierIndexForBalance(null)).toBe(0);
     expect(holderTierIndexForBalance(0.99)).toBe(0);
     expect(holderTierIndexForBalance(10_000)).toBe(5);
-    expect(holderTierIndexForBalance(5_000_000_000)).toBe(10);
+    expect(holderTierIndexForBalance(5_000_000_000)).toBe(18);
   });
 
   it('reports supply share', () => {
-    const sovereign = HOLDER_TIERS[9];
+    const sovereign = HOLDER_TIERS[17];
     const vaultwarden = HOLDER_TIERS[5];
+    expect(sovereign.name).toBe('Sovereign');
     expect(tierSupplyShare(sovereign)).toBe(1);
     expect(tierSupplyShare(vaultwarden)).toBeCloseTo(0.0001, 10);
   });
@@ -89,7 +105,7 @@ describe('holder-tier ladder', () => {
   });
 
   it('embeds both gradient stops, the radial gradient, and the glyph for a tier whose glow differs from its ring', () => {
-    const sovereign = HOLDER_TIERS[9];
+    const sovereign = HOLDER_TIERS[17];
     // Guard the premise: this assertion only proves the glow stop is present
     // if glow is a distinct colour from ring.
     expect(sovereign.glow).not.toBe(sovereign.ring);
@@ -117,17 +133,21 @@ describe('holder-tier ladder', () => {
     expect(gilded!.name).toBe('Gilded');
     expect(gilded!.index).toBe(5);
 
-    const sovereign = holderTierByIndex(10);
+    const sovereign = holderTierByIndex(18);
     expect(sovereign!.name).toBe('Sovereign');
-    expect(sovereign!.index).toBe(10);
+    expect(sovereign!.index).toBe(18);
+
+    // A mid-band rung resolves to its name too.
+    const titanforged = holderTierByIndex(12);
+    expect(titanforged!.name).toBe('Titanforged');
 
     // Out of range / zero / negative.
     expect(holderTierByIndex(0)).toBeUndefined();
-    expect(holderTierByIndex(11)).toBeUndefined();
+    expect(holderTierByIndex(19)).toBeUndefined();
     expect(holderTierByIndex(-1)).toBeUndefined();
   });
 
-  it('returns undefined for a non-integer index even within the 1-10 span', () => {
+  it('returns undefined for a non-integer index even within the 1-18 span', () => {
     // 1.5 sits inside the inclusive bounds but addresses no rung.
     expect(holderTierByIndex(1.5)).toBeUndefined();
     expect(holderTierByIndex(9.5)).toBeUndefined();
@@ -141,8 +161,8 @@ describe('holder-tier ladder', () => {
     }
   });
 
-  it('builds a decodable SVG badge embedding the ring colour for all ten rungs', () => {
-    expect(HOLDER_TIERS.length).toBe(10);
+  it('builds a decodable SVG badge embedding the ring colour for all eighteen rungs', () => {
+    expect(HOLDER_TIERS.length).toBe(18);
     for (const t of HOLDER_TIERS) {
       const url = holderTierBadgeDataUrl(t);
       expect(url.startsWith('data:image/svg+xml,')).toBe(true);

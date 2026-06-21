@@ -22,6 +22,9 @@ import {
   walletLinkRateLimited,
   WALLET_LINK_MAX_PER_MINUTE,
   resetWalletLinkRateLimits,
+  wocBalanceRateLimited,
+  WOC_BALANCE_MAX_PER_MINUTE,
+  resetWocBalanceRateLimits,
 } from '../server/ratelimit';
 
 function fakeReq(headers: Record<string, string>, remoteAddress: string) {
@@ -72,6 +75,7 @@ describe('rate-limit client IP selection', () => {
     resetRateLimits();
     resetCardUploadRateLimits();
     resetWalletLinkRateLimits();
+    resetWocBalanceRateLimits();
   });
 
   it('ignores spoofed x-forwarded-for from untrusted direct clients', () => {
@@ -165,6 +169,27 @@ describe('rate-limit client IP selection', () => {
       expect(walletLinkRateLimited(fakeReq({ 'x-forwarded-for': ip }, '172.18.0.1'), 1000 + i)).toBe(false);
     }
     expect(walletLinkRateLimited(fakeReq({ 'x-forwarded-for': ip }, '172.18.0.1'), 2000)).toBe(true);
+  });
+
+  it('rate-limits the $WOC balance proxy per IP on its OWN bucket (decoupled from login/register)', () => {
+    const ip = '203.0.115.10';
+    const req = () => fakeReq({ 'x-forwarded-for': ip }, '172.18.0.1');
+    for (let i = 0; i < WOC_BALANCE_MAX_PER_MINUTE; i++) {
+      expect(wocBalanceRateLimited(req())).toBe(false);
+    }
+    expect(wocBalanceRateLimited(req())).toBe(true); // 21st balance read from this IP is limited
+    // Crucially, exhausting the balance bucket must NOT spill into the shared
+    // register/login limiter — the player can still log in from the same IP.
+    expect(rateLimited(req())).toBe(false);
+  });
+
+  it('keeps the balance proxy unaffected by an exhausted login/register budget', () => {
+    const ip = '203.0.115.20';
+    const req = () => fakeReq({ 'x-forwarded-for': ip }, '172.18.0.1');
+    for (let i = 0; i < 21; i++) rateLimited(req()); // burn the shared login/register bucket
+    expect(rateLimited(req())).toBe(true);
+    // The balance proxy has its own bucket, so a card/bag open still succeeds.
+    expect(wocBalanceRateLimited(req())).toBe(false);
   });
 
   it('keeps limiting a persistent attacker after the memory backstop evicts', () => {

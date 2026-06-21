@@ -255,8 +255,13 @@ export class CharacterPreview {
     this.renderer.setPixelRatio(1);
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
-    this.camera.position.set(-0.1, 1.32, 3.15);
-    this.camera.lookAt(new THREE.Vector3(-0.1, 1.12, 0));
+    // Pulled back to z=4.6, aimed at y=1.55 (eye 1.62) so the 45°/0.75-aspect
+    // frustum spans roughly y in [-0.3, 3.5] at the figure plane: enough headroom
+    // above the 2.6 head-top to clear the raised weapon/arms of the hero & victory
+    // poses (~3.3u) while the feet stay inside (BUG: card character was out of
+    // bounds). The card's drawCharacter() fit math then frames the whole capture.
+    this.camera.position.set(-0.1, 1.62, 4.6);
+    this.camera.lookAt(new THREE.Vector3(-0.1, 1.55, 0));
     this.camera.updateProjectionMatrix();
     this.characterGroup.rotation.y = angle;
     this.renderer.render(this.scene, this.camera);

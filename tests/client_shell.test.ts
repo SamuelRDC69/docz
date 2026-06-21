@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const playHtml = readFileSync(new URL('../play.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const privacyHtml = readFileSync(new URL('../public/privacy.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const termsHtml = readFileSync(new URL('../public/terms.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const viteConfig = readFileSync(new URL('../vite.config.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const serverMain = readFileSync(new URL('../server/main.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const mainTs = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const hudTs = readFileSync(new URL('../src/ui/hud.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const mobileControlsTs = readFileSync(new URL('../src/game/mobile_controls.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
@@ -55,6 +59,18 @@ describe('client HTML shell', () => {
     expect(playHtml).toContain('<link rel="canonical" href="https://worldofclaudecraft.com/play" />');
     expect(playHtml).toContain('<meta property="og:url" content="https://worldofclaudecraft.com/play" />');
     expect(playHtml).toContain('"url": "https://worldofclaudecraft.com/play"');
+    expect(sitemapXml).toContain('<loc>https://worldofclaudecraft.com/privacy</loc>');
+    expect(sitemapXml).toContain('<loc>https://worldofclaudecraft.com/terms</loc>');
+    expect(privacyHtml).toContain('<link rel="canonical" href="https://worldofclaudecraft.com/privacy" />');
+    expect(privacyHtml).toContain('<h1>Privacy Policy</h1>');
+    expect(termsHtml).toContain('<link rel="canonical" href="https://worldofclaudecraft.com/terms" />');
+    expect(termsHtml).toContain('<h1>Terms and Conditions</h1>');
+    expect(html).toContain('href="/terms" class="footer-link" data-i18n="footer.terms"');
+    expect(html).toContain('href="/privacy" class="footer-link" data-i18n="footer.privacy"');
+    expect(viteConfig).toContain("['/privacy', '/privacy.html']");
+    expect(viteConfig).toContain("['/terms', '/terms.html']");
+    expect(serverMain).toContain("['/privacy', '/privacy.html']");
+    expect(serverMain).toContain("['/terms', '/terms.html']");
   });
 
   it('loads Meta Pixel outside local development and tracks level 5', () => {

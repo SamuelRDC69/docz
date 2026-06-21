@@ -105,6 +105,10 @@ export interface OptionsHooks {
   // fans out woc:languagechange). onStatus receives localized progress/error text for an
   // aria-live element. Resolves false if the locale failed to load (active locale kept).
   changeLanguage(lang: SupportedLanguage, onStatus?: (msg: string) => void): Promise<boolean>;
+  // Re-fetch the connected/linked wallet's $WOC balance (server cache-bypassed) so the
+  // bag footer and player card reflect on-chain token changes. No-op when the wallet
+  // feature is off or no wallet is connected/linked.
+  refreshWocBalance(): void;
   perfOverlay: PerfOverlayHooks;
 }
 
@@ -536,6 +540,10 @@ export class Hud {
   private mechAssetsPromise: Promise<void> | null = null;
   private cardModalEl: HTMLElement | null = null;
   private cardModalReturnFocus: HTMLElement | null = null;
+  // Set while the player-card modal is open: re-composites the card with the
+  // current pose so a $WOC balance change (the bag-footer path can't reach the
+  // card's canvas) is reflected. Cleared when the modal closes.
+  private recomposeOpenCard: (() => void) | null = null;
   // current typeahead state: which input, its results, and the keyboard-
   // highlighted row (-1 = none), so Enter/Arrow keys can pick a suggestion
   private socialSuggest: { field: string; items: { name: string; cls: string; level: number }[]; index: number } = { field: '', items: [], index: -1 };
@@ -560,8 +568,12 @@ export class Hud {
     this.refreshKeybindLabels();
     this.buildXpTicks();
     document.addEventListener('woc:languagechange', () => this.refreshLocalizedDynamicUi());
-    // re-render the bag footer when the connected wallet's $WOC balance changes
-    onWalletUiChange(() => { if ($('#bags').style.display === 'block') this.renderBags(); });
+    // re-render the bag footer (and re-composite an open player card) when the
+    // connected wallet's $WOC balance changes
+    onWalletUiChange(() => {
+      if ($('#bags').style.display === 'block') this.renderBags();
+      this.recomposeOpenCard?.();
+    });
     $('#pf-name').textContent = sim.player.name;
     this.drawPlayerFramePortrait();
     // Character GLBs preload after the HUD mounts; once the real 3D portraits are
@@ -5239,6 +5251,9 @@ export class Hud {
     this.renderBags();
     el.style.display = 'flex';
     audio.bagOpen();
+    // Pull a fresh on-chain $WOC balance for the footer; the async result
+    // re-renders the bag via the onWalletUiChange listener wired in the ctor.
+    this.optionsHooks?.refreshWocBalance();
   }
 
   // Called when an authoritative inventory delta lands (online snapshots
@@ -5984,6 +5999,10 @@ export class Hud {
     if (!preview) return;
 
     this.closePlayerCardModal(false);
+    // Pull a fresh on-chain $WOC balance so the holder badge isn't stale. The
+    // async result lands via onWalletUiChange → recomposeOpenCard (below), which
+    // re-composites the card with the current pose once the new value arrives.
+    this.optionsHooks?.refreshWocBalance();
     this.cardModalReturnFocus = this.currentFocusableElement();
     const back = document.createElement('div');
     back.className = 'modal-backdrop';
@@ -6097,6 +6116,14 @@ export class Hud {
       if (metadataReady) void compose(requestedPoseIndex);
     });
 
+    // Re-composite the card with the current pose whenever the wallet balance
+    // (or availability) changes while this modal is open — e.g. the fresh read
+    // kicked at open lands, or tokens move during the session. Registered BEFORE
+    // the awaits below so a balance landing during that window isn't dropped; it
+    // no-ops until metadataReady, and the first compose picks up the fresh store
+    // value anyway.
+    this.recomposeOpenCard = () => { if (this.cardModalEl === back && metadataReady) void compose(requestedPoseIndex); };
+
     // Referral info + realm standing are online-only (null offline). Fetch once
     // and reuse across pose re-renders. Pose clicks before this resolves update
     // requestedPoseIndex, so the latest visible choice renders when ready.
@@ -6114,6 +6141,7 @@ export class Hud {
     if (!back) return;
     back.remove();
     if (this.cardModalEl === back) this.cardModalEl = null;
+    this.recomposeOpenCard = null;
     const target = this.cardModalReturnFocus;
     this.cardModalReturnFocus = null;
     if (restoreFocus) this.restoreFocus(target);

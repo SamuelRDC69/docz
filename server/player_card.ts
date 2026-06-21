@@ -570,14 +570,19 @@ function cardPageHtml(opts: { slug: string; title: string; description: string; 
 <style>
   :root { --gold: #ffd100; }
   * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 22px; padding: 32px 16px;
+  /* 100dvh tracks the visible area as the mobile URL bar shows/hides. */
+  body { margin: 0; min-height: 100vh; min-height: 100dvh; display: flex; padding: 32px 16px;
     background: radial-gradient(circle at 50% 18%, #241910, #0a0805 70%);
     color: #ece2c4; font-family: 'Alegreya Sans', system-ui, sans-serif; text-align: center; }
+  /* margin:auto centers the card when it fits and lets the page scroll from the TOP
+     when it doesn't (justify-content:center would clip the top on a short/portrait
+     phone, the reported bug). */
+  main { margin: auto; width: 100%; max-width: 720px; display: flex; flex-direction: column;
+    align-items: center; gap: 22px; }
   h1 { font-family: 'Cinzel', Georgia, serif; color: var(--gold); font-size: clamp(22px, 4vw, 34px);
-    margin: 0; text-shadow: 0 2px 10px rgba(0,0,0,.6); }
-  p { margin: 0; color: #c9bb92; max-width: 640px; line-height: 1.5; }
-  img.card { width: min(720px, 96vw); height: auto; border-radius: 12px;
+    margin: 0; max-width: 100%; overflow-wrap: anywhere; text-shadow: 0 2px 10px rgba(0,0,0,.6); }
+  p { margin: 0; color: #c9bb92; max-width: 640px; line-height: 1.5; overflow-wrap: anywhere; }
+  img.card { width: 100%; max-width: 720px; height: auto; border-radius: 12px;
     box-shadow: 0 12px 48px rgba(0,0,0,.6); border: 1px solid #4a3a18; }
   a.cta { display: inline-block; margin-top: 6px; padding: 13px 30px; border-radius: 8px;
     font-family: 'Cinzel', serif; font-weight: 700; font-size: 17px; text-decoration: none;
@@ -587,11 +592,13 @@ function cardPageHtml(opts: { slug: string; title: string; description: string; 
 </style>
 </head>
 <body>
-  <h1>${t}</h1>
-  <img class="card" src="${escapeHtml(imagePath)}" alt="${t}" width="1200" height="630">
-  <p>${d}</p>
-  <a class="cta" href="${escapeHtml(playPath)}">${cta}</a>
-  <footer>${gameName}</footer>
+  <main>
+    <h1>${t}</h1>
+    <img class="card" src="${escapeHtml(imagePath)}" alt="${t}" width="1200" height="630">
+    <p>${d}</p>
+    <a class="cta" href="${escapeHtml(playPath)}">${cta}</a>
+    <footer>${gameName}</footer>
+  </main>
 </body>
 </html>`;
 }
@@ -609,7 +616,7 @@ function missingCardHtml(origin: string, locale: PublicCardLocale): string {
 <title>${title} · ${gameName}</title>
 <link rel="canonical" href="${escapeHtml(origin)}/">
 <style>
-  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+  body { margin: 0; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 16px; background: radial-gradient(circle at 50% 18%, #241910, #0a0805 70%);
     color: #ece2c4; font-family: system-ui, sans-serif; text-align: center; padding: 24px; }
   a { color: #ffd100; }

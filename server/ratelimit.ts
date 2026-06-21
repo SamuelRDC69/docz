@@ -220,6 +220,25 @@ export function resetWalletLinkRateLimits(): void {
   walletLinkAccountAttempts.clear();
 }
 
+export const WOC_BALANCE_MAX_PER_MINUTE = 20;
+const wocBalanceIpAttempts = new Map<string, number[]>();
+
+/**
+ * Throttle the public /api/woc/balance proxy per IP on its OWN bucket. The proxy
+ * is unauthenticated (on-chain balances are public), so it keys on IP only — but
+ * NOT the shared register/login `attempts` map, so a player opening their card/bag
+ * (each a fresh RPC read) can't burn their login budget, and a balance flood can't
+ * lock them out of logging in (or vice-versa).
+ */
+export function wocBalanceRateLimited(req: http.IncomingMessage): boolean {
+  return recordSlidingWindowAttempt(wocBalanceIpAttempts, requestIp(req), WOC_BALANCE_MAX_PER_MINUTE);
+}
+
+/** Reset the balance-proxy throttle. Test-only: keeps scoped buckets isolated. */
+export function resetWocBalanceRateLimits(): void {
+  wocBalanceIpAttempts.clear();
+}
+
 // ---------------------------------------------------------------------------
 // Per-account failed-login throttle (#93)
 //

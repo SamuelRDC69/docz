@@ -80,10 +80,11 @@ const STALE_INPUT_SECONDS = 0.75;
 // Exponential moving average weight for the per-tick duration stat.
 const TICK_EMA_ALPHA = 0.05;
 
-// How often to refresh online players' $WOC holder-tier flair from chain. Each
-// wallet read is additionally cached for minutes in woc_balance.ts, so this is
-// the upper bound on how stale an in-world badge can be.
-const HOLDER_TIER_REFRESH_MS = 120_000;
+// How often to re-broadcast online players' $WOC holder-tier flair. Each wallet
+// read is served from the woc_balance.ts cache (CACHE_TTL_MS), which is the real
+// freshness floor; keeping this loop at/under that TTL means a token change shows
+// on the in-world badge within ~one cache window of it landing on chain.
+const HOLDER_TIER_REFRESH_MS = 60_000;
 
 export interface ClientSession {
   ws: WebSocket;

@@ -2,11 +2,13 @@ import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import bs58 from 'bs58';
 import {
+  CACHE_TTL_MS,
   WOC_BALANCE_CACHE_MAX_ENTRIES,
   fetchWocBalance,
   holderInfoForPubkey,
   cachedWocBalance,
   handleWocBalance,
+  parseWocBalanceQuery,
   resetWocBalanceCacheForTests,
   wocBalanceCacheStats,
 } from '../server/woc_balance';
@@ -21,9 +23,9 @@ function makeRes(): any {
     end(d: string) { this.body = d ?? ''; return this; },
   };
 }
-const callBalance = async (owner: string) => {
+const callBalance = async (owner: string, fresh = false) => {
   const res = makeRes();
-  await handleWocBalance(res, owner);
+  await handleWocBalance(res, owner, fresh);
   return { status: res.statusCode, data: res.body ? JSON.parse(res.body) : {} };
 };
 
@@ -195,8 +197,8 @@ describe('holderTierForPubkey', () => {
     expect(await holderTierForPubkey('tierExpiry')).toBe(5); // cached, no new RPC
     expect(first).toHaveBeenCalledTimes(1);
 
-    // Past the 5-minute TTL the cache entry is stale → next call re-fetches.
-    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+    // Past the TTL the cache entry is stale → next call re-fetches.
+    vi.advanceTimersByTime(CACHE_TTL_MS + 1);
     const second = mockRpc([100_000]); // Vaultwarden (tier 6), a different balance
     vi.stubGlobal('fetch', second);
     expect(await holderTierForPubkey('tierExpiry')).toBe(6); // re-fetched the new tier
@@ -210,7 +212,7 @@ describe('holderTierForPubkey', () => {
 
     // After the TTL the entry is stale, so the next call must re-fetch, but the
     // RPC now fails, so it keeps the last known tier rather than dropping to 0.
-    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+    vi.advanceTimersByTime(CACHE_TTL_MS + 1);
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('rpc down'); }));
     expect(await holderTierForPubkey('tierKeepLast')).toBe(5);
   });
@@ -250,7 +252,7 @@ describe('holderInfoForPubkey (tier + exact balance)', () => {
 
     // Past the TTL the cache is stale, so the next call re-fetches, but the RPC
     // now fails, so it must keep the last known {tier, balance}, not drop to 0.
-    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+    vi.advanceTimersByTime(CACHE_TTL_MS + 1);
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('rpc down'); }));
     expect(await holderInfoForPubkey('infoKeepLast')).toEqual({ tier: 5, balance: 12_345 });
   });
@@ -270,6 +272,28 @@ describe('cachedWocBalance', () => {
     expect(f).toHaveBeenCalledTimes(1);
   });
 
+  it('with fresh=true bypasses the TTL cache, re-fetches, and repopulates it', async () => {
+    const first = mockRpc([1_000]);
+    vi.stubGlobal('fetch', first);
+    expect(await cachedWocBalance('cacheFreshArg')).toBe(1_000); // primes the cache
+    expect(await cachedWocBalance('cacheFreshArg')).toBe(1_000); // served from cache
+    expect(first).toHaveBeenCalledTimes(1);
+    // The on-chain balance changed; a fresh read must reflect it within the TTL.
+    const second = mockRpc([4_200]);
+    vi.stubGlobal('fetch', second);
+    expect(await cachedWocBalance('cacheFreshArg', true)).toBe(4_200);
+    expect(second).toHaveBeenCalledTimes(1);
+    // The fresh read repopulated the cache, so a later normal call sees the new value.
+    expect(await cachedWocBalance('cacheFreshArg')).toBe(4_200);
+    expect(second).toHaveBeenCalledTimes(1);
+    // The fresh bypass of a still-in-TTL entry is a deliberate skip, NOT a stale
+    // refresh — it must not inflate the stale-refresh metric (only genuine TTL
+    // expiry does). Two hits, one initial miss, two stores (initial + fresh).
+    expect(wocBalanceCacheStats()).toEqual(expect.objectContaining({
+      hits: 2, misses: 1, stores: 2, staleRefreshes: 0,
+    }));
+  });
+
   it('tracks cache hits, misses, stores and current cache size', async () => {
     const f = mockRpc([2_500]);
     vi.stubGlobal('fetch', f);
@@ -283,6 +307,8 @@ describe('cachedWocBalance', () => {
       misses: 1,
       stores: 1,
       failures: 0,
+      staleRefreshes: 0,
+      evictions: 0,
     }));
   });
 
@@ -290,9 +316,14 @@ describe('cachedWocBalance', () => {
     vi.useFakeTimers();
     vi.stubGlobal('fetch', mockRpc([777]));
     expect(await cachedWocBalance('cacheKeep')).toBe(777);
-    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+    vi.advanceTimersByTime(CACHE_TTL_MS + 1);
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('rpc down'); }));
     expect(await cachedWocBalance('cacheKeep')).toBe(777); // last known, not null
+    // The TTL-expired entry triggered exactly one GENUINE stale refresh, which then
+    // failed — so the stale-refresh and failure metrics each count once.
+    expect(wocBalanceCacheStats()).toEqual(expect.objectContaining({
+      staleRefreshes: 1, failures: 1,
+    }));
   });
 
   it('returns null for a never-seen wallet when the RPC fails', async () => {
@@ -316,6 +347,9 @@ describe('cachedWocBalance', () => {
 
     expect(await cachedWocBalance('cacheBounded1')).toBe(1);
     expect(f).toHaveBeenCalledTimes(WOC_BALANCE_CACHE_MAX_ENTRIES + 2);
+    // Two entries were pushed past the cap (cacheBounded{MAX}, then the re-fetched
+    // cacheBounded1), so exactly two oldest entries were evicted.
+    expect(wocBalanceCacheStats().evictions).toBe(2);
   });
 });
 
@@ -343,11 +377,60 @@ describe('handleWocBalance (GET /api/woc/balance proxy)', () => {
     expect(data).toEqual({ balance: 1_234.5 });
   });
 
+  it('forwards fresh=true to bypass the cache so a token change is reflected', async () => {
+    vi.stubGlobal('fetch', mockRpc([500]));
+    expect((await callBalance(VALID_ADDR)).data).toEqual({ balance: 500 }); // primes the cache
+    // Without fresh, the cached value is returned even though the chain changed.
+    vi.stubGlobal('fetch', mockRpc([900]));
+    expect((await callBalance(VALID_ADDR)).data).toEqual({ balance: 500 });
+    // With fresh, the proxy re-reads and returns the new balance.
+    expect((await callBalance(VALID_ADDR, true)).data).toEqual({ balance: 900 });
+  });
+
   it('returns 200 with balance:null when the RPC fails for an unseen wallet (UI omits it)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('rpc down'); }));
     const other = bs58.encode(Uint8Array.from({ length: 32 }, (_, i) => i + 40));
     const { status, data } = await callBalance(other);
     expect(status).toBe(200);
     expect(data).toEqual({ balance: null });
+  });
+});
+
+describe('parseWocBalanceQuery (the route-level query parse)', () => {
+  it('extracts the owner and treats only fresh=1 as a forced refresh', () => {
+    expect(parseWocBalanceQuery('/api/woc/balance?owner=ABC&fresh=1')).toEqual({ owner: 'ABC', fresh: true });
+    expect(parseWocBalanceQuery('/api/woc/balance?owner=ABC')).toEqual({ owner: 'ABC', fresh: false });
+    expect(parseWocBalanceQuery('/api/woc/balance?owner=ABC&fresh=0')).toEqual({ owner: 'ABC', fresh: false });
+    // Any non-1 value (incl. truthy-looking strings) is NOT a forced refresh, so a
+    // stray param can't be used to bypass the cache and hammer the RPC.
+    expect(parseWocBalanceQuery('/api/woc/balance?owner=ABC&fresh=true').fresh).toBe(false);
+    expect(parseWocBalanceQuery('/api/woc/balance?owner=ABC&fresh=11').fresh).toBe(false);
+  });
+
+  it('defaults a missing owner to the empty string (handler then 400s) and order-independently', () => {
+    expect(parseWocBalanceQuery('/api/woc/balance')).toEqual({ owner: '', fresh: false });
+    expect(parseWocBalanceQuery('/api/woc/balance?fresh=1')).toEqual({ owner: '', fresh: true });
+    expect(parseWocBalanceQuery('/api/woc/balance?fresh=1&owner=ABC')).toEqual({ owner: 'ABC', fresh: true });
+  });
+
+  it('URL-decodes the owner value', () => {
+    expect(parseWocBalanceQuery('/api/woc/balance?owner=a%20b').owner).toBe('a b');
+  });
+
+  it('drives the real handler end-to-end: a parsed fresh=1 URL bypasses the cache', async () => {
+    // Real parse -> real handler, no mocks of either: proves the route wiring forwards
+    // fresh through to a genuine cache bypass + repopulate.
+    const callFromUrl = async (rawUrl: string) => {
+      const { owner, fresh } = parseWocBalanceQuery(rawUrl);
+      const res = makeRes();
+      await handleWocBalance(res, owner, fresh);
+      return res.body ? JSON.parse(res.body) : {};
+    };
+    const base = `/api/woc/balance?owner=${VALID_ADDR}`;
+    vi.stubGlobal('fetch', mockRpc([700]));
+    expect(await callFromUrl(base)).toEqual({ balance: 700 }); // primes the cache
+    vi.stubGlobal('fetch', mockRpc([1_500]));
+    expect(await callFromUrl(base)).toEqual({ balance: 700 }); // cached read ignores the chain change
+    expect(await callFromUrl(`${base}&fresh=1`)).toEqual({ balance: 1_500 }); // fresh=1 re-reads
   });
 });
