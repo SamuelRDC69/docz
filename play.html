@@ -755,7 +755,18 @@
   .chat-tab-add:hover { color: var(--gold); }
   /* a channel tab filters the shared chat pane to its own messages */
   .chat-pane .chat-hidden { display: none; }
-  #chatlog-frame { height: 184px; padding: 0; overflow: hidden; border-radius: 0 6px 6px 6px; }
+  #chatlog-frame { height: 184px; padding: 0; overflow: hidden; border-radius: 0 6px 6px 6px; position: relative; }
+  /* the empty area of the tab strip is a move handle (the tab buttons sit above it) */
+  #chatlog-tabs { cursor: var(--cursor-move, move); }
+  #chatlog-tabs .chat-tab { cursor: var(--cursor-point); }
+  body.chat-box-dragging, body.chat-box-dragging * { user-select: none; }
+  /* corner resize grip, classic diagonal hatch in the frame's bottom-right */
+  .chat-resize-grip { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+    cursor: nwse-resize; z-index: 3; opacity: 0.45;
+    background: linear-gradient(135deg, transparent 0 45%, #95886a 45% 55%, transparent 55% 70%, #95886a 70% 80%, transparent 80%); }
+  .chat-resize-grip:hover { opacity: 0.9; }
+  body.mobile-touch .chat-resize-grip { display: none; }
+  body.mobile-touch #chatlog-tabs { cursor: default; }
   .chat-pane { display: none; height: 100%; overflow-y: auto; overflow-x: hidden; padding: 7px 10px;
     font-size: 11px; line-height: 1.45; }
   .chat-pane.active { display: block; }
