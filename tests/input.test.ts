@@ -182,6 +182,23 @@ describe('Input pointer lock', () => {
     expect(canvas.requestPointerLock).not.toHaveBeenCalled();
   });
 
+  it('does not request pointer lock for a quick right-click with sub-threshold jitter (#116)', () => {
+    let now = 1000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const { canvas, canvasListeners, windowListeners } = makeInput();
+
+    // A real click jitters a few pixels well under CAMERA_DRAG_START_DISTANCE
+    // and releases before CAMERA_DRAG_START_MS: it must stay a click, never a
+    // drag, so the browser pointer-capture banner is never shown.
+    canvasListeners.get('mousedown')!({ button: 2, clientX: 100, clientY: 100, preventDefault: vi.fn() });
+    now += 30;
+    windowListeners.get('mousemove')!({ movementX: 3, movementY: 2 });
+    now += 30;
+    windowListeners.get('mouseup')!({ button: 2, clientX: 103, clientY: 102, target: canvas });
+
+    expect(canvas.requestPointerLock).not.toHaveBeenCalled();
+  });
+
   it('requests pointer lock the instant a press becomes an active drag (before any rotation)', () => {
     const { canvas, canvasListeners, windowListeners } = makeInput();
 

@@ -291,6 +291,11 @@ export class Input {
     this.mouseCameraEnabled = on;
     if (on && document.pointerLockElement === this.canvas) {
       document.exitPointerLock?.();
+      // Toggling mode mid-drag: drop the drag/lock state now rather than waiting
+      // for the async pointerlockchange, so the in-flight drag cannot leave the
+      // request flag latched (which would block re-acquiring the lock).
+      this.cameraDragActive = false;
+      this.pointerLockRequestedForDrag = false;
     }
     this.updateCursor();
   }
