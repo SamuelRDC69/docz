@@ -2962,6 +2962,13 @@ export class Sim {
           break;
         }
         case 'imbue': {
+          for (let i = p.auras.length - 1; i >= 0; i--) {
+            const a = p.auras[i];
+            if (a.kind === 'imbue' && a.id !== ability.id) {
+              p.auras.splice(i, 1);
+              this.emit({ type: 'aura', targetId: p.id, name: a.name, gained: false });
+            }
+          }
           this.applyAura(p, {
             id: ability.id, name: ability.name, kind: 'imbue',
             remaining: eff.duration, duration: eff.duration, value: eff.bonus,
