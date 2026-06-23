@@ -451,6 +451,18 @@
    "maxTex": 512
   },
   {
+   "src": "tmp/asset_src/mythic/voidcleaver.gltf",
+   "out": "models/weapons/voidcleaver.glb",
+   "type": "static",
+   "maxTex": 512
+  },
+  {
+   "src": "tmp/asset_src/mythic/voidcleaver_cleaver.gltf",
+   "out": "models/weapons/voidcleaver_cleaver.glb",
+   "type": "static",
+   "maxTex": 512
+  },
+  {
    "src": "tmp/asset_src/quaternius_creatures/Alpaca.glb",
    "out": "models/creatures/alpaca.glb",
    "type": "character",

@@ -175,6 +175,24 @@ correct.
   <file>`, `npm test`, `npm run build`, `tests/architecture.test.ts`, the S3 i18n guard
   `tests/localization_fixes.test.ts`), never on "looks done."
 
+## Fork maintenance
+This repo is a fork of `levy-street/world-of-claudecraft` (remote: `upstream`). Kenny makes custom additions on top and keeps in sync with upstream periodically.
+
+**To pull in upstream updates:**
+```bash
+git fetch upstream
+git merge upstream/main
+git push origin main
+```
+
+Conflicts are rare when custom changes live in new files (e.g. `tools/map_editor.html`, `src/sim/content/terrain_edits.ts`). They occur when upstream and Kenny both edit the same lines in a shared file — resolve by keeping both sides' intent. Merge frequently (every week or so) to keep conflict size small.
+
+**Kenny's custom additions (not in upstream):**
+- `tools/map_editor.html` + `tools/vite-map-editor-plugin.mjs` — 2D/3D map editor
+- `src/sim/content/terrain_edits.ts` — hand-placed terrain edits layer
+- `mythicalweapons/` — custom weapon assets (voidcleaver axe etc.)
+- Railway deployment config (see memory for Railway project details)
+
 ## Pointers
 `README.md` (host/develop/play + fidelity checklist) · `DEPLOY.md` (production) ·
 `CREDITS.md` (asset licenses) · `docs/design/` (design docs) · `docs/prd/` (feature specs).
