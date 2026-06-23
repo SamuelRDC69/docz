@@ -32,7 +32,13 @@ held to these — verify in mobile portrait *and* landscape before calling UI wo
 - **Mobile touch** (gate on touch capability / runtime state, not only `max-width` —
   landscape phones need it too):
   - Every visible `input`/`select`/`textarea` is **≥16px** font, or iOS Safari
-    auto-zooms the page on focus.
+    auto-zooms the page on focus (iOS 10+ ignores the viewport `user-scalable=no`/
+    `maximum-scale`, so font-size is the only reliable fix). This is enforced centrally
+    by a `@media (pointer: coarse) { input, textarea, select { font-size: 16px !important } }`
+    floor in `index.html` (mirrored in `admin.html`), so new controls are covered for free
+    even when their own rule out-specifies a plain catch-all; the `!important` is what
+    wins. Don't set a per-control mobile font below 16px, and don't lean on the viewport
+    scale-lock. Regression check: `node scripts/mobile_input_zoom_check.mjs` (needs `npm run dev`).
   - Every tappable target (buttons, links, selects, tabs, icon-only controls, anything
     with `role="button"|"tab"|"option"`) is **≥40×40px**.
   - Narrow headers collapse to a hamburger drawer rather than wrapping/overflowing.
@@ -44,45 +50,144 @@ held to these — verify in mobile portrait *and* landscape before calling UI wo
   of list/rail/chip items (motion-sickness trigger); text contrast ≥4.5:1 (≥3:1 large).
   Accessible names are still `t()` keys (see i18n below).
 
-## hud.ts (~5240 — one class `Hud`) — navigation map
-Every region is fenced by a `// ----` banner. `update()` (~L824) is the per-frame
-entry; `onEvent` paths feed log/FCT/audio/banners (~L1651). Jump by banner:
-| Region | ~line |
-|---|---|
-| Fields / constructor / `OptionsHooks`,`ReportHooks` | 31–372 |
-| Portraits, icons, tooltips, money | 373 |
-| Action bar (`slotMap`, `BAR_ABILITY_SLOTS`, click/keybind dispatch) | 585 |
-| Frame update (unit/target/combat state) | 821 |
-| Minimap & world map (`toggleMap`, zone band) | 1119 |
-| Ashen Coliseum arena panel (`toggleArena`) | 1304 |
-| Events → log / FCT / audio / banners | 1651 |
-| Quest dialog (gossip) · Loot · Vendor | 2252 / 2391 / 2434 |
-| World Market (auction house: browse/sell/collect) | 2525 |
-| Bags · Character window · Spellbook | 2752 / 2953 / 3268 |
-| Confirm dialog + in-app text-input modal (replaces native `prompt`) | 3086 / 3101 |
-| Talents & Specializations panel ('N', staged-edit + loadouts) | 3338 |
-| Quest log · Party frames · Player context menu | 3714 / 3804 / 3858 |
-| Social panel (friends/guild/ignore, online) | 4123 |
-| Prompts (party/trade/duel) · Trade window | 4443 / 4465 |
-| Options menu (Esc) + keybind rebinding | 4565 |
+## hud.ts navigation map (one class `Hud`)
+Every region is fenced by a `// ----` banner, so jump by grepping the banner (or the
+named method) rather than a line number. `update()` is the per-frame entry;
+`handleEvents(events)` feeds log/FCT/audio/banners (`onEvent` is a method on the
+`meters` helper, not `Hud`). Regions in file order:
+| Region |
+|---|
+| Fields / constructor / `OptionsHooks`,`ReportHooks` |
+| Chat tabs / emote wheel |
+| Portraits (canvas paint lives in `unit_portrait*`), icons, tooltips, money |
+| Action bar (`hotbarActions`, `slotMapKey`, `BAR_ABILITY_SLOTS`, click/keybind dispatch) |
+| Frame update (unit/target/combat state) |
+| Minimap & world map (`toggleMap`, zone band) |
+| Ashen Coliseum arena panel (`toggleArena`) |
+| Events → log / FCT / audio / banners |
+| 2v2 Fiesta HUD (score, respawn, augment picks) |
+| Quest dialog (gossip) · Loot · Vendor |
+| World Market (auction house: browse/sell/collect) |
+| Bags · Character window · Spellbook |
+| Confirm dialog + in-app text-input modal (replaces native `prompt`) |
+| Talents & Specializations panel ('N', staged-edit + loadouts) |
+| Quest log · Party frames · Player context menu |
+| Social panel (friends/guild/ignore, online) |
+| Prompts (party/trade/duel) · Trade window |
+| Options menu (Esc) + keybind rebinding |
 Toggle/open methods (`toggleBags`, `openVendor`, `openContextMenu`, …) are the
 public surface `main.ts`/input call.
 
-## i18n.ts (~11900) — IMPORTANT
-- **Every locale object is declared `: typeof en`** (`es`, `fr_FR`, `de_DE`, …).
-  `tsc` fails if any locale is missing/renames a key. **YOU MUST add a new string
-  to `en` first, then to every locale object**, or the build breaks.
-- `t(key)` is typed `Leaves<typeof en>` (dotted path, e.g. `t('game.xp.suffix')`)
-  and falls back to the raw key if missing. `getLanguage`/`setLanguage` persist to
-  `localStorage('locale')`; `?lang=` query overrides.
-- The HUD is fully localized (~560 `t()` calls in hud.ts, ~16 in meters.ts);
-  post-cap/XP/leaderboard text lives in `gameStrings` and routes through `t()`.
-  Prefer `t()` for new user-facing strings.
-- `translations` maps all 14 exported locales (en, es, es_ES, fr_FR, fr_CA, en_CA,
-  it_IT, de_DE, zh_CN, zh_TW, ko_KR, ja_JP, pt_BR, ru_RU); `supportedLanguages =
-  Object.keys(translations)`. Add to that map to make a new locale selectable.
+**New self-contained windows go in their own module, not a new banner section.**
+`hud.ts` is the worst monolith to grow: a new window or panel that does not need `Hud`'s
+private per-frame state belongs in its own `src/ui/` module the HUD composes (the
+direction the HUD modularization is heading; see the root Modularity section). The pure
+painters (`unit_portrait*`, `xp_bar.ts`) are the template: a host-agnostic core a Vitest
+drives directly, plus a thin DOM/canvas consumer.
 
-## icons.ts (~1510) — procedural, no image files
+## i18n - IMPORTANT (sparse-overlay model; contributors add ENGLISH ONLY)
+The locale data is split across files. Touch the right one:
+- `i18n.catalog/` (nested) is the **authoritative source catalog** and drives
+  `TranslationKey = Leaves<typeof en, 6>`, the dotted-path type every `t()` call uses.
+  It is a directory of English-valued domain modules (`shell.ts`, `hud.ts`,
+  `hud_chrome.ts`, `abilities.ts`, `quests.ts`, `items.ts`, `game.ts`, `merge.ts`) plus
+  `index.ts`, the barrel that assembles + exports `en`. Add a new English string in the
+  matching domain module (was the single `i18n.en.ts` before the i18n.catalog domain split).
+- `i18n.locales/<lang>.ts` are the 13 non-English **flat sparse overlays**
+  (`Partial<Record<TranslationKey,string>>`), the ONLY files a translator edits. An
+  omitted key is filled from English by the build and marked `pending` in the registry.
+- `i18n.resolved.generated/` is the **generated dense table** the runtime imports — a
+  directory of one dense per-locale slice + `index.ts` (barrel), `loaders.ts`
+  (`LOCALE_LOADERS` + `SUPPORTED_LANGUAGES`), `pending.ts`, and the dev-only `en_XA.ts`
+  (do not hand-edit). It is committed; regenerated by `npm run i18n:build`.
+  `i18n.status.json` is the **registry** (translated/pending/blocked), regenerated by
+  `npm run i18n:scan` but **gitignored** (~5 MB) — only the counts-only
+  `i18n.status.summary.json` is committed.
+- `i18n.ts` is the thin runtime: `t()`, `tOptional`, `tPlural` (CLDR cardinal plurals),
+  `hasTranslation`, formatters (`formatNumber`/`formatDateTime`/`formatMoney`/`languageTag`),
+  `getLanguage`/`setLanguage`/`isSupportedLanguage`, `supportedLanguages`. **The locale set
+  derives from `SUPPORTED_LANGUAGES` in the generated `loaders.ts`** (14 = en + 13), not a
+  `translations` map; add a code there (via the source overlays + regenerate) to make a
+  locale selectable. **Lazy locale flip:** only `en`/`en_XA`/`pending`/`loaders` are eager;
+  the 13 non-en slices load on demand via `await ensureLocaleLoaded(lang)` (one dynamic
+  `import()` per content-hashed chunk; `prefetchLocale`/`isLocaleResident` complete the
+  surface). `setLanguage` is synchronous and does NOT load — `main.ts` awaits
+  `ensureLocaleLoaded` before localized paint and before each picker switch.
+
+**Merge conflicts in the committed generated artifacts** (`i18n.status.summary.json`
+is the usual one; also `i18n.resolved.sha256` and any `i18n.resolved.generated/` slice)
+are **never hand-resolved**. Take either side to clear the markers, then run
+`npm run i18n:gen` (build + admin + scan) to regenerate every committed artifact from
+the merged source-of-truth (the `i18n.catalog/` modules + `i18n.locales/` overlays) and
+`git add` the result. The output is deterministic, so a second `npm run i18n:gen` must
+leave the tree clean — that idempotency is your proof the resolution is right (and the CI
+i18n:gen freshness step checks the same thing). A rising `pending` count after merging a
+`release/**` branch into a feature branch is expected (its new content is not yet
+translated) and is fine at the PR-tier gate.
+
+`t(key)` **throws on an untracked key in dev/test**, renders English for a `pending`
+key on **non-release builds only**, and **hard-fails a pending key on a release build**
+(`isReleaseBuild()` = `I18N_RELEASE=1` or `import.meta.env.PROD`). The HUD is fully
+localized; prefer `t()` for new user-facing strings.
+
+**Contributor workflow (add a player-visible string): add ENGLISH ONLY:**
+1. Add the key to `en` (the matching `i18n.catalog/<domain>.ts` module) and render it
+   through `t()`. **Never edit the 13
+   `i18n.locales/<lang>.ts` overlays, and never put English/`// TODO`/a placeholder
+   into one as a fake translation.** Leave the key omitted; the build English-fills it
+   and the registry marks it `pending`. (Translating 13 locales per PR would drain
+   small-plan token budgets; the maintainer batch-fills them at release.)
+2. If the string originates in `src/sim/` or `server/` (which stay language-agnostic),
+   register a matcher RULE in the table matching the emit's ORIGIN (`sim_i18n.ts` for a
+   `src/sim/` emit, `server_i18n.ts` for a `server/` emit; the two are parallel mirrors)
+   in the SAME change. The S3 guard accepts recognition by either matcher and fails if a
+   new emit is recognized by neither.
+3. Run `npm run i18n:scan` (and `npm run i18n:build`; if the resolved table changed,
+   also `npm run i18n:hash -- --write`) and commit the regenerated files.
+4. Open the PR. It is green at the **PR-tier gate** (no `I18N_RELEASE_TIER`), which does
+   not require translations; `tsc` + the `t()` untracked-key throw still guarantee
+   English completeness.
+
+The maintainer fills the `pending` slice at release time via `npm run i18n:worklist`,
+then ships from `release/**` where the **release-tier gate** (`I18N_RELEASE_TIER=1`)
+hard-fails on any `pending` row. Run `I18N_RELEASE_TIER=1 npm test` locally to dry-run
+that gate.
+Full contributor + maintainer flow and the locked-terms glossary:
+`docs/i18n-scaling/translation-workflow.md`.
+
+**Where to put a new client key (catalog-domain gotcha).** Every catalog domain
+EXCEPT `hud_chrome.ts` carries tsc-ENFORCED inline per-locale data (`shell`, `hud`,
+`quests`, `items`, `abilities` hold inline `en:`/`es:`/… blocks; `game` uses parallel
+`gameStrings<Lang>: typeof gameStrings` consts; `merge.ts` cross-refs), so adding a key
+to one of their `en` blocks red-fails `tsc` (TS2719) until you fill every non-en block
+too. For new HUD chrome, **add the key to `i18n.catalog/hud_chrome.ts` instead**
+(namespace `hudChrome.*`): it is the ONLY English-only domain (a flat object, no
+per-locale blocks), so an English-only add compiles and the translations live solely in
+the overlays. **Never add `as const` to a catalog-domain object** — it narrows the
+literal types and breaks the `en_XA` pseudo-locale.
+
+**Formatters, not hand-built numbers.** Every user-visible number/date/percent/
+coordinate/duration goes through `formatNumber` / `formatDateTime` / `formatMoney`
+(this dir's `i18n.ts`). To keep English byte-identical to a historical hand-rolled
+form, pass `useGrouping: false` + matching fraction-digit options (see `coords.ts`,
+`meters.ts`, `xp_bar.ts`, `clock.ts`); units that reorder per locale go in a `t()`
+key with the digits spliced as a `{placeholder}` (e.g. `hudChrome.meters.*`).
+
+**Three client-side matchers re-localize `src/sim`/`server` English** (these stay
+language-agnostic): the hud-local arms `localizeErrorText`/`localizeSystemText`/
+`localizeLootText` (→ `t()` keys), then `server_i18n.ts` (`localizeServerText`), then
+`sim_i18n.ts` (`localizeSimText`). They run in that order; the S3 drift guard
+(`tests/localization_fixes.test.ts`) accepts recognition by any of the three. Dev-
+channel text (`console.*`, thrown errors) stays English and is NOT matched.
+
+**Entity & talent names** localize through their own resolvers here, not raw `t()`:
+`world_entity_i18n.ts` is the single ENGLISH source for mob/NPC/quest/zone/dungeon
+names + narratives (its `.en` slice spreads into the catalog); `entity_i18n.ts`
+(`tEntity`) localizes those at runtime; `talent_i18n.ts` localizes talent
+titles/descriptions. A new world/talent name belongs in `world_entity_i18n.ts` (or the
+talent source), with the translations living in the overlays like any other key.
+
+## icons.ts — procedural, no image files
 Icons are composed on a canvas at runtime and cached as PNG data URLs — there are
 **no icon image assets**. Public API: `iconDataUrl(kind, id, size)` where `kind`
 is `'ability' | 'item' | 'aura' | 'crest'`; plus `QUALITY_COLOR`.
@@ -97,13 +202,40 @@ keywords), so every id always renders.
   ~100×100 space, r≤36, light top-left).
 
 ## Small modules
-- **xp_bar.ts** (~65) — pure `xpBarView()`, no DOM (snapshot-tested). Shows the
+These are the **pure-core + thin-consumer** split the root CLAUDE.md Conventions
+ask for: presentation/domain logic lifted out of `hud.ts` into a small,
+host-agnostic module a Vitest test imports directly, with the DOM/canvas side kept
+thin. Follow this shape for new/updated features whose logic is worth reusing or
+unit-testing.
+- **unit_portrait.ts** / **unit_portrait_painter.ts**: the circular
+  player/target-frame portrait. The pure core (`unit_portrait.ts`, DOM-free,
+  unit-tested in `tests/unit_portrait.test.ts`) holds the geometry + crest-id
+  resolution: HiDPI backing-store sizing (`portraitBackingPx`), crest
+  overscan-to-fill the disc (`overscanRect`/`CREST_OVERSCAN`), and family/NPC
+  crest ids (`crestIdForEntity`). The painter (`UnitPortraitPainter`) is the thin
+  consumer: DPR-aware canvas backing store, crest/headshot blit, decoded-image
+  cache. Player and target frames share one implementation; `hud.ts` only routes
+  the framed unit to it. Screenshot harness: `scripts/target_frame_visual.mjs`.
+- **xp_bar.ts** — pure `xpBarView()`, no DOM (snapshot-tested). Shows the
   post-cap **virtual level** `Lv 20 (+N)` + lifetime total when overflow is on;
   classic "MAX LEVEL" when off. See `virtualLevelProgress` in `sim/types`.
-- **meters.ts** (~300) — DPS/HPS/threat meters, encounter-segmented; threat reads
+- **meters.ts** — DPS/HPS/threat meters, encounter-segmented; threat reads
   the mob's real `entity.threat` hate table. Uses `performance.now()` (UI timing
   only — fine here; that ban is sim-only).
-- **player_context_menu.ts** (~44) — pure `chatPlayerContextActions()` returning
+- **player_context_menu.ts** — pure `chatPlayerContextActions()` returning
   whisper/invite/friend/ignore/report actions for the right-click-player menu.
-- **auth_utils.ts** (~94) — login/char-select form helpers: password toggle, ARIA
+- **auth_utils.ts** — login/char-select form helpers: password toggle, ARIA
   validity sync, `validateCharacterName` (mirrors the server regex).
+- **stat_tooltip.ts** / **stat_tooltip_view.ts**: the character-screen (C panel)
+  stat hover tooltips. The pure **core** (`stat_tooltip.ts`, DOM/i18n-free,
+  reconciled against `recalcPlayerStats` in `tests/stat_tooltip.test.ts`) builds the
+  structured `StatTooltipModel` (which class-aware effect lines a stat contributes
+  and their live values) and exposes `weaponDps`. The pure **view**
+  (`stat_tooltip_view.ts`, unit-tested in `tests/stat_tooltip_view.test.ts`) turns a
+  model into the floating tooltip HTML, the visually-hidden aria breakdown, and the
+  focusable `statCellHtml` markup, taking i18n + `formatNumber` as an injected
+  `StatTooltipI18n` so it never imports the runtime. `hud.ts` is the thin consumer:
+  `statModel()` bridges the live sim to the core, then it hands the model to the view.
+- **esc.ts**: the one canonical HTML escaper (`esc`) for innerHTML / attribute
+  interpolation, shared by `hud.ts`, `portrait_chip.ts`, and the small view modules
+  (the src/ui rule "all HTML interpolation goes through `esc()`"); escapes `& < > " '`.

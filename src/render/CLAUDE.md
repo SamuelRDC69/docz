@@ -11,28 +11,28 @@ takes `private sim: IWorld`). New data/action a draw path needs → extend
 `IWorld` first (see src CLAUDE.md), never reach into `Sim`/`ClientWorld`.
 
 ## Module split
-`renderer.ts` (~1230) is the orchestrator: scene/camera/lights, the
+`renderer.ts` is the orchestrator: scene/camera/lights, the
 `views: Map<id, EntityView>` that maps world entities → meshes+nameplates, and
-`sync(alpha, dt, facingOverride)` — the per-frame entry called from `main.ts`.
+`sync(alpha, dt, renderFacingOverride, selfAlphaLead?)` is the per-frame entry called from `main.ts`.
 The subsystems each export a `build*()` returning a `*View` and are owned by the
 renderer:
 
 | File | Builds |
 |---|---|
-| `terrain.ts` (~590) | chunked LOD terrain + PBR splat shading |
-| `props.ts` (~700) | buildings/structures/objects from CC0 GLBs (instanced/merged) |
-| `foliage.ts` (~870) | trees/rocks/dressing (instanced) + player-centred grass ring |
-| `water.ts` · `sky.ts` (~280) | per-zone water planes · HDRI sky dome + clouds |
-| `vfx.ts` (~480) | pooled `THREE.Points` spell/impact particles (Kenney atlas) |
-| `dungeon.ts` (~640) | instanced KayKit interiors from `sim/dungeon_layout.ts` |
-| `post.ts` (~150) | post chain (see below) |
-| `gfx.ts`, `textures.ts`, `locomotion.ts`, `stealth.ts` | shared helpers (below) |
+| `terrain.ts` | chunked LOD terrain + PBR splat shading |
+| `props.ts` | buildings/structures/objects from CC0 GLBs (instanced/merged) |
+| `foliage.ts` | trees/rocks/dressing (instanced) + player-centred grass ring |
+| `water.ts` · `sky.ts` | per-zone water planes · HDRI sky dome + clouds |
+| `vfx.ts` | pooled `THREE.Points` spell/impact particles (Kenney atlas) |
+| `dungeon.ts` | instanced KayKit interiors from `sim/dungeon_layout.ts` |
+| `post.ts` | post chain (see below) |
+| `gfx.ts`, `textures.ts`, `render_budget.ts`, `locomotion.ts`, `stealth.ts` | shared helpers (below) |
 
 ## gfx.ts — the shared core (read this before touching any subsystem)
-- **`GFX` quality tiers** (`low`/`high`/`ultra`). Every tier-dependent knob lives
+- **`GFX` quality tiers** (`low`/`medium`/`high`/`ultra`). Every tier-dependent knob lives
   here, not in scattered ternaries. The renderer MUST call `initGfxTier(webgl)`
   right after creating the `WebGLRenderer` and before building scene content
-  (software GL → `low`; `?gfx=low|high|ultra` / `?lowgfx` force a tier).
+  (software GL → `low`; `?gfx=low|medium|high|ultra` / `?lowgfx` force a tier).
 - **`surfaceMat(opts)`** is the material factory — it dedupes by
   `(color|maps|flags)` so hundreds of boxes share a few programs. Use it instead
   of `new MeshStandardMaterial`; `MeshLambertMaterial` is auto-substituted on low.
@@ -41,7 +41,7 @@ renderer:
   the one sun every consumer (key light, shadows, sky glow, water glints) reads.
 
 ## Procedural-everything
-- **Textures:** `textures.ts` (~1130) builds canvas textures at runtime (no image
+- **Textures:** `textures.ts` builds canvas textures at runtime (no image
   files). Add an `export function xTexture()` using the `makeCanvas` helper; its
   module-local `rnd()` keeps generation deterministic — don't use `Math.random`.
 - **VFX:** add an effect to `vfx.ts` (emit into the pooled particle cloud; HDR
@@ -49,6 +49,27 @@ renderer:
   cells are append-only (`SPRITE_FILES`/`SPR` must stay in sync).
 - **Props/foliage/dungeon** are the exception: real CC0 **GLB** assets, loaded via
   `assets/loader.ts`, then their geometry is baked/merged/instanced at build time.
+
+## i18n — in-world floating labels are the only string surface here
+The renderer is geometry/shaders; the one player-text surface is the overhead
+**nameplate/label** path in `renderer.ts` (only `renderer.ts` imports i18n: `t`
+from `../ui/i18n`, `tEntity` from `../ui/entity_i18n`). Keep it keyed:
+- **Entity names** (mob/npc/dungeon/ground-object/ability) → `tEntity({ kind, id,
+  field:'name' })` (see `mobDisplayName`/`npcDisplayName`/`dungeonDisplayName`/
+  `objectDisplayName`), never the raw English `e.name`/`e.templateId`.
+- **Templated labels** → `t()` keys: corpse → `worldContent.corpseName`,
+  dungeon-exit → `worldContent.dungeonExitName`, emote → `hudChrome.emotes.<id>`,
+  fishing cast → `abilityUi.cast.fishing`. The renderer only CONSUMES these — the
+  keys themselves live in `src/ui/` (`worldContent.*` in `world_entity_i18n.ts`;
+  `hudChrome.*` in `i18n.catalog/hud_chrome.ts`; `abilityUi.cast.*` in
+  `i18n.catalog/merge.ts`), so add a new key there, not inline here.
+- **Verbatim by design:** player names and owned-pet names (`e.name` when
+  `e.ownerId !== null`) are proper nouns — splice them as-is, do not localize.
+  Nameplate **markers** (`$`, `◆`, raid icons) are symbols — no `t()` entry needed.
+- `cast_bar.ts` stays i18n-free on purpose: it returns a stable discriminator
+  (`label`/`fishing`) and the renderer resolves the visible text. Don't add `t()`
+  there. Entity *names* originate in `src/sim/content/` and are localized via the
+  `world_entity_i18n`/`entity_i18n` chain — `src/render/` only consumes that.
 
 ## Terrain height = sim height (hard invariant)
 Render samples `terrainHeight` / `groundHeight` from `src/sim/world.ts` (DOM-free,
@@ -69,6 +90,10 @@ collision/movement.
   (material × z-band), share materials via `surfaceMat`, distance-cull/LOD in
   `sync` (see the `*_RANGE_SQ` constants). No per-frame `new THREE.*` in hot paths
   — reuse the `tmpV` scratch vectors / scratch arrays already in `renderer.ts`.
+- **`render_budget.ts` is the renderer's adaptive-budget core** (tier-driven frame
+  budget + telemetry, keyed off `gfx.ts` quality bands). `renderer.ts` owns it,
+  degrades against it, and pushes the resulting grass/foliage/vfx quality levels into
+  those subsystems. Consult it rather than reinventing a frame-level budget.
 
 ## Never do
 - **Never mutate the world from here** (no writing entity/sim fields).

@@ -8,13 +8,15 @@ import type {
   CampDef, DungeonDef, GroundObjectDef, ItemDef, MobTemplate, NpcDef,
   PlayerClass, QuestDef, QuestState, ZoneDef, ZonePropsDef,
 } from './types';
-import { BASE_ITEMS } from './content/items';
+import { BASE_ITEMS, FISHING_TABLES, FISHING_RARE_ID } from './content/items';
+export { FISHING_TABLES, FISHING_RARE_ID };
+export type { FishingEntry } from './content/items';
 import {
-  GRAVEYARD_POS, LAKE, TOWN_RADIUS, ZONE1_CAMPS, ZONE1_MOBS, ZONE1_NPCS, ZONE1_OBJECTS,
+  GRAVEYARD_POS, LAKE, TOWN_RADIUS, ZONE1_CAMPS, ZONE1_CHAPEL_CAMPS, ZONE1_MOBS, ZONE1_NPCS, ZONE1_OBJECTS,
   ZONE1_PROPS, ZONE1_QUESTS, ZONE1_QUEST_ORDER, ZONE1_ROADS, ZONE1_ZONE,
 } from './content/zone1';
 import {
-  ZONE2_CAMPS, ZONE2_ITEMS, ZONE2_MOBS, ZONE2_NPCS, ZONE2_OBJECTS, ZONE2_PROPS,
+  DEEPFEN_SHALLOWS_LAKE, ZONE2_CAMPS, ZONE2_ITEMS, ZONE2_MOBS, ZONE2_NPCS, ZONE2_OBJECTS, ZONE2_PROPS,
   ZONE2_QUESTS, ZONE2_QUEST_ORDER, ZONE2_ROADS, ZONE2_ZONE,
 } from './content/zone2';
 import {
@@ -70,7 +72,14 @@ export const QUEST_ORDER: string[] = [
   ...ZONE1_QUEST_ORDER, ...ZONE2_QUEST_ORDER, ...ZONE3_QUEST_ORDER, ...TEMPLE_QUEST_ORDER,
 ];
 
-export const CAMPS: CampDef[] = [...ZONE1_CAMPS, ...ZONE2_CAMPS, ...ZONE3_CAMPS, ...TEMPLE_CAMPS];
+// Camps spawn in array order, each drawing world-gen RNG, so an entry inserted
+// before others shifts their spawn positions. New rare-elite camps
+// (ZONE1_CHAPEL_CAMPS) and the Eastbrook rare Grix are appended LAST so every
+// existing zone camp keeps its exact draw order (determinism).
+export const CAMPS: CampDef[] = [
+  ...ZONE1_CAMPS, ...ZONE2_CAMPS, ...ZONE3_CAMPS, ...TEMPLE_CAMPS, ...ZONE1_CHAPEL_CAMPS,
+  { mobId: 'grix_the_tunnelking', center: { x: -95, z: -78 }, radius: 4, count: 1 },
+];
 
 // Hand-placed terrain bumps/pits (sim/world.ts layers these onto the heightfield).
 export { TERRAIN_EDITS };
@@ -153,6 +162,7 @@ export function zoneWelcomeText(zone: ZoneDef, questState: (questId: string) => 
 // Legacy single-zone exports (zone 1) — still referenced by tests and the
 // starter-town logic.
 export { GRAVEYARD_POS, LAKE, TOWN_RADIUS };
+export { DEEPFEN_SHALLOWS_LAKE };
 export const ZONE_NAME = ZONE1_ZONE.name;
 
 // ---------------------------------------------------------------------------
@@ -191,8 +201,8 @@ export function dungeonAt(x: number): DungeonDef | null {
 // the band split below keeps arena positions from being read as a dungeon.
 // ---------------------------------------------------------------------------
 
-export const ARENA_X = 3000; // arena instances share this x; slots stack along z
-export const ARENA_X_MIN = 2800; // x at/after this = an arena instance, not a dungeon
+export const ARENA_X = 4200; // arena instances share this x; slots stack along z
+export const ARENA_X_MIN = ARENA_X; // x at/after this = an arena instance, not a dungeon
 export const ARENA_SLOT_COUNT = 4; // concurrent 1v1 matches the world can host
 const ARENA_Z0 = -1250;
 const ARENA_SLOT_SPACING = 120; // > the pit footprint (~44yd) so slots never overlap

@@ -12,7 +12,10 @@ vi.mock('pg', () => ({
   },
 }));
 
-import { createAccount, createCharacterCapped, deleteCharacter, openPlaySession, touchLogin } from '../server/db';
+import {
+  createAccount, createCharacterCapped, deleteCharacter, grantAccountMechChroma, loadAccountCosmetics,
+  markAccountQuestComplete, openPlaySession, renameCharacter, revokeAccountMechChroma, touchLogin,
+} from '../server/db';
 import { REALM } from '../server/realm';
 
 beforeEach(() => {
@@ -48,6 +51,36 @@ describe('deleteCharacter', () => {
   });
 });
 
+describe('renameCharacter', () => {
+  // A rename is a moderator-driven action: the admin "Force name change" sets
+  // force_rename, and the rename must be allowed ONLY while that flag is set.
+  // The UI only shows a rename control when force_rename is set, but the server
+  // is authoritative, so the gate must live in the UPDATE itself (a normal owner
+  // calling the API directly must not be able to rename a non-flagged character).
+  it('gates the UPDATE on force_rename so an un-flagged character cannot be renamed', async () => {
+    dbMock.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await renameCharacter(7, 42, 'Newname');
+
+    const [sql, params] = dbMock.query.mock.calls[0];
+    expect(sql).toMatch(/UPDATE characters/i);
+    expect(sql).toMatch(/force_rename\s*=\s*TRUE/i);
+    // still scoped to the owning account, the id, and the current realm
+    expect(params).toEqual(expect.arrayContaining([42, 7, 'Newname', REALM]));
+  });
+
+  it('returns the updated row on success and null when no row matched the gate', async () => {
+    dbMock.query.mockResolvedValueOnce({
+      rows: [{ id: 42, account_id: 7, name: 'Newname', class: 'mage', level: 5, state: null, is_gm: false, force_rename: false }],
+      rowCount: 1,
+    } as any);
+    expect((await renameCharacter(7, 42, 'Newname'))?.name).toBe('Newname');
+
+    dbMock.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    expect(await renameCharacter(7, 42, 'Newname')).toBeNull();
+  });
+});
+
 describe('account and session request metadata', () => {
   it('stores account creation IP and user agent when registering', async () => {
     dbMock.query.mockResolvedValueOnce({ rows: [{ id: 7, username: 'alice', password_hash: 'hash' }] } as any);
@@ -80,6 +113,70 @@ describe('account and session request metadata', () => {
     expect(sql).toMatch(/ip_address/);
     expect(sql).toMatch(/user_agent/);
     expect(params).toEqual([7, 42, 'Alice', '203.0.113.6', 'Mozilla/5.0']);
+  });
+});
+
+describe('account cosmetics', () => {
+  it('loads normalized account cosmetic unlocks', async () => {
+    dbMock.query.mockResolvedValueOnce({
+      rows: [{
+        cosmetics: {
+          completedQuestIds: ['q_aldrics_fallen_star', 4, 'q_aldrics_fallen_star'],
+          mechChromaIds: ['amber_crimson', null, 'onyx_gold'],
+        },
+      }],
+    } as any);
+
+    await expect(loadAccountCosmetics(7)).resolves.toEqual({
+      completedQuestIds: ['q_aldrics_fallen_star'],
+      mechChromaIds: ['amber_crimson', 'onyx_gold'],
+    });
+
+    expect(dbMock.query.mock.calls[0][0]).toContain('cosmetics');
+    expect(dbMock.query.mock.calls[0][1]).toEqual([7]);
+  });
+
+  it('persists account-wide quest completion without replacing existing cosmetic unlocks', async () => {
+    dbMock.query
+      .mockResolvedValueOnce({ rows: [{ cosmetics: { completedQuestIds: [], mechChromaIds: ['onyx_gold'] } }] } as any)
+      .mockResolvedValueOnce({ rows: [{ cosmetics: { completedQuestIds: ['q_aldrics_fallen_star'], mechChromaIds: ['onyx_gold'] } }] } as any);
+
+    await expect(markAccountQuestComplete(7, 'q_aldrics_fallen_star')).resolves.toEqual({
+      completedQuestIds: ['q_aldrics_fallen_star'],
+      mechChromaIds: ['onyx_gold'],
+    });
+
+    const [sql, params] = dbMock.query.mock.calls[1];
+    expect(sql).toMatch(/UPDATE accounts/);
+    expect(sql).toMatch(/cosmetics/);
+    expect(params[0]).toBe(7);
+    expect(params[1]).toEqual({ completedQuestIds: ['q_aldrics_fallen_star'], mechChromaIds: ['onyx_gold'] });
+  });
+
+  it('persists mech chroma unlocks without replacing account quest lockouts', async () => {
+    dbMock.query
+      .mockResolvedValueOnce({ rows: [{ cosmetics: { completedQuestIds: ['q_aldrics_fallen_star'], mechChromaIds: [] } }] } as any)
+      .mockResolvedValueOnce({ rows: [{ cosmetics: { completedQuestIds: ['q_aldrics_fallen_star'], mechChromaIds: ['amber_crimson'] } }] } as any);
+
+    await expect(grantAccountMechChroma(7, 'amber_crimson')).resolves.toEqual({
+      completedQuestIds: ['q_aldrics_fallen_star'],
+      mechChromaIds: ['amber_crimson'],
+    });
+  });
+
+  it('persists mech chroma removal without replacing account quest lockouts', async () => {
+    dbMock.query
+      .mockResolvedValueOnce({ rows: [{ cosmetics: { completedQuestIds: ['q_aldrics_fallen_star'], mechChromaIds: ['amber_crimson', 'onyx_gold'] } }] } as any)
+      .mockResolvedValueOnce({ rows: [{ cosmetics: { completedQuestIds: ['q_aldrics_fallen_star'], mechChromaIds: ['onyx_gold'] } }] } as any);
+
+    await expect(revokeAccountMechChroma(7, 'amber_crimson')).resolves.toEqual({
+      completedQuestIds: ['q_aldrics_fallen_star'],
+      mechChromaIds: ['onyx_gold'],
+    });
+
+    const [sql, params] = dbMock.query.mock.calls[1];
+    expect(sql).toMatch(/UPDATE accounts/);
+    expect(params[1]).toEqual({ completedQuestIds: ['q_aldrics_fallen_star'], mechChromaIds: ['onyx_gold'] });
   });
 });
 

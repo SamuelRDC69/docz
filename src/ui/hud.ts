@@ -1,8 +1,12 @@
 import type { ResolvedAbility } from '../sim/sim';
-import { OVERHEAD_EMOTES, isOverheadEmoteId, type FriendInfo, type IWorld, type LeaderboardEntry, type MarketInfo, type OverheadEmoteId } from '../world_api';
+import { OVERHEAD_EMOTES, isOverheadEmoteId, type ArenaFormat, type FriendInfo, type IWorld, type LeaderboardEntry, type MarketInfo, type OverheadEmoteId } from '../world_api';
 import { Renderer } from '../render/renderer';
+import { castBarState } from '../render/cast_bar';
 import { CharacterPreview } from '../render/characters';
+import { portraitChipHtml, hydratePortraits } from './portrait_chip';
+import { playerPortraitDataUrl, visualPortraitDataUrl, onPortraitsReady } from '../render/characters/portrait';
 import { skinCount } from '../render/characters/manifest';
+import { preloadMechAssets } from '../render/characters/assets';
 import { emoteIconUrl } from './emote_icons';
 import {
   ABILITIES, CLASSES, DUNGEON_LIST, DUNGEON_X_THRESHOLD, ITEMS, MOBS, NPCS, PROPS, QUESTS,
@@ -10,48 +14,128 @@ import {
   zoneWelcomeText,
 } from '../sim/data';
 import type { ZoneDef } from '../sim/data';
-import type { AbilityDef, EquipSlot, InvSlot, PetMode, PlayerClass, ResourceType, Stats } from '../sim/types';
+import type { AbilityDef, EquipSlot, InvSlot, LootRollChoice, PetMode, PlayerClass, ResourceType, SkinRank, Stats } from '../sim/types';
+import { EVENT_SKIN_TIERS, MECH_CHROMAS, SKIN_RANKS, skinRankOrder, type SkinTier } from '../sim/content/skins';
 import {
   AbilityEffect, CONSUME_DURATION, Entity, FISHING_CAST_ID, GCD, ItemDef, SimEvent,
   dist2d, xpForLevel, MAX_LEVEL, MELEE_RANGE, MILESTONES, virtualLevel, canPrestige, xpUntilNextPrestige,
+  isQuestTurnInNpc,
 } from '../sim/types';
 import { xpBarView, formatXp } from './xp_bar';
-import { terrainHeight, WATER_LEVEL, roadDistance, generateDecorations } from '../sim/world';
+import { questTrackerView, type QuestTrackerView, type TrackedQuest } from './quest_tracker';
+import { lowHealthVignette } from './low_health';
+import { absorbBarView } from './absorb_bar';
+import { itemStatDeltas } from './item_compare';
+import { buildStatTooltip, weaponDps, type StatId, type StatTooltipModel } from './stat_tooltip';
+import { statCellHtml, statTooltipHtml, type StatTooltipI18n } from './stat_tooltip_view';
+import { esc } from './esc';
+import { formatClockTime } from './clock';
+import { formatMinimapCoords } from './coords';
+import { compassView, type CardinalId } from './compass';
+import { clampMinimapZoom, nextMinimapZoom, isMinMinimapZoom, isMaxMinimapZoom, minimapZoomValue, MINIMAP_ZOOM_DEFAULT } from './minimap_zoom';
+import { getUiScale } from './ui_scale';
+import { restView } from './rest_indicator';
+import { nearestSubzone } from './subzone';
+import { lowResourceView } from './low_resource';
+import { activeCharacterAppearancePreview, characterAppearanceOptions } from './character_appearance';
+import { generateDecorations } from '../sim/world';
 import type { Decoration } from '../sim/world';
+import { paintTerrainRows, mapCanvasHeight, type MapRegion } from './map_terrain';
 import { Meters } from './meters';
+import { TutorialOverlay } from './tutorial';
 import { audio } from '../game/audio';
-import { music, musicZoneForLocation } from '../game/music';
-import { iconDataUrl, iconCanvas, QUALITY_COLOR, raidMarkerDataUrl, RAID_MARKER_NAMES } from './icons';
+import { sfx } from '../game/sfx';
+import { voice } from '../game/voice';
+import { music, musicZoneForLocation, shouldResetMusicForDungeonEntry } from '../game/music';
+import { iconDataUrl, QUALITY_COLOR, raidMarkerDataUrl, RAID_MARKER_NAMES } from './icons';
+import { UnitPortraitPainter } from './unit_portrait_painter';
+import { crestIdForEntity } from './unit_portrait';
 import { svgIcon } from './ui_icons';
+import { shouldPlayCombatImpactForTarget, shouldPlayCritSfxForTarget, shouldPlayMobVoiceSfxForEntity } from './combat_sfx';
+import { nextVoicedYell, voicedYellGain, type VoicedYellState } from './voice_events';
+import { walletDisplayAvailable, walletUiEnabled, wocBalance, wocBalanceVerified, verifiedWocBalance, onWalletUiChange } from './wallet_balance';
+import {
+  renderPlayerCardCanvas, cardCanvasToBlob, cardCanvasToUploadBlob, CARD_POSES,
+  type PlayerCardData, type PlayerCardStat,
+} from './player_card';
+import { cardHostingAvailable, publishCard, fetchReferralInfo, fetchStanding, type PublishedCard, type CharacterStanding } from './player_card_share';
+import { holderTierForBalance, holderTierByIndex, holderTierBadgeDataUrl, holderTierDisplayName } from './holder_tier';
 import { Keybinds, BIND_ACTIONS, BIND_CATEGORIES, isReservedCode, keyLabel } from '../game/keybinds';
-import { Settings, GameSettings, BoolSettingKey, NumericSettingKey, SETTING_RANGES, clickMoveButtonLabel, normalizeClickMoveButton } from '../game/settings';
-import { isPhoneTouchDevice } from '../game/mobile_controls';
+import { GAMEPAD_BUTTON_LABELS, GAMEPAD_NONE } from '../game/gamepad_map';
+import { Settings, GameSettings, BoolSettingKey, NumericSettingKey, SETTING_RANGES, normalizeClickMoveButton } from '../game/settings';
+import { PerfOverlaySettingsPanel, type PerfOverlayHooks, type PerfSettingsHost } from './perf_overlay_settings';
+import { useTouchInterface, isNativeAppShell } from '../game/mobile_controls';
 import { chatPlayerContextActions } from './player_context_menu';
+import {
+  MARKET_ARMOR_TYPE_FILTERS,
+  MARKET_ITEM_TYPE_FILTERS,
+  MARKET_PAGE_SIZE,
+  MARKET_RARITY_FILTERS,
+  MARKET_WEAPON_TYPE_FILTERS,
+  filterMarketListings,
+  paginateMarketListings,
+  type MarketItemTypeFilter,
+  type MarketRarityFilter,
+  type MarketSubtypeFilter,
+} from './market_filters';
+import {
+  CHAT_TAB_CHANNELS, CHANNEL_LABEL_KEYS, channelNeedsJoin, composeChatLine,
+  parseChatTabs, serializeChatTabs, isChatTabChannel,
+  type ChatTabChannel, type ChatTabId,
+} from './chat_channels';
 import { TouchPeekGuard, TOOLTIP_PEEK_MS } from './touch_peek';
 import { maskProfanity } from './profanity';
-import { formatMoney as formatLocalizedMoney, formatNumber, moneyParts, t, type TranslationKey } from './i18n';
+import { formatMoney as formatLocalizedMoney, formatNumber, getLanguage, isSupportedLanguage, moneyParts, supportedLanguages, t, tOptional, tPlural, type SupportedLanguage, type TranslationKey } from './i18n';
 import { tEntity } from './entity_i18n';
 import { localizeServerText, localizeZone } from './server_i18n';
 import { localizeSimText, localizeSimAuraName } from './sim_i18n';
 import { tTalent, localizeTalentTitle } from './talent_i18n';
+import { armorTypeForItem, weaponArchetypeForItem } from '../sim/equipment_rules';
+import { type ChatClock, clampChatClock, formatChatTimestamp } from './chat_timestamp';
+import { type ChatBoxGeometry, clampChatBox, serializeChatBox, parseChatBox } from './chat_window';
 import {
   talentsFor, computeTalentModifiers, validateAllocation, dormantNodes, pointsSpent,
   exportBuild, importBuild, cloneAllocation, talentPointsAtLevel, FIRST_TALENT_LEVEL,
   type TalentAllocation, type TalentNode, type SpecDef, type Role,
 } from '../sim/content/talents';
 import { talentChoiceIconDataUrl, talentNodeIconDataUrl } from './talent_icons';
+import { dropdownKeyNav } from './dropdown_nav';
+import { augmentCategory, type AugmentCategory } from '../sim/content/augments';
 import {
-  clearHotbarSlot, encodeHotbarAction, HOTBAR_ACTION_MIME, HotbarAction, parseHotbarAction, parseHotbarActions,
-  placeAbilityOnSlot, placeItemOnSlot, swapHotbarSlots, syncHotbarActions,
+  buildDefaultFormBar, classHasFormBars, clearHotbarSlot, encodeHotbarAction, HOTBAR_ACTION_MIME, HotbarAction,
+  parseHotbarAction, parseHotbarActions,
+  placeAbilityOnSlot, placeItemOnSlot, shouldSeedFormBar, swapHotbarSlots, syncHotbarActions,
 } from './hotbar';
 
 // hooks main wires after Input exists (the options menu drives input, audio,
-// graphics, and logout, all of which live outside the HUD)
+// graphics, and logout, all of which live outside the HUD). PerfOverlayHooks
+// (the customizable performance overlay's config seam) lives in
+// perf_overlay_settings.ts alongside the panel that consumes it.
 export interface OptionsHooks {
   logout(): void;
   captureKey(cb: (code: string | null) => void): void;
   settings: Settings;
   onSettingChange(key: keyof GameSettings, value: GameSettings[keyof GameSettings]): void;
+  // Switch the active locale at runtime (loads the locale chunk, relocalizes the page,
+  // fans out woc:languagechange). onStatus receives localized progress/error text for an
+  // aria-live element. Resolves false if the locale failed to load (active locale kept).
+  changeLanguage(lang: SupportedLanguage, onStatus?: (msg: string) => void): Promise<boolean>;
+  // Re-fetch the connected/linked wallet's $WOC balance (server cache-bypassed) so the
+  // bag footer and player card reflect on-chain token changes. No-op when the wallet
+  // feature is off or no wallet is connected/linked.
+  refreshWocBalance(): void;
+  perfOverlay: PerfOverlayHooks;
+  // Gamepad button-layout seam (the concrete GamepadBindings satisfies it
+  // structurally), so the Controller options panel can read & rebind buttons
+  // without the HUD importing the manager.
+  gamepad: GamepadBindingsHooks;
+}
+
+// Read/rebind the gamepad's button→action layout from the options panel.
+export interface GamepadBindingsHooks {
+  entries(): { button: number; action: string }[];
+  bind(button: number, action: string): void;
+  reset(): void;
 }
 
 export interface ReportHooks {
@@ -59,13 +143,35 @@ export interface ReportHooks {
   submitByName?(targetName: string, reason: string, details: string): Promise<void>;
 }
 
+export interface BugReportPayload {
+  description: string;
+  screenshot: string | null;
+  meta: unknown;
+}
+
+export interface BugReportHooks {
+  // Submit a captured bug report to the server. Resolves on success (screenshotStored
+  // is false when the server dropped the screenshot), rejects with a server error
+  // message the hud maps via localizeBugReportError.
+  submit(payload: BugReportPayload): Promise<{ screenshotStored: boolean }>;
+  // Grab a JPEG data URL of the current frame, or null if capture failed/unavailable.
+  capture(): string | null;
+  // Auto-collected context (build, userAgent, viewport, zone, level/class, camera).
+  collectMeta(): unknown;
+}
+
 const $ = <T extends HTMLElement = HTMLElement>(sel: string): T => document.querySelector(sel) as T;
-const esc = (value: unknown): string => String(value ?? '')
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;')
-  .replace(/'/g, '&#39;');
+const trackMetaPixel = (eventName: string, data?: Record<string, unknown>): void => {
+  const fbq = (window as Window & { fbq?: (...args: unknown[]) => void }).fbq;
+  if (typeof fbq !== 'function') return;
+  fbq('trackCustom', eventName, data ?? {});
+};
+// The HUD's i18n + number-formatting surface, handed to the pure stat-tooltip
+// view so it can render localized breakdowns without importing the i18n runtime.
+const STAT_VIEW_DEPS: StatTooltipI18n = {
+  t: (key, params) => t(key as TranslationKey, params),
+  fmt: (value, opts) => formatNumber(value, opts),
+};
 const castDisplayName = (id: string): string => {
   if (id === FISHING_CAST_ID) return t('abilityUi.cast.fishing');
   if (id === 'demon_heal') return t('abilityUi.cast.demonHeal');
@@ -80,6 +186,26 @@ const FAMILY_GLYPH: Record<string, string> = {
 const CLASS_GLYPH: Record<string, string> = {
   warrior: '⚔️', paladin: '🔨', hunter: '🏹', rogue: '🗡️', priest: '✝️',
   shaman: '🌩️', mage: '🔮', warlock: '🕯️', druid: '🐻',
+};
+// Language picker labels. Endonyms (each language's name in its own script) are NOT
+// translated — they render identically in every locale, matching the homepage footer
+// picker (index.html) and standard i18n practice. Keyed by SupportedLanguage; the picker
+// iterates `supportedLanguages`, so a new locale appears once its label is added here.
+const LANGUAGE_ENDONYMS: Record<SupportedLanguage, string> = {
+  en: 'English (US)',
+  es: 'Español (LatAm)',
+  es_ES: 'Español (España)',
+  fr_FR: 'Français (France)',
+  fr_CA: 'Français (Canada)',
+  en_CA: 'English (Canada)',
+  it_IT: 'Italiano',
+  de_DE: 'Deutsch',
+  zh_CN: '简体中文',
+  zh_TW: '繁體中文',
+  ko_KR: '한국어',
+  ja_JP: '日本語',
+  pt_BR: 'Português (Brasil)',
+  ru_RU: 'Русский',
 };
 const RESOURCE_LABEL_KEYS: Record<ResourceType, TranslationKey> = {
   mana: 'abilityUi.resources.mana',
@@ -113,8 +239,12 @@ const PET_MODE_DESC_KEYS: Record<PetMode, TranslationKey> = {
 type ItemQuality = NonNullable<ItemDef['quality']>;
 const ITEM_SLOT_LABEL_KEYS: Record<EquipSlot, TranslationKey> = {
   mainhand: 'itemUi.slots.mainhand',
+  helmet: 'itemUi.slots.helmet',
+  shoulder: 'itemUi.slots.shoulder',
   chest: 'itemUi.slots.chest',
+  waist: 'itemUi.slots.waist',
   legs: 'itemUi.slots.legs',
+  gloves: 'itemUi.slots.gloves',
   feet: 'itemUi.slots.feet',
 };
 const ITEM_QUALITY_LABEL_KEYS: Record<ItemQuality, TranslationKey> = {
@@ -123,6 +253,7 @@ const ITEM_QUALITY_LABEL_KEYS: Record<ItemQuality, TranslationKey> = {
   uncommon: 'itemUi.quality.uncommon',
   rare: 'itemUi.quality.rare',
   epic: 'itemUi.quality.epic',
+  legendary: 'itemUi.quality.legendary',
 };
 const ITEM_KIND_LABEL_KEYS: Record<ItemDef['kind'], TranslationKey> = {
   weapon: 'itemUi.kind.weapon',
@@ -133,6 +264,7 @@ const ITEM_KIND_LABEL_KEYS: Record<ItemDef['kind'], TranslationKey> = {
   drink: 'itemUi.kind.drink',
   tool: 'itemUi.kind.tool',
   potion: 'itemUi.kind.potion',
+  elixir: 'itemUi.kind.elixir',
 };
 const ITEM_STAT_LABEL_KEYS: Partial<Record<keyof Stats, TranslationKey>> = {
   armor: 'itemUi.stats.armor',
@@ -157,6 +289,14 @@ const DEFAULT_EMOTE_WHEEL: OverheadEmoteId[] = ['wave', 'laugh', 'question', 'ch
 // yards past a zone boundary before the crossing banner/welcome commits
 const ZONE_BANNER_DEADBAND = 5;
 const IGNORED_CHAT_NAMES_KEY = 'woc_ignored_chat_names';
+// WoW-style chat tabs: the ordered channel tabs the player has opened, and the
+// tab that was active last session. The built-in `all`/`combat` views are
+// implicit and never stored.
+const CHAT_TABS_KEY = 'woc_chat_tabs';
+const CHAT_ACTIVE_TAB_KEY = 'woc_chat_active_tab';
+// Persisted chat-window geometry (drag position + resize size). Desktop only —
+// the mobile layout owns its own placement and ignores this.
+const CHAT_GEOMETRY_KEY = 'woc_chat_geometry';
 const BIND_CATEGORY_LABEL_KEYS: Partial<Record<string, TranslationKey>> = {
   Movement: 'hud.keybinds.categories.movement',
   Targeting: 'hud.keybinds.categories.targeting',
@@ -173,6 +313,7 @@ const BIND_ACTION_LABEL_KEYS: Partial<Record<string, TranslationKey>> = {
   jump: 'hud.keybinds.actions.jump',
   autorun: 'hud.keybinds.actions.autorun',
   target: 'hud.keybinds.actions.target',
+  attackMove: 'hud.keybinds.actions.attackMove',
   interact: 'hud.keybinds.actions.interact',
   char: 'hud.keybinds.actions.char',
   spellbook: 'hud.keybinds.actions.spellbook',
@@ -184,6 +325,11 @@ const BIND_ACTION_LABEL_KEYS: Partial<Record<string, TranslationKey>> = {
   social: 'hud.keybinds.actions.social',
   arena: 'hud.keybinds.actions.arena',
   chat: 'hud.keybinds.actions.chat',
+  // Combat/social target + emote-wheel actions. English-only chrome keys (the
+  // `hud` catalog domain is tsc-locked to inline per-locale blocks).
+  emoteWheel: 'hudChrome.keybinds.emoteWheel',
+  targetFriendly: 'hudChrome.keybinds.targetFriendly',
+  targetFriendlyNext: 'hudChrome.keybinds.targetFriendlyNext',
   // Reuse the existing window/feature names so these labels localize everywhere
   // without duplicating strings (these two ids were previously absent from the
   // map and fell back to the raw English BIND_ACTIONS labels).
@@ -205,6 +351,15 @@ const CHAT_TEMPLATE_KEYS = {
   say: 'hud.chat.templates.say',
 } satisfies Record<string, TranslationKey>;
 type HotbarForm = 'normal' | 'bear' | 'cat' | 'stealth';
+type MobileHotbarDrag = {
+  pointerId: number;
+  sourceIndex: number;
+  startX: number;
+  startY: number;
+  active: boolean;
+  timer: number;
+  targetIndex: number | null;
+};
 
 // world map: terrain is pre-rendered for the whole zone at this resolution
 // (cached per zone) and a sub-rect is blitted for the current zoom.
@@ -212,20 +367,80 @@ const MAP_BG_RES = 480;
 const MAP_MAX_ZOOM = 6;
 const MAP_DETAIL_ZOOM = 2.2; // at/above this zoom, overlay buildings + vegetation
 
+// --- spatial sound-effect mapping (clips generated by scripts/gen_sfx.mjs;
+// engine in src/game/sfx.ts) ------------------------------------------------
+const SFX_MOB_FAMILIES = new Set(['beast', 'spider', 'murloc', 'kobold', 'humanoid', 'undead', 'troll', 'ogre', 'elemental', 'dragonkin', 'demon']);
+const SFX_CAST_SCHOOLS = new Set(['fire', 'frost', 'arcane', 'shadow', 'holy', 'nature']);
+// Combat/spell/creature SFX are trimmed this much under movement/ambience so the
+// soundscape doesn't get fatiguing in a long fight. One knob for the whole layer.
+const COMBAT_GAIN = 0.7;
+
+/** Creature-voice family for a mob templateId (boar split from beast), or null. */
+function mobVoiceFamily(templateId: string): string | null {
+  if (templateId === 'wild_boar' || templateId === 'elder_bristleback') return 'boar';
+  const fam = MOBS[templateId]?.family;
+  return fam && SFX_MOB_FAMILIES.has(fam) ? fam : null;
+}
+
+/** Sustained cast-loop clip for an ability's school, or null (physical/unknown). */
+function castKeyForAbility(ability: string): string | null {
+  const school = ABILITIES[ability]?.school;
+  return school && SFX_CAST_SCHOOLS.has(school) ? `cast_${school}` : null;
+}
+
+/** Physical-impact timbre by what's hit: bone (undead), metal (plate), leather
+ *  (other players), flesh (creatures). */
+function materialImpactKey(tgt: Entity): string {
+  if (tgt.kind === 'player') return (tgt.templateId === 'warrior' || tgt.templateId === 'paladin') ? 'impact_metal' : 'impact_leather';
+  if (tgt.kind === 'mob') return MOBS[tgt.templateId]?.family === 'undead' ? 'impact_bone' : 'impact_flesh';
+  return 'impact_flesh';
+}
+
+/** Melee/ranged swing clip by player class. */
+function weaponSwingKey(cls: string): string {
+  switch (cls) {
+    case 'rogue': case 'warlock': return 'melee_swing_light';
+    case 'hunter': return 'melee_bow';
+    case 'paladin': case 'mage': case 'priest': case 'druid': return 'melee_swing_heavy';
+    default: return 'melee_swing_blade'; // warrior, shaman
+  }
+}
+
+// Stable voice-clip key for a spoken yell line. MUST match the generator slug in
+// scripts/voices/extra_lines.mjs (yellKey) so encounter dialogue (e.g. the
+// Nythraxis raid) plays the right clip from the live chat event text.
+function yellVoiceKey(text: string): string {
+  return 'yell__' + text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60);
+}
+
 export class Hud {
   private static readonly BAR_ABILITY_SLOTS = 11; // bar slots 1..11; slot 0 is the fixed Attack toggle
+  private static ddSeq = 0; // monotonic id source for buildDropdown listbox/option ARIA wiring
+  private static readonly FORM_TOGGLE_IDS = new Set(['bear_form', 'cat_form', 'travel_form']); // shift toggles, castable in any form
   private abilityButtons: { btn: HTMLButtonElement; label: HTMLSpanElement; countEl: HTMLSpanElement; keybindEl: HTMLSpanElement; cdOverlay: HTMLDivElement; cdText: HTMLDivElement; lastIcon: string }[] = [];
   private hotbarActions: HotbarAction[] = []; // index = barSlot-1
   private loadedSlotMapFromStorage = false;
   private knownAbilityIdsAtLastSlotSync: Set<string> | null = null;
   private activeHotbarForm: HotbarForm = 'normal';
   private dragAction: { action: Exclude<HotbarAction, null>; sourceIndex: number | null } | null = null;
+  // Set while dragging an equipped piece out of the paperdoll onto the bags window.
+  private dragUnequipSlot: EquipSlot | null = null;
+  private mobileHotbarDrag: MobileHotbarDrag | null = null;
+  private suppressNextActionClick = false;
   private optionsHooks: OptionsHooks | null = null;
   private reportHooks: ReportHooks | null = null;
+  private bugReportHooks: BugReportHooks | null = null;
   // Soft swear terms from the server (online only), masked in chat when the
   // player's "Filter Profanity" setting is on. Fed by main.ts from ClientWorld.
   private profanityWords: string[] = [];
-  private optionsView: 'main' | 'keybinds' | 'graphics' | 'audio' = 'main';
+  private optionsView: 'main' | 'keybinds' | 'graphics' | 'audio' | 'interface' | 'performance' | 'controller' | 'bugreport' = 'main';
+  // The Options > Performance panel, lazily built and reused (it caches the live
+  // position-slider handles so a drag-to-move can update them in place).
+  private perfSettings: PerfOverlaySettingsPanel | null = null;
   private capturingKey: { action: string; index: number } | null = null; // binding awaiting a key
   private keybindNote = '';
   private emoteWheelOpen = false;
@@ -234,9 +449,20 @@ export class Hud {
   private emoteWheelEl: HTMLDivElement | null = null;
   private emoteWheelPinned = false;
   private chatLogEl = $('#chatlog');
+  private lastVoicedYell: VoicedYellState | null = null;
+  // Classic "Show Timestamps" interface option — off by default, persisted to
+  // localStorage. New chat lines get a bracketed wall-clock prefix when on.
+  private chatTimestamps = localStorage.getItem('chatTimestamps') === '1';
+  private chatClock: ChatClock = clampChatClock(localStorage.getItem('chatClock'));
   private combatLogEl = $('#combatlog');
+  // WoW-style chat tabs. `chatTabs` are the player-added channel tabs (the
+  // built-in `all`/`combat` views are implicit); `activeChatTab` is the one
+  // currently shown, and drives both the log filter and the send channel.
+  private chatTabs: ChatTabChannel[] = [];
+  private activeChatTab: ChatTabId = 'all';
   private errorEl = $('#error-msg');
   private bannerEl = $('#banner');
+  private subzoneEl = $('#subzone-banner');
   private tooltipEl = $('#tooltip');
   // Distinguishes a touch long-press "peek" (inspect, no action) from a tap.
   private peekGuard = new TouchPeekGuard();
@@ -261,24 +487,74 @@ export class Hud {
   private castbarEl = $('#castbar');
   private castbarFillEl = this.castbarEl.querySelector('.fill') as HTMLElement;
   private castbarLabelEl = this.castbarEl.querySelector('.label') as HTMLElement;
+  private castbarTimerEl = this.castbarEl.querySelector('.timer') as HTMLElement;
+  private targetCastbarEl = $('#tf-castbar');
+  private targetCastbarFillEl = this.targetCastbarEl.querySelector('.fill') as HTMLElement;
+  private targetCastbarLabelEl = this.targetCastbarEl.querySelector('.label') as HTMLElement;
+  private targetCastbarTimerEl = this.targetCastbarEl.querySelector('.timer') as HTMLElement;
   private actionbarEl = $('#actionbar');
   private xpFillEl = $('#xpbar .fill');
   private xpLabelEl = $('#xpbar .label');
   private deathOverlayEl = $('#death-overlay');
+  private releaseSpiritBtnEl = $('#release-btn');
   private hotWriteCache = new Map<HTMLElement, string>();
   private hotDomWrites = 0;
   private hotDomSkippedWrites = 0;
+  private subzoneTimer: number | undefined;
+  private lastSubzone: string | null = null;
+  private lastMusicDungeonId: string | null = null;
   private minimapCtx: CanvasRenderingContext2D;
   private minimapBg: HTMLCanvasElement;
-  private mapBg: HTMLCanvasElement | null = null;
+  private clockEl: HTMLElement | null = null;
+  private clock24 = false;          // 24-hour vs 12-hour AM/PM display
+  private lastClockText = '';       // avoid redundant DOM writes each frame
+  private lastCoordsText = ''; // cache so we only touch the DOM when coords change
+  // heading compass: a pool of rose-label spans built once, repositioned per frame
+  private compassMarks = new Map<string, HTMLElement>();
+  private compassHeadingEl: HTMLElement | null = null;
+  private lastCompassHeading = '';
+  // Minimap zoom: a multiplier on the minimap's base pixels-per-yard. Discrete
+  // presets (see minimap_zoom.ts), persisted to localStorage. 1 = shipped look.
+  private minimapZoom = MINIMAP_ZOOM_DEFAULT;
+  private minimapZoomLabel: HTMLElement | null = null;
+  // World-map terrain backgrounds, cached per zone. A background depends only on
+  // (seed, zone bounds), both fixed for the session, so it is immutable and
+  // cached forever; rendering one is ~200ms (230k terrainHeight/roadDistance
+  // samples), which is why it must never run on the open path (see mapPrewarm).
+  private mapBgCache = new Map<string, HTMLCanvasElement>();
+  // In-flight idle prewarm of one zone's background, painted a few rows per
+  // idle slice so it never blocks a frame. Committed to mapBgCache when done.
+  private mapPrewarm: {
+    zoneId: string;
+    canvas: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+    img: ImageData;
+    W: number;
+    H: number;
+    row: number;
+    region: MapRegion;
+  } | null = null;
+  private mapPrewarmHandle = 0;
+  // Which scheduler produced mapPrewarmHandle. requestIdleCallback and setTimeout
+  // hand out ids from separate pools, so the handle must be cancelled with the
+  // matching canceller; a clearTimeout on an idle id (or vice versa) could cancel
+  // an unrelated timer that happens to share the number.
+  private mapPrewarmVia: 'idle' | 'timeout' | null = null;
   private openLootMobId: number | null = null;
+  private activeLootRolls = new Map<number, { event: Extract<SimEvent, { type: 'lootRoll' }>; receivedAt: number; durationMs: number }>();
   private openVendorNpcId: number | null = null;
   private openGossipNpcId: number | null = null;
   private openQuestDetailId: string | null = null;
   private selectedQuestLogId: string | null = null;
   private questDialogReturnFocus: HTMLElement | null = null;
+  private questDialogOpenedAtMs = 0;
   private questLogReturnFocus: HTMLElement | null = null;
   private lastPortraitTarget = -999;
+  // swing timer: the period is captured from the reset edge (swingTimer jumping
+  // up), so the bar tracks real swing speed including haste / ranged weapons.
+  private swingPeriod = 0;
+  private lastSwingTimer = 0;
+  private lastLowResourceSig = '';
   // trading: locally staged offer, pushed to the server on change
   private stagedTrade: { items: InvSlot[]; copper: number } = { items: [], copper: 0 };
   private tradeWasOpen = false;
@@ -287,27 +563,56 @@ export class Hud {
   private lastArenaSig = '';
   private lastArenaStatusSig = '';
   private arenaMatchSeen = false; // closes the queue panel once a bout starts
+  private arenaBracket: ArenaFormat = '1v1';
+  // 2v2 Fiesta UI state (all transient)
+  private fiestaScoreSeen = { a: -1, b: -1 }; // last rendered tally (for score-ping)
+  private fiestaOfferKey = ''; // identity of the currently-shown augment offer
+  private fiestaActiveSeen = false; // were we in a fiesta bout last frame
+  private fiestaWasDown = false; // were we benched last frame (for the revive cue)
+  // Offline only: dev toggle that spins up a 2v2 Fiesta vs bots. Wired by main.ts
+  // (left null online, which hides the button).
+  private fiestaPracticeHook: (() => void) | null = null;
   // World Market (the Merchant's auction house)
   private marketOpen = false;
   private marketTab: 'browse' | 'sell' | 'collect' = 'browse';
+  private marketItemTypeFilter: MarketItemTypeFilter = 'all';
+  private marketSubtypeFilter: MarketSubtypeFilter = 'all';
+  private marketRarityFilter: MarketRarityFilter = 'all';
+  private marketBrowsePage = 0;
   private marketSellItem: string | null = null; // bag item staged for listing
+  private marketSearchQuery = ''; // active browse search term (sent to the server)
   private lastMarketSig = '';
   // all-time ladder, fetched best-effort from the server (online only)
-  private arenaAllTime: { name: string; class: string; level: number; rating: number; wins: number; losses: number }[] | null = null;
-  private arenaLbFetchedAt = 0;
+  private arenaAllTime: Partial<Record<ArenaFormat, { name: string; class: string; level: number; rating: number; wins: number; losses: number }[]>> = {};
+  private arenaLbFetchedAt: Partial<Record<ArenaFormat, number>> = {};
   private lastCombatEventAt = 0;
+  // mob ids that have already vocalized their aggro alert (so the first strike
+  // roars and subsequent strikes use the attack vocalization). Cleared on death
+  // or when the entity leaves interest (reconcileSfx).
+  private mobAggroed = new Set<number>();
+  // entity ids with a sustained cast-loop SFX playing, so reconcileSfx can stop
+  // loops for casters that left interest mid-channel (no castStop/death arrives).
+  private castLoopIds = new Set<number>();
+  private lastNythraxisCombatEventAt = 0;
+  private lastResting = false;
   private lastZoneId = '';
-  private mapZoneId = ''; // zone the cached map-window canvas was rendered for
   private mapZoom = 1; // world-map zoom: 1 = whole zone, up to MAP_MAX_ZOOM
   private mapCenter: { x: number; z: number } | null = null; // pan target; null = follow player
   private mapDrag: { px: number; py: number; cx: number; cz: number } | null = null;
   private mapView: { spanX: number; spanZ: number; minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
   private mapDecorations: Decoration[] | null = null; // cached trees/rocks (whole world)
   private windowDrag: { el: HTMLElement; pointerId: number; offsetX: number; offsetY: number } | null = null;
+  // Movable/resizable chat box: current geometry (null = stock CSS default) plus
+  // the in-progress pointer gesture, if any. See chat_window.ts for the math.
+  private chatBox: ChatBoxGeometry | null = null;
+  private chatBoxGesture:
+    | { kind: 'move'; pointerId: number; grabX: number; grabY: number }
+    | { kind: 'resize'; pointerId: number; startX: number; startY: number; startW: number; startH: number }
+    | null = null;
   private windowObserver: MutationObserver | null = null;
   private windowZ = 50;
   private ignoredChatNames = new Set<string>();
-  private socialTab: 'friends' | 'guild' | 'ignore' = 'friends';
+  private socialTab: 'friends' | 'guild' | 'ignore' | 'raid' = 'friends';
   // split signatures: structural changes (tab, guild membership) rebuild the
   // whole panel; content-only changes (a friend's presence) refresh just the
   // list, so an open typeahead / half-typed name survives a snapshot
@@ -320,11 +625,31 @@ export class Hud {
   private lastHudSlowAt = 0;
   private charPreview: CharacterPreview | null = null;
   private charPreviewCanvas: HTMLCanvasElement | null = null;
+  // Cosmetic skin-select event overlay (opened by the skinEvent cue). The shared
+  // CharacterPreview above is borrowed for the rotatable 3D preview.
+  private skinEventEl: HTMLElement | null = null;
+  private skinEventRank: SkinRank | null = null;
+  private skinEventTiers: readonly SkinTier[] = EVENT_SKIN_TIERS;
+  private skinEventSelected = -1;
+  private skinEventSelectedKey = '';
+  private skinEventRevealTimer: number | null = null;
+  private skinEventWheelAngle = 0;
+  // 'class' = per-class event skins; 'mech' = the Combat Mech chroma catalog.
+  private skinEventMode: 'class' | 'mech' = 'class';
+  // Pending lazy-load of the mech GLB + chromas; the reveal waits on it.
+  private mechAssetsPromise: Promise<void> | null = null;
+  private cardModalEl: HTMLElement | null = null;
+  private cardModalReturnFocus: HTMLElement | null = null;
+  // Set while the player-card modal is open: re-composites the card with the
+  // current pose so a $WOC balance change (the bag-footer path can't reach the
+  // card's canvas) is reflected. Cleared when the modal closes.
+  private recomposeOpenCard: (() => void) | null = null;
   // current typeahead state: which input, its results, and the keyboard-
   // highlighted row (-1 = none), so Enter/Arrow keys can pick a suggestion
   private socialSuggest: { field: string; items: { name: string; cls: string; level: number }[]; index: number } = { field: '', items: [], index: -1 };
 
   private meters: Meters;
+  private tutorial = new TutorialOverlay();
   private lastPetBarSig = '';
   private pendingPetFeed = false;
   private petModeMenuOpen = false;
@@ -335,7 +660,8 @@ export class Hud {
   constructor(private sim: IWorld, private renderer: Renderer, private keybinds: Keybinds) {
     this.ignoredChatNames = this.loadIgnoredChatNames();
     this.meters = new Meters(sim);
-    this.bindLogTabs();
+    this.initChatTabs();
+    this.initChatBoxGeometry();
     this.initWindowManagement();
     this.emoteWheelSlots = this.loadEmoteWheelSlots();
     this.loadSlotMap();
@@ -343,12 +669,24 @@ export class Hud {
     this.refreshKeybindLabels();
     this.buildXpTicks();
     document.addEventListener('woc:languagechange', () => this.refreshLocalizedDynamicUi());
+    // re-render the bag footer (and re-composite an open player card) when the
+    // connected wallet's $WOC balance changes
+    onWalletUiChange(() => {
+      if ($('#bags').style.display === 'block') this.renderBags();
+      this.recomposeOpenCard?.();
+    });
     $('#pf-name').textContent = sim.player.name;
-    this.drawPortrait($('#pf-portrait') as unknown as HTMLCanvasElement, `class_${sim.cfg.playerClass}`);
+    this.drawPlayerFramePortrait();
+    // Character GLBs preload after the HUD mounts; once the real 3D portraits are
+    // ready, upgrade the player frame and force the target frame to redraw.
+    onPortraitsReady(() => {
+      this.drawPlayerFramePortrait();
+      this.lastPortraitTarget = -999;
+    });
     const mm = $('#minimap') as unknown as HTMLCanvasElement;
     this.minimapCtx = mm.getContext('2d')!;
     this.minimapBg = this.renderTerrainCanvas(140, { minX: WORLD_MIN_X, maxX: WORLD_MAX_X, minZ: WORLD_MIN_Z, maxZ: WORLD_MAX_Z });
-    mm.style.cursor = 'pointer';
+    mm.style.cursor = 'var(--cursor-point)';
     mm.title = t('controls.worldMap');
     mm.addEventListener('click', () => this.toggleMap());
     window.addEventListener('pointermove', (ev) => {
@@ -363,7 +701,47 @@ export class Hud {
       if (target && (this.emoteWheelEl?.contains(target) || document.getElementById('mm-emote')?.contains(target) || document.getElementById('mobile-emote')?.contains(target))) return;
       this.hideEmoteWheel();
     });
-    $('#release-btn').addEventListener('click', () => { this.sim.releaseSpirit(); });
+    this.initCompass();
+    this.initMinimapZoom(mm);
+    this.releaseSpiritBtnEl.addEventListener('click', () => {
+      if (this.sim.arenaInfo?.match) return;
+      this.sim.releaseSpirit();
+    });
+    document.addEventListener('pointerdown', (ev) => {
+      const target = ev.target as Node | null;
+      if (!target) return;
+      const communityMenu = document.getElementById('community-menu') as HTMLDetailsElement | null;
+      if (document.body.classList.contains('mobile-touch') && communityMenu?.open && !communityMenu.contains(target)) {
+        communityMenu.open = false;
+      }
+      if (document.body.classList.contains('mobile-more-open')) {
+        const more = document.getElementById('mobile-more');
+        const extra = document.getElementById('mobile-extra-controls');
+        if (!more?.contains(target) && !extra?.contains(target)) {
+          document.body.classList.remove('mobile-more-open');
+          document.getElementById('mobile-controls')?.classList.remove('expanded');
+          more?.classList.remove('active');
+        }
+      }
+    });
+    document.getElementById('mobile-more-close')?.addEventListener('click', () => {
+      document.body.classList.remove('mobile-more-open');
+      document.getElementById('mobile-controls')?.classList.remove('expanded');
+      document.getElementById('mobile-more')?.classList.remove('active');
+    });
+    // classic-WoW minimap clock: real local time under the minimap; click it to
+    // flip between 12-hour (AM/PM) and 24-hour display. Real-time clocks are a
+    // UI-only concern, so `new Date()` here is fine (the sim-only time ban
+    // doesn't apply — cf. meters.ts using performance.now()).
+    this.clockEl = $('#minimap-clock');
+    this.clock24 = (() => { try { return localStorage.getItem('clock24h') === '1'; } catch { return false; } })();
+    this.clockEl?.addEventListener('click', () => {
+      this.clock24 = !this.clock24;
+      try { localStorage.setItem('clock24h', this.clock24 ? '1' : '0'); } catch { /* private mode */ }
+      this.lastClockText = ''; // force a redraw in the new format
+      this.updateClock();
+    });
+    this.updateClock();
     // classic MMOs: the player interaction menu opens from the target portrait
     $('#target-frame').addEventListener('contextmenu', (ev) => {
       ev.preventDefault();
@@ -380,10 +758,34 @@ export class Hud {
         this.openMarkerMenu(t.id, t.name, (ev as MouseEvent).clientX, (ev as MouseEvent).clientY);
       }
     });
+    $('#player-frame').addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      this.openSelfContextMenu((ev as MouseEvent).clientX, (ev as MouseEvent).clientY);
+    });
     $('#mm-char').addEventListener('click', () => this.toggleChar());
     $('#mm-spell').addEventListener('click', () => this.toggleSpellbook());
     $('#mm-talents')?.addEventListener('click', () => this.toggleTalents());
     $('#mm-quest').addEventListener('click', () => this.toggleQuestLog());
+    // Collapse/expand the on-screen quest tracker by clicking its header. The
+    // overlay is click-through (pointer-events:none) except the header button, so
+    // delegate on the stable container (the header is rebuilt on each render).
+    $('#quest-tracker').addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('.qt-header')) this.toggleQuestTrackerCollapsed();
+    });
+    // Keyboard activation: handle Enter/Space here and stop the event before it
+    // bubbles to the window-level game keybinds (Enter is bound to Open Chat,
+    // Space is preventDefault'd for jump), which would otherwise hijack the
+    // focused header button's native activation. The tracker is a non-modal
+    // overlay, so canUseGameKeys() stays true and those binds fire while it has
+    // focus; stopping propagation here keeps the toggle reachable by keyboard.
+    $('#quest-tracker').addEventListener('keydown', (e) => {
+      if (!(e.target as HTMLElement).closest('.qt-header')) return;
+      if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.toggleQuestTrackerCollapsed();
+      }
+    });
     $('#mm-map').addEventListener('click', () => this.toggleMap());
     $('#map-close').addEventListener('click', () => { $('#map-window').style.display = 'none'; });
     const mapCanvas = $('#map-canvas') as unknown as HTMLCanvasElement;
@@ -421,6 +823,29 @@ export class Hud {
     mapCanvas.addEventListener('pointerup', endDrag);
     mapCanvas.addEventListener('pointercancel', endDrag);
     $('#mm-bag').addEventListener('click', () => this.toggleBags());
+    // Drop an equipped piece dragged out of the paperdoll onto the bags window.
+    const bagsEl = $('#bags');
+    bagsEl.addEventListener('dragover', (e) => {
+      if (this.dragUnequipSlot === null) return;
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = 'move';
+      bagsEl.classList.add('drop-target');
+    });
+    bagsEl.addEventListener('dragleave', (e) => {
+      if (e.target === bagsEl) bagsEl.classList.remove('drop-target');
+    });
+    bagsEl.addEventListener('drop', (e) => {
+      if (this.dragUnequipSlot === null) return;
+      e.preventDefault();
+      const slot = this.dragUnequipSlot;
+      this.dragUnequipSlot = null;
+      bagsEl.classList.remove('drop-target');
+      this.sim.unequipItem(slot);
+      audio.click();
+      this.hideTooltip();
+      this.renderBags();
+      this.renderCharIfOpen();
+    });
     $('#mm-social').addEventListener('click', () => this.toggleSocial());
     $('#mm-options')?.addEventListener('click', () => this.toggleOptionsMenu());
     $('#mm-arena').addEventListener('click', () => this.toggleArena());
@@ -445,10 +870,11 @@ export class Hud {
     const startZone = zoneAt(sim.player.pos.z);
     const startZoneName = zoneDisplayName(startZone.id);
     this.lastZoneId = startZone.id;
+    this.prewarmMapBg(startZone.id); // render the spawn-zone map bg during idle, not on first open
     this.showBanner(startZoneName);
     this.log(t('hud.core.welcomeZone', { zone: startZoneName }), '#ffd100');
     this.logZoneWelcome(startZone);
-    this.log('Tip: type /join world or /join lfg to chat with players across the realm.', '#7fd4ff');
+    this.log(t('hudChrome.tips.joinChannels'), '#7fd4ff');
   }
 
   private setText(el: HTMLElement, text: string): void {
@@ -575,12 +1001,13 @@ export class Hud {
 
   private syncAnyWindowOpenState(): void {
     const anyOpen = [...document.querySelectorAll<HTMLElement>('.window.panel')]
+      .filter((win) => win.id !== 'mobile-extra-controls')
       .some((win) => this.isWindowVisible(win));
     document.body.classList.toggle('mobile-window-open', anyOpen);
   }
 
   private placeNewWindow(el: HTMLElement): void {
-    if (el.dataset.windowMoved === '1' || el.id === 'loot-window') return;
+    if (el.dataset.windowMoved === '1' || el.id === 'loot-window' || el.id === 'confirm-dialog') return;
     if (document.body.classList.contains('vendor-open') && (el.id === 'vendor-window' || el.id === 'bags')) return;
     const openCount = [...document.querySelectorAll<HTMLElement>('.window.panel')]
       .filter((win) => win !== el && this.isWindowVisible(win)).length;
@@ -617,15 +1044,40 @@ export class Hud {
 
   private setWindowPixelPosition(el: HTMLElement, left: number, top: number, rect = el.getBoundingClientRect()): void {
     const margin = 8;
-    const width = Math.min(rect.width, window.innerWidth - margin * 2);
-    const height = Math.min(rect.height, window.innerHeight - margin * 2);
-    const maxLeft = Math.max(margin, window.innerWidth - width - margin);
-    const maxTop = Math.max(margin, window.innerHeight - height - margin);
-    el.style.left = `${Math.max(margin, Math.min(maxLeft, left))}px`;
-    el.style.top = `${Math.max(margin, Math.min(maxTop, top))}px`;
+    // Callers pass coordinates in visual (zoomed) space: getBoundingClientRect()
+    // and pointer clientX/clientY are post-zoom, but style.left/top are author
+    // lengths the browser multiplies by #ui's `zoom`. Convert into author space
+    // (divide by the live UI scale) so the window lands where the pointer is, and
+    // clamp against the viewport expressed in that same author space. (Z=1 when
+    // uiScale is at its default, so this is a no-op for most players.)
+    const z = getUiScale();
+    const vw = window.innerWidth / z;
+    const vh = window.innerHeight / z;
+    const aLeft = left / z;
+    const aTop = top / z;
+    const width = Math.min(rect.width / z, vw - margin * 2);
+    const height = Math.min(rect.height / z, vh - margin * 2);
+    const maxLeft = Math.max(margin, vw - width - margin);
+    const maxTop = Math.max(margin, vh - height - margin);
+    el.style.left = `${Math.max(margin, Math.min(maxLeft, aLeft))}px`;
+    el.style.top = `${Math.max(margin, Math.min(maxTop, aTop))}px`;
     el.style.right = 'auto';
     el.style.bottom = 'auto';
     el.style.transform = 'none';
+  }
+
+  // Place a cursor-anchored popup (context menus, the loot window) at a viewport
+  // coordinate. x/y arrive in visual (zoomed / pointer-client) space; #ui is
+  // scaled by `zoom`, so convert into author space (÷ scale) and clamp against
+  // the viewport in that same space, keeping `reserveRight`/`reserveBottom`
+  // author px clear so the popup never spills off-screen. minTop pins it below
+  // the top edge. Z=1 (default uiScale) leaves the math identical to before.
+  private placePopupAt(el: HTMLElement, x: number, y: number, reserveRight: number, reserveBottom: number, minLeft = 0, minTop = 0): void {
+    const z = getUiScale();
+    const maxLeft = window.innerWidth / z - reserveRight;
+    const maxTop = window.innerHeight / z - reserveBottom;
+    el.style.left = `${Math.max(minLeft, Math.min(maxLeft, x / z))}px`;
+    el.style.top = `${Math.max(minTop, Math.min(maxTop, y / z))}px`;
   }
 
   private topmostOpenWindow(): HTMLElement | null {
@@ -646,6 +1098,10 @@ export class Hud {
       case 'vendor-window': this.closeVendor(); break;
       case 'loot-window': this.closeLoot(); break;
       case 'quest-dialog': this.closeQuestDialog(); break;
+      case 'bags':
+        if (this.vendorOpen && document.body.classList.contains('mobile-touch')) this.closeVendor();
+        else { el.style.display = 'none'; this.hideTooltip(); this.cancelPetFeed(); }
+        break;
       case 'talents-window': el.style.display = 'none'; this.talentStage = null; this.hideTooltip(); break;
       case 'emote-editor': this.closeEmoteEditor(); break;
       default: el.style.display = 'none'; this.hideTooltip(); break;
@@ -653,16 +1109,344 @@ export class Hud {
     this.syncAnyWindowOpenState();
   }
 
-  private bindLogTabs(): void {
-    const tabs = document.querySelectorAll<HTMLButtonElement>('.chat-tab');
-    tabs.forEach((tab) => {
-      tab.addEventListener('click', () => {
-        const which = tab.dataset.logTab;
-        tabs.forEach((t) => t.classList.toggle('active', t === tab));
-        $('#chatlog').classList.toggle('active', which === 'chat');
-        $('#combatlog').classList.toggle('active', which === 'combat');
-      });
+  // -------------------------------------------------------------------------
+  // Chat tabs (WoW-style): the built-in "Chat" (all) and "Combat Log" views,
+  // plus player-added per-channel tabs. The active tab drives BOTH the log
+  // filter (which messages show) and the send channel (what plain text targets),
+  // so a player can chat in World/LFG/Party/etc. without retyping the command.
+  // -------------------------------------------------------------------------
+
+  private initChatTabs(): void {
+    let savedTabs: string | null = null;
+    let savedActive: string | null = null;
+    try {
+      savedTabs = localStorage.getItem(CHAT_TABS_KEY);
+      savedActive = localStorage.getItem(CHAT_ACTIVE_TAB_KEY);
+    } catch { /* storage unavailable */ }
+    this.chatTabs = parseChatTabs(savedTabs);
+    this.activeChatTab = (savedActive === 'all' || savedActive === 'combat'
+      || (isChatTabChannel(savedActive) && this.chatTabs.includes(savedActive)))
+      ? (savedActive as ChatTabId) : 'all';
+    // re-join any opt-in global channels whose tabs were restored, so messages
+    // typed there are delivered this session too
+    for (const ch of this.chatTabs) if (channelNeedsJoin(ch)) this.sim.chat(`/join ${ch}`);
+    this.renderChatTabs();
+    this.selectChatTab(this.activeChatTab, false);
+  }
+
+  private persistChatTabs(): void {
+    try {
+      localStorage.setItem(CHAT_TABS_KEY, serializeChatTabs(this.chatTabs));
+      localStorage.setItem(CHAT_ACTIVE_TAB_KEY, this.activeChatTab);
+    } catch { /* storage unavailable */ }
+  }
+
+  // -------------------------------------------------------------------------
+  // Movable / resizable chat window (desktop only). The pure geometry math
+  // (clamping, (de)serialization) lives in chat_window.ts; this section is just
+  // the DOM wiring: a drag handle on the tab strip, a corner resize grip, and
+  // localStorage persistence with a reset path back to the CSS default.
+  // -------------------------------------------------------------------------
+
+  private isMobileLayout(): boolean {
+    return document.body.classList.contains('mobile-touch');
+  }
+
+  private initChatBoxGeometry(): void {
+    const wrap = document.getElementById('chatlog-wrap');
+    const tabs = document.getElementById('chatlog-tabs');
+    const frame = document.getElementById('chatlog-frame');
+    if (!wrap || !tabs || !frame) return;
+
+    // Resize grip pinned to the frame's bottom-right corner.
+    const grip = document.createElement('div');
+    grip.className = 'chat-resize-grip';
+    grip.title = t('hudChrome.chatWindow.resize');
+    grip.setAttribute('aria-hidden', 'true');
+    frame.appendChild(grip);
+
+    tabs.style.touchAction = 'none';
+    tabs.setAttribute('aria-label', t('hudChrome.chatWindow.move'));
+    tabs.addEventListener('pointerdown', (ev) => this.onChatBoxMoveStart(ev, wrap, tabs));
+    grip.addEventListener('pointerdown', (ev) => this.onChatBoxResizeStart(ev, wrap, frame));
+    document.addEventListener('pointermove', (ev) => this.onChatBoxPointerMove(ev));
+    const end = (ev: PointerEvent) => this.onChatBoxPointerEnd(ev);
+    document.addEventListener('pointerup', end);
+    document.addEventListener('pointercancel', end);
+    // Re-clamp into view when the viewport changes (mirrors the .window.panel logic).
+    window.addEventListener('resize', () => { if (this.chatBox) this.applyChatBoxGeometry(); });
+
+    let saved: string | null = null;
+    try { saved = localStorage.getItem(CHAT_GEOMETRY_KEY); } catch { /* storage unavailable */ }
+    this.chatBox = parseChatBox(saved);
+    if (this.chatBox) this.applyChatBoxGeometry();
+  }
+
+  // Seed this.chatBox from the live layout the first time a gesture starts, so a
+  // box still on its CSS default converts cleanly to explicit px coordinates.
+  private ensureChatBoxGeometry(wrap: HTMLElement, tabs: HTMLElement): void {
+    if (this.chatBox) return;
+    const wrapRect = wrap.getBoundingClientRect();
+    const frameRect = document.getElementById('chatlog-frame')?.getBoundingClientRect();
+    const chromeH = tabs.getBoundingClientRect().height;
+    this.chatBox = {
+      left: wrapRect.left,
+      top: wrapRect.top,
+      width: wrapRect.width,
+      height: frameRect ? frameRect.height : Math.max(0, wrapRect.height - chromeH),
+    };
+  }
+
+  private onChatBoxMoveStart(ev: PointerEvent, wrap: HTMLElement, tabs: HTMLElement): void {
+    if (ev.button !== 0 || this.isMobileLayout()) return;
+    const target = ev.target as HTMLElement | null;
+    // Tab buttons (select / add / close) keep their own click behaviour; only the
+    // empty strip area initiates a move.
+    if (!target || target.closest('button')) return;
+    ev.preventDefault();
+    this.ensureChatBoxGeometry(wrap, tabs);
+    const rect = wrap.getBoundingClientRect();
+    this.chatBoxGesture = { kind: 'move', pointerId: ev.pointerId, grabX: ev.clientX - rect.left, grabY: ev.clientY - rect.top };
+    document.body.classList.add('chat-box-dragging');
+    try { tabs.setPointerCapture?.(ev.pointerId); } catch { /* synthetic pointer */ }
+  }
+
+  private onChatBoxResizeStart(ev: PointerEvent, wrap: HTMLElement, frame: HTMLElement): void {
+    if (ev.button !== 0 || this.isMobileLayout()) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const tabs = document.getElementById('chatlog-tabs');
+    if (tabs) this.ensureChatBoxGeometry(wrap, tabs);
+    if (!this.chatBox) return;
+    this.chatBoxGesture = {
+      kind: 'resize', pointerId: ev.pointerId,
+      startX: ev.clientX, startY: ev.clientY,
+      startW: this.chatBox.width, startH: this.chatBox.height,
+    };
+    document.body.classList.add('chat-box-dragging');
+    try { frame.setPointerCapture?.(ev.pointerId); } catch { /* synthetic pointer */ }
+  }
+
+  private onChatBoxPointerMove(ev: PointerEvent): void {
+    const g = this.chatBoxGesture;
+    if (!g || g.pointerId !== ev.pointerId || !this.chatBox) return;
+    ev.preventDefault();
+    if (g.kind === 'move') {
+      this.chatBox = { ...this.chatBox, left: ev.clientX - g.grabX, top: ev.clientY - g.grabY };
+    } else {
+      this.chatBox = { ...this.chatBox, width: g.startW + (ev.clientX - g.startX), height: g.startH + (ev.clientY - g.startY) };
+    }
+    this.applyChatBoxGeometry();
+  }
+
+  private onChatBoxPointerEnd(ev: PointerEvent): void {
+    const g = this.chatBoxGesture;
+    if (!g || g.pointerId !== ev.pointerId) return;
+    this.chatBoxGesture = null;
+    document.body.classList.remove('chat-box-dragging');
+    this.persistChatBoxGeometry();
+  }
+
+  private applyChatBoxGeometry(): void {
+    if (!this.chatBox || this.isMobileLayout()) return;
+    const wrap = document.getElementById('chatlog-wrap');
+    const tabs = document.getElementById('chatlog-tabs');
+    const frame = document.getElementById('chatlog-frame');
+    if (!wrap || !tabs || !frame) return;
+    const chromeH = tabs.getBoundingClientRect().height || 22;
+    const clamped = clampChatBox(this.chatBox, { w: window.innerWidth, h: window.innerHeight }, chromeH);
+    this.chatBox = clamped;
+    wrap.style.left = `${clamped.left}px`;
+    wrap.style.top = `${clamped.top}px`;
+    wrap.style.right = 'auto';
+    wrap.style.bottom = 'auto';
+    wrap.style.width = `${clamped.width}px`;
+    frame.style.height = `${clamped.height}px`;
+    // Keep the (separately positioned) chat input bar aligned above the box.
+    const input = document.getElementById('chat-input');
+    if (input) {
+      input.style.left = `${clamped.left}px`;
+      input.style.width = `${clamped.width}px`;
+      input.style.bottom = `${Math.max(0, window.innerHeight - clamped.top + 4)}px`;
+    }
+  }
+
+  private persistChatBoxGeometry(): void {
+    if (!this.chatBox) return;
+    try { localStorage.setItem(CHAT_GEOMETRY_KEY, serializeChatBox(this.chatBox)); } catch { /* storage unavailable */ }
+  }
+
+  // Public: snap the chat window back to its stock CSS position/size and forget
+  // the saved geometry. Wired to the "Reset Chat Window" interface option.
+  resetChatWindow(): void {
+    this.chatBox = null;
+    try { localStorage.removeItem(CHAT_GEOMETRY_KEY); } catch { /* storage unavailable */ }
+    const ids = ['chatlog-wrap', 'chatlog-frame', 'chat-input'];
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      for (const prop of ['left', 'top', 'right', 'bottom', 'width', 'height']) el.style.removeProperty(prop);
+    }
+  }
+
+  private renderChatTabs(): void {
+    const bar = $('#chatlog-tabs');
+    bar.innerHTML = '';
+    bar.setAttribute('role', 'tablist');
+    const makeTab = (id: ChatTabId, label: string): HTMLButtonElement => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chat-tab';
+      btn.dataset.tab = id;
+      btn.setAttribute('role', 'tab');
+      btn.textContent = label;
+      btn.addEventListener('click', () => this.selectChatTab(id, true));
+      return btn;
+    };
+    bar.append(makeTab('all', t('hud.core.chatTab')), makeTab('combat', t('hud.core.combatLogTab')));
+    for (const ch of this.chatTabs) {
+      const label = t(CHANNEL_LABEL_KEYS[ch]);
+      const btn = makeTab(ch, label);
+      btn.title = t('hud.core.chatChannels.close', { channel: label });
+      // right-click / long-press a channel tab to close it (the + menu also toggles)
+      btn.addEventListener('contextmenu', (ev) => { ev.preventDefault(); this.removeChatTab(ch); });
+      bar.append(btn);
+    }
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'chat-tab chat-tab-add';
+    add.textContent = '+';
+    add.setAttribute('aria-label', t('hud.core.chatChannels.add'));
+    add.title = t('hud.core.chatChannels.add');
+    add.addEventListener('click', () => {
+      const r = add.getBoundingClientRect();
+      this.openChatChannelMenu(r.left, r.bottom);
     });
+    bar.append(add);
+    this.updateActiveTabStyles();
+  }
+
+  private updateActiveTabStyles(): void {
+    $('#chatlog-tabs').querySelectorAll<HTMLButtonElement>('.chat-tab').forEach((btn) => {
+      if (btn.classList.contains('chat-tab-add')) return;
+      const active = btn.dataset.tab === this.activeChatTab;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+      btn.tabIndex = active ? 0 : -1;
+    });
+  }
+
+  private selectChatTab(tab: ChatTabId, persist = true): void {
+    this.activeChatTab = tab;
+    const showCombat = tab === 'combat';
+    this.chatLogEl.classList.toggle('active', !showCombat);
+    this.combatLogEl.classList.toggle('active', showCombat);
+    if (!showCombat) this.applyChatFilter();
+    this.updateActiveTabStyles();
+    if (persist) this.persistChatTabs();
+    this.syncChatPlaceholder();
+  }
+
+  // Add a channel tab if not already present. Does NOT switch the active send
+  // channel — the player stays on their current tab (All/Say is the catch-all
+  // home that shows every channel and sends Say), so opening a channel never
+  // hijacks where typed text goes. `join` auto-joins opt-in global channels;
+  // skip it when the caller already sent the /join (e.g. a typed command).
+  // `select` focuses the new tab — reserved for a deliberate tab click.
+  private addChatTab(channel: ChatTabChannel, opts: { join?: boolean; select?: boolean } = {}): void {
+    const { join = true, select = false } = opts;
+    if (!this.chatTabs.includes(channel)) {
+      this.chatTabs.push(channel);
+      if (join && channelNeedsJoin(channel)) this.sim.chat(`/join ${channel}`);
+      this.renderChatTabs();
+      this.persistChatTabs();
+    }
+    if (select) this.selectChatTab(channel, true);
+  }
+
+  // Mirror a typed "/join|/leave <world|lfg>" into the tab bar so the command
+  // line and the "+" menu stay in sync: /join opens the channel's tab and
+  // /leave closes it. We never re-issue the command — main.ts already sent it,
+  // and creating the tab leaves the active send channel untouched.
+  syncChatTabsForInput(typed: string): void {
+    const m = /^\/(join|leave)\b\s*(\S*)/i.exec(typed.trim());
+    if (!m) return;
+    const channel = m[2].toLowerCase();
+    if (!isChatTabChannel(channel) || !channelNeedsJoin(channel)) return;
+    if (m[1].toLowerCase() === 'join') this.addChatTab(channel, { join: false });
+    else if (this.chatTabs.includes(channel)) this.removeChatTab(channel);
+  }
+
+  private removeChatTab(channel: ChatTabChannel): void {
+    const i = this.chatTabs.indexOf(channel);
+    if (i < 0) return;
+    this.chatTabs.splice(i, 1);
+    // closing a tab does not /leave the channel (you stay subscribed, as in WoW)
+    if (this.activeChatTab === channel) this.activeChatTab = 'all';
+    this.renderChatTabs();
+    this.selectChatTab(this.activeChatTab, true);
+  }
+
+  // The "+" menu: a toggle list of every bindable channel. Open channels show a
+  // check and toggle off; the rest add a tab. Reuses the shared #ctx-menu, so
+  // it inherits its outside-click / Escape close behaviour.
+  private openChatChannelMenu(x: number, y: number): void {
+    const el = $('#ctx-menu');
+    let html = `<div class="ctx-title">${esc(t('hud.core.chatChannels.addTitle'))}</div>`;
+    for (const ch of CHAT_TAB_CHANNELS) {
+      const open = this.chatTabs.includes(ch);
+      html += `<div class="ctx-item" data-act="${ch}">${esc(t(CHANNEL_LABEL_KEYS[ch]))}${open ? ' ✓' : ''}</div>`;
+    }
+    html += `<div class="ctx-item" data-act="close">${esc(t('hud.chat.context.cancel'))}</div>`;
+    el.innerHTML = html;
+    this.placePopupAt(el, x, y, 170, 320, 0, 8);
+    el.style.display = 'block';
+    this.bindContextMenuActions((act) => {
+      if (!isChatTabChannel(act)) return;
+      if (this.chatTabs.includes(act)) this.removeChatTab(act);
+      else this.addChatTab(act);
+    });
+  }
+
+  // null when the all/combat views are active (no filter, no send prefix);
+  // otherwise the channel the active tab is bound to.
+  private chatFilterChannel(): ChatTabChannel | null {
+    return (this.activeChatTab === 'all' || this.activeChatTab === 'combat') ? null : this.activeChatTab;
+  }
+
+  private applyChatFilter(): void {
+    const filter = this.chatFilterChannel();
+    for (const child of Array.from(this.chatLogEl.children)) {
+      const chan = (child as HTMLElement).dataset.chan;
+      (child as HTMLElement).classList.toggle('chat-hidden', filter !== null && chan !== filter);
+    }
+    this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
+  }
+
+  private hideIfFiltered(div: HTMLElement, chan: string): void {
+    const filter = this.chatFilterChannel();
+    if (filter !== null && chan !== filter) div.classList.add('chat-hidden');
+  }
+
+  private syncChatPlaceholder(): void {
+    const input = document.getElementById('chat-input') as HTMLInputElement | null;
+    if (input) input.placeholder = this.activeChatPlaceholder();
+  }
+
+  // The line actually sent for what the player typed, honoring the active
+  // channel tab. main.ts calls this on Enter so a channel tab works without
+  // retyping the slash command; an explicit "/..." the player typed still wins.
+  composeChatSend(typed: string): string {
+    const ch = this.chatFilterChannel();
+    return ch ? composeChatLine(ch, typed) : typed.trim();
+  }
+
+  // Placeholder for the chat input reflecting the active channel tab.
+  activeChatPlaceholder(): string {
+    const ch = this.chatFilterChannel();
+    return ch
+      ? t('hud.core.chatChannels.sendingTo', { channel: t(CHANNEL_LABEL_KEYS[ch]) })
+      : t('hud.core.chatPlaceholder');
   }
 
   // -------------------------------------------------------------------------
@@ -703,7 +1487,7 @@ export class Hud {
   }
 
   private emoteLabel(id: OverheadEmoteId): string {
-    return OVERHEAD_EMOTES.find((e) => e.id === id)?.label ?? id;
+    return t(`hudChrome.emotes.${id}` as TranslationKey);
   }
 
   private emoteWheelKeyLabel(): string {
@@ -761,7 +1545,7 @@ export class Hud {
       this.emoteWheelEl = el;
     }
     const slots = this.emoteWheelSlots.filter(isOverheadEmoteId).slice(0, EMOTE_WHEEL_LIMIT);
-    el.innerHTML = `<div class="emote-wheel-ring"></div><button class="emote-wheel-edit" data-edit>Edit</button>`;
+    el.innerHTML = `<div class="emote-wheel-ring"></div><button class="emote-wheel-edit" data-edit>${esc(t('hudChrome.emoteWheel.edit'))}</button>`;
     slots.forEach((id, i) => {
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -841,7 +1625,7 @@ export class Hud {
 
   private renderEmoteEditor(): void {
     const el = $('#emote-editor');
-    el.innerHTML = `<div class="panel-title"><span>Emotes</span><span class="x-btn" data-close>${svgIcon('close')}</span></div>`;
+    el.innerHTML = `<div class="panel-title"><span>${esc(t('hudChrome.emoteEditor.title'))}</span><span class="x-btn" data-close>${svgIcon('close')}</span></div>`;
     const count = document.createElement('div');
     count.className = 'emote-editor-count';
     const grid = document.createElement('div');
@@ -867,7 +1651,7 @@ export class Hud {
       icon.src = emoteIconUrl(def.id);
       icon.alt = '';
       const label = document.createElement('span');
-      label.textContent = def.label;
+      label.textContent = this.emoteLabel(def.id);
       btn.append(icon, label);
       btn.addEventListener('click', () => {
         audio.click();
@@ -886,7 +1670,7 @@ export class Hud {
     footer.className = 'emote-editor-footer';
     const done = document.createElement('button');
     done.className = 'btn';
-    done.textContent = 'Done';
+    done.textContent = t('hudChrome.emoteEditor.done');
     done.addEventListener('click', () => this.closeEmoteEditor());
     footer.append(count, done);
     el.append(grid, footer);
@@ -897,13 +1681,17 @@ export class Hud {
   // Portraits, icons, tooltips, money
   // -------------------------------------------------------------------------
 
-  // Portrait = the procedural crest for a class (`class_<id>`), mob family
-  // (`family_<id>`) or status (`status_npc`), painted by icons.ts and blitted in.
-  private drawPortrait(canvas: HTMLCanvasElement, crestId: string): void {
-    const ctx = canvas.getContext('2d')!;
-    const s = canvas.width;
-    ctx.clearRect(0, 0, s, s);
-    ctx.drawImage(iconCanvas('crest', crestId, s), 0, 0, s, s);
+  // Player- and target-frame circular portraits. The DPI-aware backing store +
+  // crest overscan live in UnitPortraitPainter (unit_portrait_painter.ts); the
+  // HUD just routes the framed unit (class headshot vs mob/NPC crest) to it.
+  private readonly portraits = new UnitPortraitPainter();
+
+  private drawPlayerFramePortrait(): void {
+    this.portraits.drawClass(
+      $('#pf-portrait') as unknown as HTMLCanvasElement,
+      this.sim.cfg.playerClass,
+      this.sim.player.skin ?? 0,
+    );
   }
 
   private itemIcon(item: ItemDef): string {
@@ -922,6 +1710,21 @@ export class Hud {
     return `<span class="money-inline" aria-label="${esc(formatLocalizedMoney(copper, 'long'))}">${html}</span>`;
   }
 
+  // The connected wallet's $WOC balance, shown left of the coins in the bag.
+  // Unlinked balances are a local preview; verified balances belong to the
+  // account-linked wallet and may drive public holder claims elsewhere.
+  private wocBalanceHtml(): string {
+    if (!walletUiEnabled()) return '';
+    const bal = wocBalance();
+    if (bal === null) return '';
+    const amount = formatNumber(bal, { maximumFractionDigits: 2 });
+    const balance = t('wallet.balanceAmount', { amount });
+    const verified = wocBalanceVerified();
+    const title = verified ? t('wallet.balanceTitle') : t('wallet.balancePreviewTitle');
+    const aria = verified ? t('wallet.balanceAria', { balance }) : t('wallet.balancePreviewAria', { balance });
+    return `<span class="woc-balance ${verified ? 'is-verified' : 'is-preview'}" title="${esc(title)}" aria-label="${esc(aria)}"><span class="woc-coin" aria-hidden="true"></span>${esc(balance)}</span>`;
+  }
+
   attachTooltip(el: HTMLElement, html: () => string): void {
     let touchTimer: number | undefined;
     const mobile = () => document.body.classList.contains('mobile-touch');
@@ -930,14 +1733,19 @@ export class Hud {
       touchTimer = undefined;
     };
     const showAt = (x: number, y: number, trigger: 'touch' | 'mouse' | 'focus') => {
+      if (this.mobileHotbarDrag?.active) return;
       // Touch-only path: showing the tooltip means the held control is being
       // inspected, so the release click should peek, not fire its action.
       this.peekGuard.tooltipShown(trigger);
       this.tooltipEl.innerHTML = html();
       this.tooltipEl.style.display = 'block';
+      // offsetWidth/Height are author-space (zoom-immune) layout sizes, but x/y
+      // arrive in visual (zoomed) space, so map x/y into author space (÷ scale)
+      // before clamping against the author-space tooltip box + viewport.
+      const z = getUiScale();
       const tw = this.tooltipEl.offsetWidth, th = this.tooltipEl.offsetHeight;
-      this.tooltipEl.style.left = `${Math.max(8, Math.min(window.innerWidth - tw - 8, x + 14))}px`;
-      this.tooltipEl.style.top = `${Math.max(8, y - th - 10)}px`;
+      this.tooltipEl.style.left = `${Math.max(8, Math.min(window.innerWidth / z - tw - 8, x / z + 14))}px`;
+      this.tooltipEl.style.top = `${Math.max(8, y / z - th - 10)}px`;
     };
     const showNearElement = () => {
       const rect = el.getBoundingClientRect();
@@ -950,9 +1758,10 @@ export class Hud {
     });
     el.addEventListener('mousemove', (e) => {
       if (mobile()) return;
+      const z = getUiScale();
       const tw = this.tooltipEl.offsetWidth, th = this.tooltipEl.offsetHeight;
-      this.tooltipEl.style.left = `${Math.min(window.innerWidth - tw - 8, e.clientX + 14)}px`;
-      this.tooltipEl.style.top = `${Math.max(8, e.clientY - th - 10)}px`;
+      this.tooltipEl.style.left = `${Math.min(window.innerWidth / z - tw - 8, e.clientX / z + 14)}px`;
+      this.tooltipEl.style.top = `${Math.max(8, e.clientY / z - th - 10)}px`;
     });
     el.addEventListener('mouseleave', () => { clearTouchTimer(); this.tooltipEl.style.display = 'none'; });
     el.addEventListener('focusin', showNearElement);
@@ -974,7 +1783,7 @@ export class Hud {
     this.tooltipEl.style.display = 'none';
   }
 
-  private itemTooltip(item: ItemDef): string {
+  private itemTooltip(item: ItemDef, compare = true): string {
     const qColor = QUALITY_COLOR[item.quality ?? 'common'] ?? '#fff';
     let html = `<div class="tt-title" style="color:${qColor}">${esc(itemDisplayName(item))}</div>`;
     html += `<div class="tt-sub">${esc(t('itemUi.tooltip.qualityKind', {
@@ -1013,11 +1822,57 @@ export class Hud {
     if (item.potionHp) html += `<div class="tt-desc">${esc(t('itemUi.tooltip.useHealingPotion', { amount: itemNumber(item.potionHp) }))}</div>`;
     if (item.potionMana) html += `<div class="tt-desc">${esc(t('itemUi.tooltip.useManaPotion', { amount: itemNumber(item.potionMana) }))}</div>`;
     if (item.kind === 'quest') html += `<div class="tt-desc">${esc(t('itemUi.tooltip.questItem'))}</div>`;
-    if (item.requiredClass) {
+    if (item.requiredClass && !armorTypeForItem(item) && !weaponArchetypeForItem(item)) {
       html += `<div class="tt-sub">${esc(t('itemUi.tooltip.classes', { classes: item.requiredClass.map(classDisplayName).join(', ') }))}</div>`;
     }
     if (item.sellValue > 0) html += `<div class="tt-sub">${esc(t('itemUi.tooltip.sellPrice', { money: formatLocalizedMoney(item.sellValue) }))}</div>`;
+    if (compare) html += this.itemCompareBlock(item);
     return html;
+  }
+
+  // Classic-WoW item comparison: when hovering an equippable item, append the
+  // item currently worn in that slot plus the stat change you'd see if you
+  // swapped to it (green = gain, red = loss). Reads IWorld.equipment, so it
+  // works identically offline and online.
+  private itemCompareBlock(item: ItemDef): string {
+    if (!item.slot) return '';
+    const equippedId = this.sim.equipment[item.slot];
+    if (!equippedId || equippedId === item.id) return '';
+    const equipped = ITEMS[equippedId];
+    if (!equipped) return '';
+    const deltas = itemStatDeltas(item, equipped)
+      .map((d) => {
+        const cls = d.delta > 0 ? 'tt-green' : 'tt-red';
+        const sign = d.delta > 0 ? '+' : '−'; // proper minus sign
+        const magnitude = formatNumber(Math.abs(d.delta), { minimumFractionDigits: d.decimals, maximumFractionDigits: d.decimals });
+        return `<div class="${cls}">${sign}${magnitude} ${esc(t(`itemUi.stats.${d.stat}` as TranslationKey))}</div>`;
+      })
+      .join('');
+    let html = `<div class="tt-cmp"><div class="tt-cmp-head">${esc(t('itemUi.tooltip.currentlyEquipped'))}</div>`;
+    html += `<div class="tt-cmp-body">${this.itemTooltip(equipped, false)}</div>`;
+    if (deltas) html += `<div class="tt-cmp-head">${esc(t('itemUi.tooltip.ifYouEquip'))}</div>${deltas}`;
+    html += `</div>`;
+    return html;
+  }
+
+  // Build the pure stat-breakdown model for the currently-shown player, the bridge
+  // from the live sim to the host-agnostic stat_tooltip core. The HTML + aria
+  // rendering lives in the unit-tested stat_tooltip_view module; this only feeds
+  // it the current numbers, so the visual tooltip and the screen-reader text read
+  // identical, live values.
+  private statModel(stat: StatId): StatTooltipModel {
+    const sim = this.sim;
+    const p = sim.player;
+    const wpn = sim.equipment.mainhand ? ITEMS[sim.equipment.mainhand] : null;
+    return buildStatTooltip(stat, {
+      cls: sim.cfg.playerClass,
+      stats: p.stats,
+      level: p.level,
+      attackPower: p.attackPower,
+      critChance: p.critChance,
+      dodgeChance: p.dodgeChance,
+      dps: weaponDps(wpn?.weapon, p.attackPower),
+    });
   }
 
   private questNumber(value: number): string {
@@ -1055,13 +1910,13 @@ export class Hud {
   private focusFirstInteractive(root: HTMLElement, preferredSelector?: string): void {
     window.setTimeout(() => {
       const target = (preferredSelector ? root.querySelector<HTMLElement>(preferredSelector) : null)
-        ?? root.querySelector<HTMLElement>('button:not([disabled]):not([data-close]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')
-        ?? root.querySelector<HTMLElement>('button:not([disabled])');
+        ?? root.querySelector<HTMLElement>('button:not([disabled]):not([data-close]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
       (target ?? root).focus();
     }, 0);
   }
 
   private refreshLocalizedDynamicUi(): void {
+    this.refreshKeybindLabels();
     this.updateQuestTracker();
     const log = $('#quest-log-window');
     if (log.style.display === 'block') this.renderQuestLog();
@@ -1120,9 +1975,9 @@ export class Hud {
   // shortcuts. Abilities are keyed by id (known is class-ordered and shifts on
   // level-up, so indices would not survive). Persisted per class+character,
   // with separate form/stealth layouts because each state has a different kit.
-  private slotMapKey(): string {
+  private slotMapKey(form: HotbarForm = this.activeHotbarForm): string {
     const base = `woc_hotbar_${this.sim.cfg.playerClass}_${this.sim.player.name}`;
-    return this.activeHotbarForm === 'normal' ? base : `${base}_${this.activeHotbarForm}`;
+    return form === 'normal' ? base : `${base}_${form}`;
   }
 
   private playerHotbarForm(): HotbarForm {
@@ -1139,6 +1994,77 @@ export class Hud {
     return item?.kind === 'food' || item?.kind === 'drink' || item?.kind === 'potion' || item?.use?.type === 'fishing';
   }
 
+  // Whether an ability belongs on a given form's default bar. Bear/cat bars hold
+  // only that form's kit (its `requiresForm` abilities) plus the shift toggles;
+  // the caster ('normal') bar excludes form-only abilities so they no longer
+  // auto-dump onto it. Rogue stealth has no `requiresForm` kit, so it keeps the
+  // full caster set.
+  private shouldAutoPlaceOnForm(id: string, form: HotbarForm): boolean {
+    if (form === 'bear' || form === 'cat') {
+      return ABILITIES[id]?.requiresForm === form || Hud.FORM_TOGGLE_IDS.has(id);
+    }
+    return !ABILITIES[id]?.requiresForm;
+  }
+
+  // The known abilities that make up a form's default bar, in class/learn order.
+  private formKitAbilityIds(form: HotbarForm): string[] {
+    return this.sim.known.map((k) => k.def.id).filter((id) => this.shouldAutoPlaceOnForm(id, form));
+  }
+
+  // True for the druid form bars that own a dedicated kit (bear/cat). Rogue
+  // stealth is excluded: the sim does not lock the caster kit in stealth, so its
+  // bar legitimately mirrors the normal layout.
+  private isFormKitBar(form: HotbarForm = this.activeHotbarForm): boolean {
+    return this.sim.cfg.playerClass === 'druid' && (form === 'bear' || form === 'cat');
+  }
+
+  // Gates form-bar-only UI (e.g. the spellbook "Reset bar" button) so it never
+  // shows for single-bar classes. Delegates to the pure, unit-tested helper.
+  private classHasFormBars(): boolean {
+    return classHasFormBars(this.sim.cfg.playerClass);
+  }
+
+  // Per-form one-time marker so the migration of pre-existing form bars (empty or
+  // a clone of the caster bar) runs at most once and never clobbers a layout the
+  // player deliberately customized. Mirrors the emote-wheel version marker.
+  private formBarSeededKey(form: HotbarForm = this.activeHotbarForm): string {
+    return `${this.slotMapKey(form)}_seeded`;
+  }
+
+  private markFormBarSeeded(form: HotbarForm = this.activeHotbarForm): void {
+    try { localStorage.setItem(this.formBarSeededKey(form), '1'); } catch { /* storage unavailable */ }
+  }
+
+  // Seed/migrate a druid bear/cat bar to its form kit. Returns true if it took
+  // ownership of `hotbarActions`. Runs at most once per form (guarded by the
+  // marker): on first encounter it seeds an empty bar or migrates a bar that is a
+  // byte-identical clone of the caster bar, but leaves a customized bar untouched.
+  private seedFormBarIfNeeded(parsed: HotbarAction[]): boolean {
+    let alreadySeeded = false;
+    try { alreadySeeded = localStorage.getItem(this.formBarSeededKey()) === '1'; } catch { /* storage unavailable */ }
+    if (alreadySeeded) return false;
+
+    let normalRaw: unknown = null;
+    try { normalRaw = JSON.parse(localStorage.getItem(this.slotMapKey('normal')) ?? 'null'); } catch { /* corrupt */ }
+    const normalActions = parseHotbarActions(
+      normalRaw,
+      Hud.BAR_ABILITY_SLOTS,
+      (id) => !!ABILITIES[id],
+      (id) => this.isHotbarItemId(id),
+    );
+
+    // Mark before deciding so a deliberately customized bar is left untouched and
+    // this migration is never re-evaluated for the form.
+    this.markFormBarSeeded();
+    if (!shouldSeedFormBar(parsed, normalActions, false)) return false;
+
+    this.hotbarActions = buildDefaultFormBar(this.formKitAbilityIds(this.activeHotbarForm), Hud.BAR_ABILITY_SLOTS);
+    this.loadedSlotMapFromStorage = true;
+    this.knownAbilityIdsAtLastSlotSync = null;
+    this.saveSlotMap();
+    return true;
+  }
+
   private loadSlotMap(): void {
     let arr: unknown = null;
     let stored = false;
@@ -1147,18 +2073,104 @@ export class Hud {
       stored = raw !== null;
       arr = JSON.parse(raw ?? 'null');
     } catch { /* corrupt */ }
-    this.loadedSlotMapFromStorage = stored || this.activeHotbarForm !== 'normal';
-    this.hotbarActions = parseHotbarActions(
+    const parsed = parseHotbarActions(
       arr,
       Hud.BAR_ABILITY_SLOTS,
       (id) => !!ABILITIES[id],
       (id) => this.isHotbarItemId(id),
     );
+    // Druid bear/cat bars auto-populate with that form's kit instead of cloning
+    // the caster bar; existing characters are migrated once (see seedFormBarIfNeeded).
+    if (this.isFormKitBar()) {
+      if (this.seedFormBarIfNeeded(parsed)) return;
+      this.loadedSlotMapFromStorage = stored;
+      this.hotbarActions = parsed;
+      this.knownAbilityIdsAtLastSlotSync = null;
+      return;
+    }
+    const emptyFormMap = this.activeHotbarForm !== 'normal' && parsed.every((action) => action === null);
+    if (emptyFormMap) {
+      let fallback: unknown = null;
+      try { fallback = JSON.parse(localStorage.getItem(this.slotMapKey('normal')) ?? 'null'); } catch { /* corrupt */ }
+      const normalActions = parseHotbarActions(
+        fallback,
+        Hud.BAR_ABILITY_SLOTS,
+        (id) => !!ABILITIES[id],
+        (id) => this.isHotbarItemId(id),
+      );
+      if (normalActions.some((action) => action !== null)) {
+        this.loadedSlotMapFromStorage = true;
+        this.hotbarActions = normalActions;
+        this.knownAbilityIdsAtLastSlotSync = null;
+        return;
+      }
+    }
+    this.loadedSlotMapFromStorage = stored;
+    this.hotbarActions = parsed;
     this.knownAbilityIdsAtLastSlotSync = null;
   }
 
   private saveSlotMap(): void {
     try { localStorage.setItem(this.slotMapKey(), JSON.stringify(this.hotbarActions)); } catch { /* storage unavailable */ }
+  }
+
+  private firstEmptyHotbarIndex(): number {
+    return this.hotbarActions.findIndex((action) => action === null);
+  }
+
+  private hotbarIndexForAbility(abilityId: string): number {
+    return this.hotbarActions.findIndex((action) => action?.type === 'ability' && action.id === abilityId);
+  }
+
+  private addAbilityToHotbar(abilityId: string): boolean {
+    if (this.hotbarIndexForAbility(abilityId) !== -1) return false;
+    const target = this.firstEmptyHotbarIndex();
+    if (target === -1) return false;
+    this.hotbarActions = placeAbilityOnSlot(this.hotbarActions, abilityId, target);
+    this.saveSlotMap();
+    return true;
+  }
+
+  private removeAbilityFromHotbar(abilityId: string): boolean {
+    const target = this.hotbarIndexForAbility(abilityId);
+    if (target === -1) return false;
+    this.hotbarActions = clearHotbarSlot(this.hotbarActions, target);
+    this.saveSlotMap();
+    return true;
+  }
+
+  private refreshSpellbookHotbarControls(): void {
+    document.querySelectorAll<HTMLButtonElement>('#spellbook .spell-hotbar-toggle').forEach((btn) => {
+      const id = btn.dataset.abilityId;
+      if (!id) return;
+      const onBar = this.hotbarIndexForAbility(id) !== -1;
+      btn.textContent = onBar ? '-' : '+';
+      btn.classList.toggle('remove', onBar);
+      btn.setAttribute('aria-pressed', onBar ? 'true' : 'false');
+      btn.disabled = !onBar && this.firstEmptyHotbarIndex() === -1;
+    });
+  }
+
+  // Rebuild the active bar from its default kit (form bars get their form kit;
+  // the caster/stealth bar gets the form-filtered known abilities). Item
+  // shortcuts and manual arrangement are intentionally discarded — it's a reset.
+  // The per-frame update() repaints the slot icons from hotbarActions, so we only
+  // mutate state here (same as addAbilityToHotbar / drag-drop).
+  private resetActiveFormBarToDefault(): void {
+    this.hotbarActions = buildDefaultFormBar(
+      this.formKitAbilityIds(this.activeHotbarForm),
+      Hud.BAR_ABILITY_SLOTS,
+    );
+    this.knownAbilityIdsAtLastSlotSync = new Set(this.sim.known.map((k) => k.def.id));
+    this.markFormBarSeeded();
+    this.saveSlotMap();
+    this.refreshSpellbookHotbarControls();
+  }
+
+  private formToggleAbilityId(): string | null {
+    if (this.activeHotbarForm === 'bear') return 'bear_form';
+    if (this.activeHotbarForm === 'cat') return 'cat_form';
+    return null;
   }
 
   private syncActiveHotbarForm(): void {
@@ -1176,15 +2188,22 @@ export class Hud {
   private syncSlotMap(): void {
     const knownAbilityIds = this.sim.known.map((k) => k.def.id);
     const autoPlaceAbilityIds = new Set<string>();
+    // Only auto-place abilities that belong on the active form's bar, so newly
+    // learned form abilities land on their form bar and not the caster bar.
+    const consider = (id: string) => {
+      if (this.shouldAutoPlaceOnForm(id, this.activeHotbarForm)) autoPlaceAbilityIds.add(id);
+    };
     if (this.knownAbilityIdsAtLastSlotSync === null) {
       if (!this.loadedSlotMapFromStorage) {
-        for (const id of knownAbilityIds) autoPlaceAbilityIds.add(id);
+        for (const id of knownAbilityIds) consider(id);
       }
     } else {
       for (const id of knownAbilityIds) {
-        if (!this.knownAbilityIdsAtLastSlotSync.has(id)) autoPlaceAbilityIds.add(id);
+        if (!this.knownAbilityIdsAtLastSlotSync.has(id)) consider(id);
       }
     }
+    const formToggle = this.formToggleAbilityId();
+    if (formToggle && knownAbilityIds.includes(formToggle)) autoPlaceAbilityIds.add(formToggle);
     const synced = syncHotbarActions(this.hotbarActions, knownAbilityIds, autoPlaceAbilityIds);
     this.hotbarActions = synced.actions;
     if (synced.changed) this.saveSlotMap();
@@ -1216,18 +2235,36 @@ export class Hud {
     if (barSlot === 0) {
       if (this.sim.player.autoAttack) this.sim.stopAutoAttack();
       else this.sim.startAutoAttack();
+      this.flashActionSlot(barSlot);
       return;
     }
     const action = this.actionForSlot(barSlot);
     if (action?.type === 'ability') {
       // cast by ability id: the server validates against its own known list,
       // so the client-side slot remap never desyncs slot semantics
-      if (this.abilityForSlot(barSlot)) this.sim.castAbility(action.id);
+      if (this.abilityForSlot(barSlot)) {
+        this.sim.castAbility(action.id);
+        this.flashActionSlot(barSlot);
+      }
     } else if (action?.type === 'item' && this.isHotbarItemId(action.id)) {
       if (this.tradeOpen) return;
       this.sim.useItem(action.id);
       if ($('#bags').style.display !== 'none') this.renderBags();
+      this.flashActionSlot(barSlot);
     }
+  }
+
+  private flashActionSlot(barSlot: number): void {
+    const btn = this.abilityButtons[barSlot]?.btn;
+    if (!btn) return;
+    this.flashActionButton(btn);
+  }
+
+  private flashActionButton(btn: HTMLButtonElement): void {
+    btn.classList.remove('used');
+    void btn.offsetWidth;
+    btn.classList.add('used');
+    window.setTimeout(() => btn.classList.remove('used'), 180);
   }
 
   private writeDraggedAction(dt: DataTransfer | null, action: Exclude<HotbarAction, null>): void {
@@ -1263,14 +2300,22 @@ export class Hud {
       cdText.className = 'cdtext';
       btn.append(label, countEl, kb, cdOverlay, cdText);
       const slot = i;
+      btn.dataset.hotbarSlot = String(slot);
       // slot 0 is Attack for every class (auto-attack toggle — players
       // without right-click need a way in); the kit fills slots 1+
       btn.addEventListener('click', () => {
+        if (this.suppressNextActionClick) { this.suppressNextActionClick = false; btn.blur(); return; }
         // On touch, the click that ends a long-press peek inspects the slot
         // (tooltip already shown) instead of casting — release dismisses it.
-        if (this.peekGuard.consume()) { this.hideTooltip(); return; }
+        if (this.peekGuard.consume()) { this.hideTooltip(); btn.blur(); return; }
         audio.click();
         this.castSlot(slot);
+        btn.blur();
+      });
+      btn.addEventListener('keydown', (e) => {
+        if (e.key !== ' ' && e.key !== 'Spacebar') return;
+        e.preventDefault();
+        e.stopPropagation();
       });
       this.attachTooltip(btn, () => {
         if (slot === 0) {
@@ -1348,6 +2393,7 @@ export class Hud {
           this.dragAction = null;
           this.clearActionDropTargets();
         });
+        this.bindMobileActionDrag(btn, slot);
         // right-click clears the slot so a full bar can make room for new spells
         btn.addEventListener('contextmenu', (e) => {
           e.preventDefault();
@@ -1366,27 +2412,112 @@ export class Hud {
     document.querySelectorAll('#actionbar .drop-target').forEach((el) => el.classList.remove('drop-target'));
   }
 
+  private actionButtonSlotFromPoint(x: number, y: number): number | null {
+    const el = document.elementFromPoint(x, y)?.closest?.('.action-btn') as HTMLButtonElement | null;
+    const raw = el?.dataset.hotbarSlot;
+    if (!raw) return null;
+    const slot = Number(raw);
+    return Number.isInteger(slot) && slot >= 1 ? slot : null;
+  }
+
+  private clearMobileHotbarDrag(): void {
+    const drag = this.mobileHotbarDrag;
+    if (drag) window.clearTimeout(drag.timer);
+    this.mobileHotbarDrag = null;
+    document.body.classList.remove('mobile-hotbar-dragging');
+    document.querySelectorAll('#actionbar .mobile-drag-source').forEach((el) => el.classList.remove('mobile-drag-source'));
+    this.clearActionDropTargets();
+  }
+
+  private bindMobileActionDrag(btn: HTMLButtonElement, slot: number): void {
+    btn.addEventListener('pointerdown', (e) => {
+      if (!document.body.classList.contains('mobile-touch') || e.pointerType !== 'touch') return;
+      if (this.actionForSlot(slot)?.type !== 'ability') return;
+      this.clearMobileHotbarDrag();
+      const sourceIndex = slot - 1;
+      const drag: MobileHotbarDrag = {
+        pointerId: e.pointerId,
+        sourceIndex,
+        startX: e.clientX,
+        startY: e.clientY,
+        active: false,
+        targetIndex: null,
+        timer: window.setTimeout(() => {
+          const current = this.mobileHotbarDrag;
+          if (!current || current.pointerId !== e.pointerId) return;
+          current.active = true;
+          current.targetIndex = sourceIndex;
+          this.suppressNextActionClick = true;
+          document.body.classList.add('mobile-hotbar-dragging');
+          btn.classList.add('mobile-drag-source');
+          btn.classList.add('drop-target');
+          this.hideTooltip();
+          try { btn.setPointerCapture?.(e.pointerId); } catch { /* pointer already released */ }
+        }, 320),
+      };
+      this.mobileHotbarDrag = drag;
+    });
+
+    btn.addEventListener('pointermove', (e) => {
+      const drag = this.mobileHotbarDrag;
+      if (!drag || drag.pointerId !== e.pointerId) return;
+      const moved = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
+      if (!drag.active && moved > 9) {
+        this.clearMobileHotbarDrag();
+        return;
+      }
+      if (!drag.active) return;
+      e.preventDefault();
+      const targetSlot = this.actionButtonSlotFromPoint(e.clientX, e.clientY);
+      const targetIndex = targetSlot !== null ? targetSlot - 1 : null;
+      drag.targetIndex = targetIndex;
+      this.clearActionDropTargets();
+      const targetBtn = targetSlot !== null ? this.abilityButtons[targetSlot]?.btn : null;
+      if (targetBtn) targetBtn.classList.add('drop-target');
+      this.abilityButtons[drag.sourceIndex + 1]?.btn.classList.add('mobile-drag-source');
+    });
+
+    const finish = (e: PointerEvent) => {
+      const drag = this.mobileHotbarDrag;
+      if (!drag || drag.pointerId !== e.pointerId) return;
+      const wasActive = drag.active;
+      const targetIndex = drag.targetIndex;
+      if (wasActive) {
+        e.preventDefault();
+        this.suppressNextActionClick = true;
+        if (targetIndex !== null && targetIndex !== drag.sourceIndex) {
+          this.hotbarActions = swapHotbarSlots(this.hotbarActions, drag.sourceIndex, targetIndex);
+          this.saveSlotMap();
+        }
+      }
+      this.clearMobileHotbarDrag();
+    };
+    btn.addEventListener('pointerup', finish);
+    btn.addEventListener('pointercancel', finish);
+  }
+
   // Repaint the keycap on every action button from the current bindings.
   private refreshKeybindLabels(): void {
     for (let i = 0; i < this.abilityButtons.length; i++) {
       this.abilityButtons[i].keybindEl.textContent = this.keybinds.primaryLabel(`slot${i}`);
     }
-    const sideButtons: [selector: string, action: string, label: string][] = [
-      ['#mm-char', 'char', 'Character'],
-      ['#mm-spell', 'spellbook', 'Spellbook'],
-      ['#mm-talents', 'talents', 'Talents'],
-      ['#mm-quest', 'questlog', 'Quest Log'],
-      ['#mm-map', 'map', 'Map'],
-      ['#mm-bag', 'bags', 'Bags'],
-      ['#mm-arena', 'arena', 'Arena'],
-      ['#mm-leaderboard', 'leaderboard', 'Leaderboard'],
-      ['#mm-emote', 'emoteWheel', 'Emotes'],
-      ['#mm-social', 'social', 'Friends'],
+    const sideButtons: [selector: string, action: string, labelKey: TranslationKey][] = [
+      ['#mm-char', 'char', 'hud.keybinds.actions.char'],
+      ['#mm-spell', 'spellbook', 'abilityUi.spellbook.title'],
+      ['#mm-talents', 'talents', 'game.talents.title'],
+      ['#mm-quest', 'questlog', 'questUi.log.title'],
+      ['#mm-map', 'map', 'hud.core.mobileMap'],
+      ['#mm-bag', 'bags', 'itemUi.bags.title'],
+      ['#mm-arena', 'arena', 'hud.core.mobileArena'],
+      ['#mm-leaderboard', 'leaderboard', 'game.leaderboard.title'],
+      ['#mm-emote', 'emoteWheel', 'hudChrome.emoteWheel.label'],
+      ['#mm-social', 'social', 'hud.social.friendsTab'],
     ];
-    for (const [selector, action, label] of sideButtons) {
+    for (const [selector, action, labelKey] of sideButtons) {
       const btn = document.querySelector<HTMLElement>(selector);
       if (!btn) continue;
       const key = this.keybinds.primaryLabel(action);
+      const label = t(labelKey);
       const keyEl = btn.querySelector<HTMLElement>('.keybind');
       if (keyEl) keyEl.textContent = key.toLowerCase();
       btn.setAttribute('aria-label', key ? `${label} (${key})` : label);
@@ -1464,6 +2595,12 @@ export class Hud {
       });
     } else {
       addButton(commands, 'rejuvenation', t('hud.pet.healPet'), petTooltip(t('hud.pet.healPet'), t('hud.pet.healPetDesc')), () => {
+        // Toggle: a second click cancels the pending feed instead of trapping
+        // the player in food-selection mode.
+        if (this.pendingPetFeed) { this.cancelPetFeed(); return; }
+        // With no edible food there is nothing to select, so entering feed mode
+        // would strand the player on the bag screen — surface an error instead.
+        if (!this.hasPetFood()) { this.showError(t('hud.pet.noPetFood')); return; }
         this.pendingPetFeed = true;
         this.lastPetBarSig = '';
         $('#bags').style.display = 'block';
@@ -1494,18 +2631,36 @@ export class Hud {
   // Frame update
   // -------------------------------------------------------------------------
 
+  // Pulsing red screen edge that fades in as the player nears death. Driven
+  // from the pure lowHealthVignette() curve; purely presentational (CSS vars on
+  // a fixed overlay), works on every GFX tier since it's DOM, not a post pass.
+  private updateLowHealthVignette(hp: number, maxHp: number): void {
+    const el = document.getElementById('low-health-vignette');
+    if (!el) return;
+    const v = lowHealthVignette(hp, maxHp);
+    if (!v.active) {
+      el.classList.remove('active');
+      return;
+    }
+    el.style.setProperty('--lhv-opacity', v.opacity.toFixed(3));
+    el.style.setProperty('--lhv-pulse', `${v.pulseSeconds.toFixed(3)}s`);
+    el.classList.add('active');
+  }
+
   update(): void {
     const sim = this.sim;
     const p = sim.player;
     const now = performance.now();
     const fastHud = now - this.lastHudFastAt >= 100;
-    if (fastHud) this.lastHudFastAt = now;
+    if (fastHud) { this.lastHudFastAt = now; this.reconcileSfx(); }
     const mediumHud = now - this.lastHudMediumAt >= 250;
     if (mediumHud) this.lastHudMediumAt = now;
     const slowHud = now - this.lastHudSlowAt >= 500;
     if (slowHud) this.lastHudSlowAt = now;
 
     this.meters.update();
+    this.tutorial.update(sim, this.renderer, this.keybinds);
+    this.updateLootRollTimers(now);
     this.syncActiveHotbarForm();
     this.syncSlotMap(); // picks up newly learned abilities mid-session
 
@@ -1518,12 +2673,15 @@ export class Hud {
     // player frame
     this.setText(this.pfLevelEl, String(p.level));
     this.setTransform(this.pfHpEl, `scaleX(${p.hp / Math.max(1, p.maxHp)})`);
+    this.updateAbsorb('#pf-absorb', p);
     this.setText(this.pfHpTextEl, `${p.hp} / ${p.maxHp}`);
+    this.updateLowHealthVignette(p.hp, p.maxHp);
     const resFrac = p.resource / Math.max(1, p.maxResource);
     this.setTransform(this.pfResEl, `scaleX(${resFrac})`);
     this.setText(this.pfResTextEl, `${Math.round(p.resource)} / ${p.maxResource}`);
     const resClass = 'bar ' + (p.resourceType === 'rage' ? 'rage' : p.resourceType === 'energy' ? 'energy' : 'mana');
     if (this.pfResourceEl.className !== resClass) this.pfResourceEl.className = resClass;
+    this.updateLowResource(p);
 
     // buff bar (player buffs + debuffs)
     this.renderAuras(this.buffBarEl, p, 'all');
@@ -1537,17 +2695,33 @@ export class Hud {
       this.setText(this.targetNameEl, entityDisplayName(target));
       this.setText(this.targetLevelEl, MOBS[target.templateId]?.boss ? '☠' : String(target.level));
       this.setTransform(this.targetHpEl, `scaleX(${target.hp / Math.max(1, target.maxHp)})`);
+      this.updateAbsorb('#tf-absorb', target.dead ? null : target);
       this.setText(this.targetHpTextEl, target.dead ? t('hud.core.dead') : `${target.hp} / ${target.maxHp}`);
       const targetNameColor = target.hostile ? 'var(--color-hostile)' : 'var(--color-friendly)';
       if (this.targetNameEl.style.color !== targetNameColor) this.targetNameEl.style.color = targetNameColor;
       if (this.lastPortraitTarget !== target.id) {
         this.lastPortraitTarget = target.id;
-        const crestId = target.kind === 'npc'
-          ? 'status_npc'
-          : `family_${MOBS[target.templateId]?.family ?? 'humanoid'}`;
-        this.drawPortrait(this.targetPortraitEl, crestId);
+        if (target.kind === 'player') {
+          // Other players: their real 3D headshot, rendered locally from the
+          // class (templateId) + skin in their synced identity fields.
+          this.portraits.drawClass(this.targetPortraitEl, target.templateId as PlayerClass, target.skin ?? 0);
+        } else {
+          this.portraits.drawCrest(this.targetPortraitEl, crestIdForEntity(target.kind, MOBS[target.templateId]?.family));
+        }
       }
       this.renderAuras(this.targetDebuffsEl, target, 'debuffs');
+      // target/boss cast bar (e.g. Nythraxis' Deathless Rage) — shown under the
+      // name + HP so the raid sees exactly when to channel the wardstones
+      const tcb = castBarState(target);
+      if (tcb.visible) {
+        this.setDisplay(this.targetCastbarEl, 'block');
+        this.targetCastbarEl.classList.toggle('channel', tcb.channel);
+        this.setWidth(this.targetCastbarFillEl, `${(tcb.fill * 100).toFixed(1)}%`);
+        this.setText(this.targetCastbarLabelEl, tcb.label);
+        this.setText(this.targetCastbarTimerEl, formatNumber(Math.max(0, target.castRemaining), { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
+      } else {
+        this.setDisplay(this.targetCastbarEl, 'none');
+      }
       // combo points
       if (p.resourceType === 'energy') {
         this.setDisplay(this.comboRowEl, 'flex');
@@ -1578,6 +2752,7 @@ export class Hud {
         : 1 - p.castRemaining / Math.max(0.01, p.castTotal);
       this.setWidth(this.castbarFillEl, `${(frac * 100).toFixed(1)}%`);
       this.setText(this.castbarLabelEl, castDisplayName(p.castingAbility));
+      this.setText(this.castbarTimerEl, formatNumber(Math.max(0, p.castRemaining), { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
     } else if (p.eating || p.drinking) {
       this.setDisplay(this.castbarEl, 'block');
       this.castbarEl.classList.add('channel');
@@ -1586,17 +2761,45 @@ export class Hud {
         : (p.eating ?? p.drinking)!;
       this.setWidth(this.castbarFillEl, `${((c.remaining / CONSUME_DURATION) * 100).toFixed(1)}%`);
       this.setText(this.castbarLabelEl, p.eating && p.drinking ? t('hud.core.eatingDrinking') : p.eating ? t('hud.core.eating') : t('hud.core.drinking'));
+      this.setText(this.castbarTimerEl, formatNumber(Math.max(0, c.remaining), { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
     } else {
       this.setDisplay(this.castbarEl, 'none');
       this.castbarEl.classList.remove('channel');
       this.setWidth(this.castbarFillEl, '0%');
       this.setText(this.castbarLabelEl, '');
+      this.setText(this.castbarTimerEl, '');
+    }
+
+    // swing timer — fills between melee/ranged auto-attack swings. swingTimer
+    // counts DOWN to 0 (ready); we recover the full interval from the reset
+    // edge so the bar stays accurate under haste and for ranged weapons.
+    const sw = $('#swingbar');
+    if (p.autoAttack && target && !target.dead && target.kind !== 'object') {
+      if (p.swingTimer > this.lastSwingTimer + 1e-4 || this.swingPeriod <= 0) {
+        this.swingPeriod = Math.max(p.swingTimer, p.weapon.speed);
+      }
+      this.lastSwingTimer = p.swingTimer;
+      const frac = this.swingPeriod > 0
+        ? Math.min(1, Math.max(0, 1 - p.swingTimer / this.swingPeriod))
+        : 1;
+      sw.style.display = 'block';
+      (sw.querySelector('.fill') as HTMLElement).style.width = `${(frac * 100).toFixed(1)}%`;
+      sw.classList.toggle('ready', p.swingTimer <= 0);
+      (sw.querySelector('.label') as HTMLElement).textContent =
+        p.swingTimer <= 0
+          ? t('hudChrome.swing.ready')
+          : t('hudChrome.swing.seconds', { seconds: formatNumber(p.swingTimer, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
+    } else {
+      sw.style.display = 'none';
+      this.lastSwingTimer = 0;
+      this.swingPeriod = 0;
     }
 
     // action bar
     this.renderPetBar();
     const tgtDist = target && !target.dead ? dist2d(p.pos, target.pos) : null;
     this.actionbarEl.classList.toggle('many-spells', this.hotbarActions.filter((action) => action !== null).length > 10);
+    if ($('#spellbook').style.display === 'block') this.refreshSpellbookHotbarControls();
     for (let i = 0; i < this.abilityButtons.length; i++) {
       const ab = this.abilityButtons[i];
       const slotLabel = formatAbilityNumber(i + 1);
@@ -1681,12 +2884,21 @@ export class Hud {
     // xp bar — pre-cap shows the level bar; post-cap fills toward the next
     // virtual level (Max-Level XP Overflow), with distinct prestige/gold styling.
     const showOverflow = (this.optionsHooks?.settings.get('showOverflowXp') ?? 1) >= 0.5;
-    const bar = xpBarView({ level: p.level, xp: sim.xp, lifetimeXp: sim.lifetimeXp, showOverflow });
+    const bar = xpBarView({ level: p.level, xp: sim.xp, lifetimeXp: sim.lifetimeXp, restedXp: sim.restedXp, showOverflow });
     this.setWidth(this.xpFillEl, `${(bar.fillFrac * 100).toFixed(1)}%`);
+    $('#xpbar').style.setProperty('--xp-fill', bar.fillFrac.toFixed(4));
+    $('#player-frame').style.setProperty('--xp-fill', bar.fillFrac.toFixed(4));
+    // Rested overlay sits ahead of the fill (classic inn-rested bonus preview).
+    const restedEl = $('#xpbar .rested') as HTMLElement;
+    restedEl.style.left = `${(bar.fillFrac * 100).toFixed(1)}%`;
+    restedEl.style.width = `${(bar.restedFrac * 100).toFixed(1)}%`;
     this.setText(this.xpLabelEl, bar.label);
     $('#xpbar').classList.toggle('overflow', bar.postCap);
+    $('#xpbar').classList.toggle('rested', bar.restedFrac > 0);
 
+    const deadInArena = p.dead && !!this.sim.arenaInfo?.match;
     this.setDisplay(this.deathOverlayEl, p.dead ? 'flex' : 'none');
+    this.setDisplay(this.releaseSpiritBtnEl, deadInArena ? 'none' : '');
 
     const inDungeon = p.pos.x > DUNGEON_X_THRESHOLD;
     const currentZone = zoneAt(p.pos.z);
@@ -1707,6 +2919,19 @@ export class Hud {
             this.logZoneWelcome(currentZone);
           }
           this.lastZoneId = currentZone.id;
+          this.prewarmMapBg(currentZone.id); // get the new zone's map bg ready before the player opens it
+        }
+      }
+
+      // subzone text: a smaller banner when you step into a named landmark
+      // (classic "subzone" display). POIs are the same labels the minimap pins.
+      const subzone = inDungeon ? null
+        : nearestSubzone(p.pos.x, p.pos.z, currentZone.pois, this.lastSubzone);
+      if (subzone !== this.lastSubzone) {
+        this.lastSubzone = subzone;
+        if (subzone) {
+          const poiIndex = currentZone.pois.findIndex((q) => q.label === subzone);
+          this.showSubzone(poiIndex >= 0 ? zonePoiLabel(currentZone.id, poiIndex) : subzone);
         }
       }
 
@@ -1714,23 +2939,54 @@ export class Hud {
       // Combat = a mob is on us, or we traded blows in the last few seconds
       // (the wire protocol doesn't ship the inCombat flag).
       let aggroed = false;
+      let nythraxisAlive = false;
+      let bossEngaged = false; // the Nythraxis raid boss is pulled -> its own track
+      const dungeon = dungeonAt(p.pos.x);
+      const inNythraxisArena = dungeon?.id === 'nythraxis_boss_arena';
       for (const e of sim.entities.values()) {
-        if (e.kind === 'mob' && !e.dead && e.aggroTargetId === sim.playerId) { aggroed = true; break; }
+        if (e.kind !== 'mob' || e.dead) continue;
+        if (e.aggroTargetId === sim.playerId) aggroed = true;
+        if (e.templateId === 'nythraxis_scourge_of_thornpeak') {
+          nythraxisAlive = true;
+          if (e.aggroTargetId !== null) bossEngaged = true;
+        }
       }
       const inCombat = aggroed || now - this.lastCombatEventAt < 5000;
+      const musicCombat = inCombat || inNythraxisArena;
+      bossEngaged = bossEngaged
+        || inNythraxisArena
+        || now - this.lastNythraxisCombatEventAt < 10000;
       const hub = currentZone.hub;
       const inHub = !inDungeon
         && Math.hypot(p.pos.x - hub.x, p.pos.z - hub.z) < hub.radius + 10;
-      const dungeon = inDungeon ? dungeonAt(p.pos.x) : null;
       const zone = musicZoneForLocation(
-        currentZone.id, currentZone.biome, inHub, inDungeon, dungeon?.id ?? null,
+        currentZone.id, currentZone.biome, inHub, inDungeon || inNythraxisArena, dungeon?.id ?? null,
       );
-      music.update(zone, inCombat);
+      const musicDungeonId = (inDungeon || inNythraxisArena) ? (dungeon?.id ?? null) : null;
+      if (shouldResetMusicForDungeonEntry(this.lastMusicDungeonId, musicDungeonId)) {
+        music.resetForDungeonEntry(musicDungeonId);
+      }
+      this.lastMusicDungeonId = musicDungeonId;
+      music.update(zone, musicCombat);
+      music.setBossCombat(bossEngaged);
+
+      // classic combat indicator: crossed swords + red ring on the player portrait
+      $('#player-frame').classList.toggle('combat', inCombat);
+      // classic "resting" zZz on the player portrait while seated / recovering.
+      // Reads the seated booleans IWorld exposes; works offline + online alike.
+      const rest = restView({ sitting: !!p.sitting, eating: !!p.eating, drinking: !!p.drinking });
+      if (rest.resting !== this.lastResting) {
+        this.lastResting = rest.resting;
+        const restEl = $('#pf-rest');
+        restEl.classList.toggle('on', rest.resting);
+        restEl.title = rest.labelKey ? t(rest.labelKey) : '';
+      }
 
       this.updateQuestTracker();
       this.updatePartyFrames();
       this.updateTradeWindow();
       this.updateArenaStatus();
+      this.updateFiestaHud();
       if ($('#map-window').style.display === 'block') this.updateMapWindow();
       if ($('#arena-window').style.display === 'block') this.renderArenaWindow();
       if (this.openLootMobId !== null) {
@@ -1749,21 +3005,54 @@ export class Hud {
       $('#arena-window').style.display = 'none';
     }
     this.arenaMatchSeen = inArenaMatch;
-    if (fastHud) this.updateMinimap();
+    if (fastHud) { this.updateMinimap(); this.updateClock(); this.updateMinimapCoords(); this.updateCompass(); }
     if (slowHud && $('#social-window').classList.contains('open')) {
       const struct = this.socialStructSig();
       if (struct !== this.lastSocialStruct) {
         this.lastSocialStruct = struct;
-        this.lastSocialContent = JSON.stringify(this.sim.socialInfo);
+        this.lastSocialContent = JSON.stringify({ social: this.sim.socialInfo, party: this.sim.partyInfo });
         this.renderSocial();
       } else {
-        const content = JSON.stringify(this.sim.socialInfo);
+        const content = JSON.stringify({ social: this.sim.socialInfo, party: this.sim.partyInfo });
         if (content !== this.lastSocialContent) { this.lastSocialContent = content; this.refreshSocialList(); }
       }
     }
     if (slowHud && this.marketOpen) {
       if (!this.nearbyMarketNpc()) this.closeMarket();
       else this.refreshMarket();
+    }
+  }
+
+  // Overlay the absorb-shield segment on a unit-frame health bar. A null entity
+  // (no target / dead) hides it.
+  private updateAbsorb(sel: string, e: Entity | null): void {
+    const el = $(sel) as HTMLElement;
+    const v = e ? absorbBarView(e) : { fillFrac: 0, overshield: false, total: 0 };
+    el.style.transform = `scaleX(${v.fillFrac})`;
+    el.classList.toggle('overshield', v.overshield);
+  }
+
+  // Classic "low mana/energy" warning: pulse the player resource bar when power
+  // runs low. Pure read of replicated state (resource/maxResource/type) so it
+  // works offline and online alike. Touches the DOM only on state change.
+  private updateLowResource(p: Entity): void {
+    const v = lowResourceView({ resource: p.resource, maxResource: p.maxResource, resourceType: p.resourceType });
+    const bar = $('#pf-resource') as HTMLElement;
+    // The resource className is rebuilt every frame just above this call, so the
+    // `.low` flag must be re-applied every frame too. Only the expensive style /
+    // label writes are diffed against the cached signature.
+    bar.classList.toggle('low', v.active);
+    const sig = v.active ? `${v.opacity.toFixed(2)}|${v.pulseSeconds.toFixed(2)}|${v.label}` : '';
+    if (sig === this.lastLowResourceSig) return;
+    this.lastLowResourceSig = sig;
+    const label = $('#pf-low-resource') as HTMLElement;
+    if (v.active) {
+      bar.style.setProperty('--lr-opacity', String(v.opacity));
+      bar.style.setProperty('--lr-pulse', `${v.pulseSeconds}s`);
+      label.textContent = v.label;
+      label.style.display = 'block';
+    } else {
+      label.style.display = 'none';
     }
   }
 
@@ -1774,7 +3063,10 @@ export class Hud {
     (el as any).__sig = sig;
     el.innerHTML = '';
     for (const a of e.auras) {
-      const isDebuff = ['dot', 'slow', 'root', 'stun', 'incapacitate', 'polymorph', 'attackspeed', 'debuff_ap'].includes(a.kind);
+      // A negative-value stat aura (e.g. a mob's Withering Wail sapping attack
+      // power, or an Intellect-draining curse) is a debuff even though it reuses a buff_* kind.
+      const isDebuff = ['dot', 'slow', 'root', 'stun', 'incapacitate', 'polymorph', 'attackspeed', 'debuff_ap', 'blind', 'expose', 'spellvuln', 'lockout', 'vulnerability', 'hex', 'tongues', 'cost_tax', 'heal_absorb', 'critvuln'].includes(a.kind)
+        || (a.kind.startsWith('buff_') && a.value < 0);
       if (mode === 'debuffs' && !isDebuff) continue;
       const d = document.createElement('div');
       d.className = 'buff' + (isDebuff ? ' debuff' : '');
@@ -1784,23 +3076,83 @@ export class Hud {
       dur.textContent = a.remaining < 99 ? `${Math.ceil(a.remaining)}s` : '';
       d.appendChild(dur);
       const auraName = ABILITIES[a.id] ? abilityDisplayName(ABILITIES[a.id]) : auraDisplayNameFromSource(a.name);
-      this.attachTooltip(d, () => `<div class="tt-title">${esc(auraName)}</div><div class="tt-sub">${esc(t('hud.core.secondsRemaining', { seconds: Math.ceil(a.remaining) }))}</div>`);
+      this.attachTooltip(d, () => `<div class="tt-title">${esc(auraName)}</div><div class="tt-sub">${esc(tPlural('hudChrome.plurals.secondsRemaining', Math.ceil(a.remaining)))}</div>`);
       el.appendChild(d);
     }
   }
 
   private updateQuestTracker(): void {
     const el = $('#quest-tracker');
-    let html = this.sim.questLog.size > 0 ? `<div class="qt-header">${esc(t('questUi.tracker.title'))}</div>` : '';
+    const settings = this.optionsHooks?.settings;
+    let collapsed = (settings?.get('questTrackerCollapsed') ?? false) === true;
+    const quests: TrackedQuest[] = [];
     for (const qp of this.sim.questLog.values()) {
       const quest = QUESTS[qp.questId];
-      html += `<div class="qt-title">${esc(questTitle(qp.questId))}${qp.state === 'ready' ? ` <span class="quest-complete">(${esc(t('questUi.tracker.complete'))})</span>` : ''}</div>`;
-      quest.objectives.forEach((obj, i) => {
-        const done = qp.counts[i] >= obj.count;
-        html += `<div class="qt-obj${done ? ' done' : ''}">- ${esc(this.questProgressText(questObjectiveLabel(qp.questId, i), qp.counts[i], obj.count))}</div>`;
+      quests.push({
+        id: qp.questId,
+        title: questTitle(qp.questId),
+        complete: qp.state === 'ready',
+        objectives: quest.objectives.map((obj, i) => ({
+          label: questObjectiveLabel(qp.questId, i),
+          current: qp.counts[i],
+          total: obj.count,
+        })),
       });
     }
+    // Only persist the collapse choice while at least one quest is tracked: when
+    // the tracker empties (all quests turned in or abandoned) drop the flag, so a
+    // freshly accepted quest reappears expanded with its objectives visible
+    // rather than hidden behind a collapsed header. Self-limiting to a single
+    // write: once cleared, later empty frames read false and skip.
+    if (collapsed && quests.length === 0 && settings) {
+      settings.set('questTrackerCollapsed', false);
+      collapsed = false;
+    }
+    const html = this.questTrackerHtml(questTrackerView(quests, collapsed));
     if (el.innerHTML !== html) el.innerHTML = html;
+  }
+
+  // Render the pure tracker view to the floating overlay's HTML. The header is a
+  // <button> (pointer-events re-enabled in CSS over the otherwise click-through
+  // overlay) that toggles the collapse; a delegated listener on #quest-tracker
+  // (see the event-binding constructor) handles activation so it survives these
+  // innerHTML rebuilds.
+  private questTrackerHtml(view: QuestTrackerView): string {
+    if (!view.visible) return '';
+    const chevron = view.collapsed ? '▸' : '▾'; // U+25B8 right / U+25BE down triangle
+    // The leading space keeps a separator in the button's accessible name
+    // ("Quests (5)", not "Quests(5)"); the visual gap is the flex `gap`.
+    const count = view.collapsed
+      ? ` <span class="qt-count">${esc(t('hudChrome.questTracker.count', { count: this.questNumber(view.count) }))}</span>`
+      : '';
+    // State-aware hover hint: clicking collapses while expanded, expands while collapsed.
+    const hint = esc(t(view.collapsed ? 'hudChrome.questTracker.expandHint' : 'hudChrome.questTracker.collapseHint'));
+    // aria-controls points at the row list (kept in the DOM, empty when collapsed)
+    // so assistive tech ties the toggle to the region it shows/hides.
+    let html = `<button type="button" class="qt-header" aria-expanded="${!view.collapsed}" aria-controls="qt-list" title="${hint}">`
+      + `<span class="qt-chevron" aria-hidden="true">${chevron}</span>`
+      + `<span class="qt-h-label">${esc(t('questUi.tracker.title'))}</span>${count}</button>`;
+    let rows = '';
+    for (const q of view.quests) {
+      rows += `<div class="qt-title">${esc(q.title)}${q.complete ? ` <span class="quest-complete">(${esc(t('questUi.tracker.complete'))})</span>` : ''}</div>`;
+      for (const o of q.objectives) {
+        rows += `<div class="qt-obj${o.done ? ' done' : ''}">- ${esc(this.questProgressText(o.label, o.current, o.total))}</div>`;
+      }
+    }
+    return `${html}<div id="qt-list">${rows}</div>`;
+  }
+
+  /** Flip the persisted tracker-collapsed preference (the header click/keyboard
+   *  activation), preserving keyboard focus across the innerHTML rebuild. */
+  private toggleQuestTrackerCollapsed(): void {
+    const settings = this.optionsHooks?.settings;
+    if (!settings) return;
+    const refocus = document.activeElement instanceof HTMLElement
+      && document.activeElement.classList.contains('qt-header');
+    settings.set('questTrackerCollapsed', !settings.get('questTrackerCollapsed'));
+    audio.click();
+    this.updateQuestTracker();
+    if (refocus) ($('#quest-tracker').querySelector('.qt-header') as HTMLElement | null)?.focus();
   }
 
   // -------------------------------------------------------------------------
@@ -1809,53 +3161,214 @@ export class Hud {
 
   // Render a region of the heightfield to a canvas; width W px, height
   // derived from the region's aspect so a yard is square on screen.
-  private renderTerrainCanvas(W: number, region: { minX: number; maxX: number; minZ: number; maxZ: number }): HTMLCanvasElement {
-    const spanX = region.maxX - region.minX;
-    const spanZ = region.maxZ - region.minZ;
-    const H = Math.round(W * spanZ / spanX);
+  private renderTerrainCanvas(W: number, region: MapRegion): HTMLCanvasElement {
+    const H = mapCanvasHeight(W, region);
     const c = document.createElement('canvas');
     c.width = W;
     c.height = H;
     const ctx = c.getContext('2d')!;
     const img = ctx.createImageData(W, H);
-    const seed = this.sim.cfg.seed;
-    let prevH = 0; // height of the left-neighbour pixel, for free hillshade
-    for (let iy = 0; iy < H; iy++) {
-      for (let ix = 0; ix < W; ix++) {
-        // +Z up, +X LEFT: facing 0 is +Z ("north") and turning right
-        // decreases facing, so the world's east is -X — drawing +X to the
-        // right mirrored the whole map east-west
-        const x = region.maxX - (ix / W) * spanX;
-        const z = region.maxZ - (iy / H) * spanZ;
-        const h = terrainHeight(x, z, seed);
-        const biome = zoneAt(z).biome;
-        let r = 58, g = 105, b = 48;
-        if (biome === 'marsh') { r = 64; g = 86; b = 48; }
-        else if (biome === 'peaks') { r = 92; g = 100; b = 82; }
-        if (h < WATER_LEVEL) { r = 38; g = 84; b = 138; }
-        else if (h > 26) { r = 168; g = 172; b = 178; } // ridge / peak rock+snow
-        else if (h > 11) { r = 112; g = 110; b = 102; }
-        else if (h > 6) { r = 88; g = 102; b = 62; }
-        let nearHub = false;
-        for (const zn of ZONES) {
-          if (Math.hypot(x - zn.hub.x, z - zn.hub.z) < 14) { nearHub = true; break; }
-        }
-        if (nearHub) { r = 125; g = 100; b = 66; }
-        else if (h >= WATER_LEVEL && roadDistance(x, z) < 2.4) { r = 138; g = 111; b = 71; }
-        // hillshade: relief from the west→east slope, reusing the already-computed
-        // left-neighbour height so it costs no extra terrainHeight() calls
-        const left = ix === 0 ? h : prevH;
-        prevH = h;
-        if (h >= WATER_LEVEL) {
-          const shade = Math.max(0.74, Math.min(1.28, 1 + (h - left) * 0.16));
-          r = Math.min(255, r * shade); g = Math.min(255, g * shade); b = Math.min(255, b * shade);
-        }
-        const k = (iy * W + ix) * 4;
-        img.data[k] = r; img.data[k + 1] = g; img.data[k + 2] = b; img.data[k + 3] = 255;
-      }
-    }
+    paintTerrainRows(img.data, W, H, region, this.sim.cfg.seed, 0, H);
     ctx.putImageData(img, 0, 0);
     return c;
+  }
+
+  // The full-zone band used by the world map (and prewarm), keyed only on z.
+  private mapZoneRegion(zone: ZoneDef): MapRegion {
+    return { minX: WORLD_MIN_X, maxX: WORLD_MAX_X, minZ: zone.zMin, maxZ: zone.zMax };
+  }
+
+  // The cached terrain background for a zone, rendering it synchronously only if
+  // a prewarm hasn't already produced it. The synchronous path is the fallback
+  // for "opened the map the instant we entered a zone"; normally the idle
+  // prewarm has it ready and this is a Map hit.
+  private mapZoneBg(zone: ZoneDef): HTMLCanvasElement {
+    const cached = this.mapBgCache.get(zone.id);
+    if (cached) return cached;
+    const bg = this.renderTerrainCanvas(MAP_BG_RES, this.mapZoneRegion(zone));
+    this.mapBgCache.set(zone.id, bg);
+    // a redundant in-flight prewarm for this same zone can be dropped now
+    if (this.mapPrewarm?.zoneId === zone.id) this.cancelMapPrewarm();
+    return bg;
+  }
+
+  // Kick off (or no-op) an idle, time-sliced render of a zone's map background
+  // so opening the map never pays the ~200ms terrain cost on the click. Called
+  // when the committed zone changes and once at startup for the spawn zone.
+  private prewarmMapBg(zoneId: string): void {
+    if (this.mapBgCache.has(zoneId)) return;
+    if (this.mapPrewarm?.zoneId === zoneId) return; // already prewarming it
+    const zone = ZONES.find((z) => z.id === zoneId);
+    if (!zone) return;
+    this.cancelMapPrewarm(); // drop any prewarm for a now-stale zone
+    const region = this.mapZoneRegion(zone);
+    const W = MAP_BG_RES;
+    const H = mapCanvasHeight(W, region);
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    const ctx = c.getContext('2d')!;
+    this.mapPrewarm = { zoneId, canvas: c, ctx, img: ctx.createImageData(W, H), W, H, row: 0, region };
+    this.scheduleMapPrewarm();
+  }
+
+  private cancelMapPrewarm(): void {
+    if (this.mapPrewarmHandle) {
+      // Cancel only with the scheduler that produced this handle (see
+      // mapPrewarmVia): the two id pools are separate per spec, so a cross
+      // canceller could clear an unrelated timer sharing the number. When the
+      // idle path lacks cancelIdleCallback there is nothing to call, but the
+      // pumpMapPrewarm `if (!job) return` guard makes the stale callback a no-op.
+      if (this.mapPrewarmVia === 'idle') {
+        const cancel = (window as typeof window & { cancelIdleCallback?: (h: number) => void }).cancelIdleCallback;
+        if (cancel) cancel(this.mapPrewarmHandle);
+      } else {
+        clearTimeout(this.mapPrewarmHandle);
+      }
+      this.mapPrewarmHandle = 0;
+      this.mapPrewarmVia = null;
+    }
+    this.mapPrewarm = null;
+  }
+
+  private scheduleMapPrewarm(): void {
+    const w = window as typeof window & {
+      requestIdleCallback?: (cb: (d: { timeRemaining(): number }) => void, opts?: { timeout: number }) => number;
+    };
+    if (w.requestIdleCallback) {
+      this.mapPrewarmHandle = w.requestIdleCallback(this.pumpMapPrewarm, { timeout: 2000 });
+      this.mapPrewarmVia = 'idle';
+    } else {
+      this.mapPrewarmHandle = window.setTimeout(() => this.pumpMapPrewarm(), 16);
+      this.mapPrewarmVia = 'timeout';
+    }
+  }
+
+  // Paint a budgeted slice of the in-flight prewarm, then reschedule until the
+  // zone is fully rendered. Whole rows per slice keeps it byte-identical to a
+  // one-shot render (the only per-row state, hillshade, resets each row).
+  // With an idle deadline we paint as many slices as fit; without one (the
+  // setTimeout fallback) we paint a single slice and let the reschedule pace it,
+  // so the no-requestIdleCallback path stays sliced instead of rendering the
+  // whole canvas in one ~200ms hitch.
+  private pumpMapPrewarm = (deadline?: { timeRemaining(): number }): void => {
+    const job = this.mapPrewarm;
+    if (!job) return;
+    const seed = this.sim.cfg.seed;
+    const ROWS_PER_SLICE = 16; // ~6ms at MAP_BG_RES; one frame fits several
+    do {
+      const end = Math.min(job.H, job.row + ROWS_PER_SLICE);
+      paintTerrainRows(job.img.data, job.W, job.H, job.region, seed, job.row, end);
+      job.row = end;
+    } while (job.row < job.H && deadline !== undefined && deadline.timeRemaining() > 3);
+    if (job.row >= job.H) {
+      job.ctx.putImageData(job.img, 0, 0);
+      this.mapBgCache.set(job.zoneId, job.canvas);
+      this.mapPrewarm = null;
+      this.mapPrewarmHandle = 0;
+      this.mapPrewarmVia = null;
+      return;
+    }
+    this.scheduleMapPrewarm();
+  };
+
+  // Refresh the minimap clock to the current real local time. Cheap to call
+  // every frame: the formatted string only changes once a minute, and we skip
+  // the DOM write whenever it is unchanged.
+  private updateClock(): void {
+    if (!this.clockEl) return;
+    const text = formatClockTime(new Date(), this.clock24);
+    if (text !== this.lastClockText) {
+      this.lastClockText = text;
+      this.clockEl.textContent = text;
+    }
+  }
+
+  // Classic-style coordinate readout pinned under the minimap. Reads only the
+  // player position (already mirrored online), and diffs against the last text
+  // so the DOM node is touched at most once per whole-yard step.
+  private updateMinimapCoords(): void {
+    const p = this.sim.player;
+    const text = formatMinimapCoords(p.pos.x, p.pos.z);
+    if (text === this.lastCoordsText) return;
+    this.lastCoordsText = text;
+    const el = $('#minimap-coords');
+    if (el) el.textContent = text;
+  }
+
+  // Build the compass rose-label pool once. Each of the 8 points gets a span
+  // that we later slide horizontally; positioning happens in updateCompass().
+  private initCompass(): void {
+    const track = $('#compass-track');
+    if (!track) return;
+    const ids: CardinalId[] = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    for (const id of ids) {
+      const el = document.createElement('span');
+      el.className = 'compass-mark' + (id.length === 1 ? ' major' : '');
+      el.textContent = t(`hudChrome.compass.${id}`);
+      track.appendChild(el);
+      this.compassMarks.set(id, el);
+    }
+    this.compassHeadingEl = $('#compass-heading');
+  }
+
+  private updateCompass(): void {
+    if (this.compassMarks.size === 0) return;
+    const view = compassView(this.sim.player.facing);
+    const visible = new Set<string>();
+    for (const m of view.marks) {
+      const el = this.compassMarks.get(m.label);
+      if (!el) continue;
+      visible.add(m.label);
+      // offsetFrac -1..1 → 0..100% across the strip; fade marks near the edges
+      el.style.left = `${(m.offsetFrac * 0.5 + 0.5) * 100}%`;
+      el.style.opacity = `${Math.max(0.2, 1 - Math.abs(m.offsetFrac) * 0.85)}`;
+      el.style.display = 'block';
+    }
+    for (const [label, el] of this.compassMarks) {
+      if (!visible.has(label)) el.style.display = 'none';
+    }
+    if (this.compassHeadingEl && view.heading !== this.lastCompassHeading) {
+      this.lastCompassHeading = view.heading;
+      this.compassHeadingEl.textContent = t(`hudChrome.compass.${view.heading}`);
+    }
+  }
+
+  // Build the minimap zoom control: load the persisted level, wire the +/-
+  // buttons and a scroll-wheel handler over the minimap canvas. Pure DOM glue;
+  // all stepping/clamping math lives in minimap_zoom.ts.
+  private initMinimapZoom(mm: HTMLElement): void {
+    const saved = Number(localStorage.getItem('minimapZoom'));
+    this.minimapZoom = clampMinimapZoom(saved);
+    this.minimapZoomLabel = $('#minimap-zoom-label');
+    const inBtn = document.querySelector('#minimap-zoom-in');
+    const outBtn = document.querySelector('#minimap-zoom-out');
+    inBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.setMinimapZoom(nextMinimapZoom(this.minimapZoom, +1)); });
+    outBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.setMinimapZoom(nextMinimapZoom(this.minimapZoom, -1)); });
+    // scroll over the minimap to zoom (up = in), without scrolling the page
+    mm.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this.setMinimapZoom(nextMinimapZoom(this.minimapZoom, (e as WheelEvent).deltaY < 0 ? +1 : -1));
+    }, { passive: false });
+    this.syncMinimapZoomUi();
+  }
+
+  private setMinimapZoom(z: number): void {
+    const next = clampMinimapZoom(z);
+    if (next === this.minimapZoom) return;
+    this.minimapZoom = next;
+    localStorage.setItem('minimapZoom', String(next));
+    this.syncMinimapZoomUi();
+  }
+
+  // Reflect the current zoom in the readout and disable the +/- buttons at the
+  // ends so the control communicates its own limits.
+  private syncMinimapZoomUi(): void {
+    if (this.minimapZoomLabel) this.minimapZoomLabel.textContent = `${formatNumber(minimapZoomValue(this.minimapZoom), { maximumFractionDigits: 1 })}×`;
+    const inBtn = document.querySelector('#minimap-zoom-in') as HTMLButtonElement | null;
+    const outBtn = document.querySelector('#minimap-zoom-out') as HTMLButtonElement | null;
+    if (inBtn) inBtn.disabled = isMaxMinimapZoom(this.minimapZoom);
+    if (outBtn) outBtn.disabled = isMinMinimapZoom(this.minimapZoom);
   }
 
   private updateMinimap(): void {
@@ -1869,7 +3382,9 @@ export class Hud {
     ctx.arc(S / 2, S / 2, S / 2 - 2, 0, Math.PI * 2);
     ctx.clip();
     ctx.imageSmoothingEnabled = false;
-    const pxPerYard = 1.7;
+    // 1.7 is the historical base scale; the zoom multiplier shrinks the world
+    // radius shown so markers spread out as you zoom in (default 1 = unchanged).
+    const pxPerYard = 1.7 * this.minimapZoom;
     const bg = this.minimapBg;
     const bgPxPerYard = bg.width / (WORLD_MAX_X - WORLD_MIN_X);
     const sw = S / (pxPerYard / bgPxPerYard);
@@ -1904,7 +3419,7 @@ export class Hud {
         }
       } else if (e.kind === 'npc') {
         const hasAvail = e.questIds.some((q) => QUESTS[q].giverNpcId === e.templateId && this.sim.questState(q) === 'available');
-        const hasReady = e.questIds.some((q) => QUESTS[q].turnInNpcId === e.templateId && this.sim.questState(q) === 'ready');
+        const hasReady = e.questIds.some((q) => isQuestTurnInNpc(QUESTS[q], e.templateId) && this.sim.questState(q) === 'ready');
         ctx.fillStyle = '#ffd100';
         ctx.font = 'bold 11px Georgia';
         ctx.fillText(hasReady ? '?' : hasAvail ? '!' : '•', mx - 2, my + 3);
@@ -1998,20 +3513,20 @@ export class Hud {
     this.closeOtherWindows('#arena-window');
     el.style.display = 'block';
     this.lastArenaSig = '';
-    this.fetchArenaLeaderboard();
+    this.fetchArenaLeaderboard(this.arenaBracket);
     this.renderArenaWindow();
   }
 
   // Best-effort all-time ladder pull. Throttled; silently no-ops offline (no
   // server) so the panel still shows the live online ladder either way.
-  private fetchArenaLeaderboard(): void {
+  private fetchArenaLeaderboard(format: ArenaFormat): void {
     const now = performance.now();
-    if (now - this.arenaLbFetchedAt < 15000) return;
-    this.arenaLbFetchedAt = now;
-    fetch('/api/arena/leaderboard')
+    if (now - (this.arenaLbFetchedAt[format] ?? 0) < 15000) return;
+    this.arenaLbFetchedAt[format] = now;
+    fetch(`/api/arena/leaderboard?format=${encodeURIComponent(format)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (d && Array.isArray(d.leaders)) { this.arenaAllTime = d.leaders; this.lastArenaSig = ''; }
+        if (d && Array.isArray(d.leaders)) { this.arenaAllTime[format] = d.leaders; this.lastArenaSig = ''; }
       })
       .catch(() => { /* offline or no server — live ladder only */ });
   }
@@ -2027,8 +3542,18 @@ export class Hud {
       return;
     }
     const inMatch = a.match !== null;
+    const queuedFmt = a.queued ? a.format : null;
+    const bracket = a.match?.format ?? queuedFmt ?? this.arenaBracket;
+    if (queuedFmt || a.match) this.arenaBracket = bracket;
+    const canSwitchBracket = !a.queued && !inMatch;
+    const standing = a.standings[bracket];
+    const ladderRows = a.ladders[bracket];
     const myPid = this.sim.playerId;
-    const ladder = a.ladder.map((r, i) => {
+    const party = this.sim.partyInfo;
+    const partySize = party?.members.length ?? 1;
+    const isLeader = !party || party.leader === myPid;
+
+    const ladder = ladderRows.map((r, i) => {
       const me = r.pid === myPid;
       const classId = r.cls as PlayerClass;
       const cls = CLASSES[classId] ? classDisplayName(classId) : r.cls;
@@ -2038,6 +3563,34 @@ export class Hud {
         + `<span class="lr-wl">${esc(formatNumber(r.wins, { maximumFractionDigits: 0 }))}-${esc(formatNumber(r.losses, { maximumFractionDigits: 0 }))}</span></div>`;
     }).join('') || `<div class="ladder-empty">${esc(t('hud.arena.noChallengers'))}</div>`;
 
+    const bracketLabel = (fmt: ArenaFormat) => fmt === 'fiesta' ? t('fiesta.bracket') : fmt;
+    const bracketBtn = (fmt: ArenaFormat) => {
+      const active = bracket === fmt;
+      const locked = !canSwitchBracket && !active;
+      const fiestaCls = fmt === 'fiesta' ? ' fiesta' : '';
+      return `<button class="arena-bracket${fiestaCls}${active ? ' active' : ''}${locked ? ' locked' : ''}" data-bracket="${fmt}" aria-pressed="${active ? 'true' : 'false'}"${locked ? ' disabled' : ''}>${esc(bracketLabel(fmt))}</button>`;
+    };
+    const bracketTabs = `<div class="arena-brackets">${bracketBtn('1v1')}${bracketBtn('2v2')}${bracketBtn('fiesta')}</div>`;
+    const isTeamBracket = bracket === '2v2' || bracket === 'fiesta';
+
+    let partySection = '';
+    if (isTeamBracket && !inMatch && !a.queued) {
+      if (party && partySize === 2) {
+        const rows = party.members.map((m) => {
+          const cls = CLASSES[m.cls] ? classDisplayName(m.cls) : m.cls;
+          const me = m.pid === myPid ? ' me' : '';
+          return `<div class="arena-party-row${me}"><span class="apr-name">${esc(m.name)}</span>`
+            + `<span class="apr-meta">${esc(t('hud.arena.levelClass', {
+              level: formatNumber(m.level, { maximumFractionDigits: 0 }),
+              className: cls,
+            }))}</span></div>`;
+        }).join('');
+        partySection = `<div class="arena-party">${rows}</div>`;
+      } else if (party && partySize > 2) {
+        partySection = `<div class="arena-note arena-warn">${esc(t('hud.arena.queueNote'))}</div>`;
+      }
+    }
+
     let action: string;
     if (inMatch) {
       action = `<div class="arena-queue-status">${svgIcon('arena')} ${esc(t('hud.arena.matchInProgress', { name: a.match!.oppName }))}</div>`;
@@ -2045,12 +3598,30 @@ export class Hud {
       action = `<button class="btn leave" data-act="leave">${esc(t('hud.arena.leaveQueue'))}</button>`
         + `<div class="arena-queue-status">${esc(t('hud.arena.searching', { count: formatNumber(a.queueSize, { maximumFractionDigits: 0 }) }))}</div>`;
     } else {
-      action = `<button class="btn" data-act="queue">${esc(t('hud.arena.enterQueue'))}</button>`
+      let queueDisabled = false;
+      if (isTeamBracket && party && partySize === 2 && !isLeader) {
+        queueDisabled = true;
+      } else if (isTeamBracket && party && partySize > 2) {
+        queueDisabled = true;
+      } else if (bracket === '1v1' && party && partySize > 1) {
+        queueDisabled = true;
+      }
+      const btnCls = queueDisabled ? 'btn disabled' : 'btn';
+      const queueLabel = bracket === 'fiesta' ? t('fiesta.enterQueue') : t('hud.arena.enterQueue');
+      action = `<button class="${btnCls}" data-act="queue"${queueDisabled ? ' disabled' : ''}>${esc(queueLabel)}</button>`
         + `<div class="arena-note">${esc(t('hud.arena.queueNote'))}</div>`;
     }
 
-    this.fetchArenaLeaderboard();
-    const allTime = (this.arenaAllTime ?? []).map((r, i) => {
+    // Offline dev affordance: practice Fiesta against bots (hidden online).
+    let practiceSection = '';
+    if (bracket === 'fiesta' && this.fiestaPracticeHook && !inMatch) {
+      practiceSection = `<button class="btn fiesta-practice" data-act="practice">${esc(t('fiesta.practice'))}</button>`
+        + `<div class="arena-note">${esc(t('fiesta.practiceNote'))}</div>`;
+    }
+
+    this.fetchArenaLeaderboard(bracket);
+    const allTimeRows = this.arenaAllTime[bracket] ?? null;
+    const allTime = (allTimeRows ?? []).map((r, i) => {
       const me = r.name === this.sim.player.name;
       const classId = r.class as PlayerClass;
       const cls = CLASSES[classId] ? classDisplayName(classId) : r.class;
@@ -2063,28 +3634,47 @@ export class Hud {
         + `<span class="lr-rating">${esc(formatNumber(r.rating, { maximumFractionDigits: 0 }))}</span>`
         + `<span class="lr-wl">${esc(formatNumber(r.wins, { maximumFractionDigits: 0 }))}-${esc(formatNumber(r.losses, { maximumFractionDigits: 0 }))}</span></div>`;
     }).join('');
-    const allTimeSection = this.arenaAllTime && this.arenaAllTime.length > 0
+    const allTimeSection = allTimeRows && allTimeRows.length > 0
       ? `<div class="arena-sub">${esc(t('hud.arena.ladderAllTime'))}</div>${allTime}`
       : '';
 
-    const sig = JSON.stringify([a.rating, a.wins, a.losses, a.queued, a.queueSize, inMatch, a.ladder, this.arenaAllTime]);
-    if (sig === this.lastArenaSig) return; // nothing changed; skip the DOM churn (and re-bind)
+    const sig = JSON.stringify([standing, a.queued, a.queueSize, inMatch, ladderRows, allTimeRows, bracket, party, canSwitchBracket]);
+    if (sig === this.lastArenaSig) return;
     this.lastArenaSig = sig;
 
-    el.innerHTML = `<div class="panel-title"><span>${esc(t('hud.arena.title'))} <span style="color:#998d6a;font-size:11px">${esc(t('hud.arena.subtitle'))}</span></span><button type="button" class="x-btn" data-close aria-label="${esc(t('hud.arena.close'))}">${svgIcon('close')}</button></div>`
-      + `<div class="arena-rank"><span class="rating">${esc(formatNumber(a.rating, { maximumFractionDigits: 0 }))}</span>`
+    el.innerHTML = `<div class="panel-title"><span>${esc(t('hud.arena.title'))} <span class="arena-bracket-tag${bracket === 'fiesta' ? ' fiesta' : ''}">${esc(bracketLabel(bracket))}</span></span><button type="button" class="x-btn" data-close aria-label="${esc(t('hud.arena.close'))}">${svgIcon('close')}</button></div>`
+      + bracketTabs
+      + `<div class="arena-rank"><span class="rating">${esc(formatNumber(standing.rating, { maximumFractionDigits: 0 }))}</span>`
       + `<span class="wl">${esc(t('hud.arena.ratingSummary', {
-        wins: formatNumber(a.wins, { maximumFractionDigits: 0 }),
-        losses: formatNumber(a.losses, { maximumFractionDigits: 0 }),
+        wins: formatNumber(standing.wins, { maximumFractionDigits: 0 }),
+        losses: formatNumber(standing.losses, { maximumFractionDigits: 0 }),
       }))}</span></div>`
+      + partySection
       + action
+      + practiceSection
       + `<div class="arena-sub">${esc(t('hud.arena.ladderOnline'))}</div>`
       + ladder
       + allTimeSection;
 
     el.querySelector('[data-close]')?.addEventListener('click', () => { el.style.display = 'none'; });
-    el.querySelector('[data-act="queue"]')?.addEventListener('click', () => { this.sim.arenaQueueJoin(); audio.click(); });
+    el.querySelectorAll('[data-bracket]:not([disabled])').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.arenaBracket = (btn as HTMLElement).dataset.bracket as ArenaFormat;
+        this.lastArenaSig = '';
+        this.renderArenaWindow();
+        audio.click();
+      });
+    });
+    el.querySelector('[data-act="queue"]:not([disabled])')?.addEventListener('click', () => {
+      this.sim.arenaQueueJoin(bracket);
+      audio.click();
+    });
     el.querySelector('[data-act="leave"]')?.addEventListener('click', () => { this.sim.arenaQueueLeave(); audio.click(); });
+    el.querySelector('[data-act="practice"]')?.addEventListener('click', () => {
+      this.fiestaPracticeHook?.();
+      this.lastArenaSig = '';
+      audio.click();
+    });
   }
 
   // The pinned in-match banner: opponent name + countdown / live match timer.
@@ -2100,15 +3690,27 @@ export class Hud {
     const label = m.state === 'countdown' ? t('hud.arena.statusCountdown')
       : m.state === 'over' ? t('hud.arena.statusReturning', { seconds: formatNumber(m.returnIn ?? 0, { maximumFractionDigits: 0 }) })
       : t('hud.arena.statusFight');
-    const sig = `${m.oppName}|${m.state}|${m.state === 'over' ? (m.returnIn ?? 0) : ''}`;
-    if (sig !== this.lastArenaStatusSig) {
-      this.lastArenaStatusSig = sig;
+    let vsBlock: string;
+    if (m.format === '2v2') {
+      const allyNames = [esc(t('hud.core.you')), ...m.allies.map((c) => esc(c.name))].join(' - ');
+      const enemyNames = m.enemies.map((c) => esc(c.name)).join(' - ');
+      const vs = esc(t('hud.arena.vsLine', { name: '' }).trim());
+      vsBlock = `<div class="as-teams">`
+        + `<div class="as-team allies"><span class="as-names">${allyNames}</span></div>`
+        + `<div class="as-mid">${vs}</div>`
+        + `<div class="as-team enemies"><span class="as-names">${enemyNames}</span></div>`
+        + `</div>`;
+    } else {
       const cls = CLASSES[m.oppClass] ? classDisplayName(m.oppClass) : m.oppClass;
-      el.innerHTML = `<div class="as-vs">${svgIcon('arena')} ${esc(t('hud.arena.vsLine', { name: m.oppName }))} <span style="color:#b6ad8c;font-size:11px">${esc(t('hud.arena.levelClass', {
+      vsBlock = `<div class="as-vs">${svgIcon('arena')} ${esc(t('hud.arena.vsLine', { name: m.oppName }))} <span style="color:#b6ad8c;font-size:11px">${esc(t('hud.arena.levelClass', {
         level: formatNumber(m.oppLevel, { maximumFractionDigits: 0 }),
         className: cls,
-      }))}</span></div>`
-        + `<div class="as-timer">${esc(label)}</div>`;
+      }))}</span></div>`;
+    }
+    const sig = `${m.format}|${vsBlock}|${m.state}|${m.state === 'over' ? (m.returnIn ?? 0) : ''}`;
+    if (sig !== this.lastArenaStatusSig) {
+      this.lastArenaStatusSig = sig;
+      el.innerHTML = `${vsBlock}<div class="as-timer">${esc(label)}</div>`;
       el.style.display = 'block';
     }
   }
@@ -2148,11 +3750,8 @@ export class Hud {
     const zone: ZoneDef = dungeon
       ? zoneAt(dungeon.doorPos.z)
       : ZONES.find((z) => z.id === this.lastZoneId) ?? zoneAt(p.pos.z);
-    const full = { minX: WORLD_MIN_X, maxX: WORLD_MAX_X, minZ: zone.zMin, maxZ: zone.zMax };
-    if (!this.mapBg || this.mapZoneId !== zone.id) {
-      this.mapBg = this.renderTerrainCanvas(MAP_BG_RES, full); // whole zone, cached & detailed
-      this.mapZoneId = zone.id;
-    }
+    const full = this.mapZoneRegion(zone);
+    const mapBg = this.mapZoneBg(zone); // cached per zone; prewarmed during idle
     // zoomed view: a sub-rectangle of the zone, centred on the player and
     // clamped to the zone bounds (zoom 1 = the whole zone).
     const fullSpanX = full.maxX - full.minX;
@@ -2168,7 +3767,7 @@ export class Hud {
     this.mapView = { spanX, spanZ, minX: full.minX, maxX: full.maxX, minZ: full.minZ, maxZ: full.maxZ };
     if (!this.mapDrag) canvas.style.cursor = this.mapZoom > 1 ? 'grab' : 'default';
     // blit the matching sub-rect of the cached terrain (note: +X is map-left)
-    const bg = this.mapBg;
+    const bg = mapBg;
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(
       bg,
@@ -2224,7 +3823,7 @@ export class Hud {
       if (e.pos.z < zone.zMin || e.pos.z >= zone.zMax) continue;
       const { mx, my } = toMap(e.pos.x, e.pos.z);
       const hasAvail = e.questIds.some((q) => QUESTS[q].giverNpcId === e.templateId && this.sim.questState(q) === 'available');
-      const hasReady = e.questIds.some((q) => QUESTS[q].turnInNpcId === e.templateId && this.sim.questState(q) === 'ready');
+      const hasReady = e.questIds.some((q) => isQuestTurnInNpc(QUESTS[q], e.templateId) && this.sim.questState(q) === 'ready');
       if (hasAvail || hasReady) {
         ctx.fillStyle = '#ffd100';
         ctx.font = 'bold 15px Georgia';
@@ -2339,13 +3938,146 @@ export class Hud {
   // Events -> log, FCT, audio, banners
   // -------------------------------------------------------------------------
 
+  // Prune spatial-audio state for entities that left interest without a clean
+  // death/castStop (online interest churn, leash, despawn) — stops orphaned cast
+  // loops and frees the aggro Set. Throttled (~10 Hz) from update().
+  private reconcileSfx(): void {
+    const sim = this.sim;
+    if (this.mobAggroed.size) {
+      for (const id of this.mobAggroed) if (!sim.entities.has(id)) this.mobAggroed.delete(id);
+    }
+    if (this.castLoopIds.size) {
+      for (const id of this.castLoopIds) {
+        const ent = sim.entities.get(id);
+        if (!ent || ent.castingAbility === null) { sfx.unloop(`cast:${id}`, 0.2); this.castLoopIds.delete(id); }
+      }
+    }
+  }
+
+  // Spatial sound for a sim event — positioned at the relevant entity so nearby
+  // players' and creatures' combat attenuates with distance and pans correctly.
+  // Personal/UI sounds stay on the procedural audio.* path in handleEvents.
+  // All combat/spell/creature SFX route through here so the whole layer can be
+  // balanced with the single COMBAT_GAIN knob (kept under movement/ambience).
+  private combat(key: string, x: number, y: number, z: number, gain: number, opts?: { rate?: number; cooldown?: number }): void {
+    sfx.playAt(key, x, y, z, { gain: gain * COMBAT_GAIN, rate: opts?.rate, cooldown: opts?.cooldown });
+  }
+
+  private playEventSfx(ev: SimEvent): void {
+    const sim = this.sim;
+    switch (ev.type) {
+      case 'damage': {
+        const tgt = sim.entities.get(ev.targetId);
+        if (!tgt) return;
+        const tp = tgt.pos;
+        if (ev.kind === 'miss' || ev.kind === 'dodge') { this.combat('combat_dodge', tp.x, tp.y, tp.z, 0.5); return; }
+        if (ev.kind === 'parry') { this.combat('combat_parry', tp.x, tp.y, tp.z, 0.6); return; }
+        const src = sim.entities.get(ev.sourceId);
+        if (src) this.playAttackerSfx(src);
+        // a struck mob vocalizes its aggro alert the first time it's engaged
+        // (camp engage), whether you hit it or it hits you.
+        if (tgt.kind === 'mob') this.ensureMobEngaged(tgt);
+        const physical = !ev.school || ev.school === 'physical';
+        if (shouldPlayCombatImpactForTarget(tgt)) {
+          this.combat(physical ? materialImpactKey(tgt) : `impact_${ev.school}`, tp.x, tp.y, tp.z, 0.75, { cooldown: 0.05 });
+        }
+        if (ev.crit && shouldPlayCritSfxForTarget(tgt)) this.combat('combat_crit', tp.x, tp.y, tp.z, 0.7);
+        // pain vocalization only on a crit — never on ordinary hits.
+        if (ev.crit && ev.targetId === sim.playerId) {
+          this.combat('player_hurt', tp.x, tp.y, tp.z, 0.55, { cooldown: 0.3 });
+        } else if (ev.crit && tgt.kind === 'mob' && shouldPlayCritSfxForTarget(tgt)) {
+          const fam = mobVoiceFamily(tgt.templateId);
+          if (fam && shouldPlayMobVoiceSfxForEntity(tgt)) this.combat(`mob_${fam}_attack`, tp.x, tp.y, tp.z, 0.6, { rate: 1.25, cooldown: 0.1 });
+        }
+        return;
+      }
+      case 'castStart': {
+        const ent = sim.entities.get(ev.entityId);
+        const key = castKeyForAbility(ev.ability);
+        if (ent && key) { sfx.loop(`cast:${ev.entityId}`, key, 0.45 * COMBAT_GAIN, ent.pos.x, ent.pos.y, ent.pos.z); this.castLoopIds.add(ev.entityId); }
+        return;
+      }
+      case 'castStop': sfx.unloop(`cast:${ev.entityId}`, 0.2); this.castLoopIds.delete(ev.entityId); return;
+      case 'spellfx': {
+        if (ev.fx === 'projectile') { const s = sim.entities.get(ev.sourceId); if (s) this.combat(`proj_${ev.school}`, s.pos.x, s.pos.y, s.pos.z, 0.55); }
+        else if (ev.fx === 'nova') { const e = sim.entities.get(ev.sourceId) ?? sim.entities.get(ev.targetId); if (e) this.combat('spell_nova', e.pos.x, e.pos.y, e.pos.z, 0.6); }
+        return;
+      }
+      case 'heal': case 'heal2': {
+        const tgt = sim.entities.get(ev.targetId);
+        if (tgt) this.combat('heal_impact', tgt.pos.x, tgt.pos.y, tgt.pos.z, 0.45, { cooldown: 0.1 });
+        return;
+      }
+      case 'aura': {
+        if (ev.targetId !== sim.playerId) return; // only your own buffs/debuffs, else it's spammy
+        const p = sim.player.pos;
+        this.combat(ev.gained ? 'buff_apply' : 'debuff_apply', p.x, p.y, p.z, 0.4, { cooldown: 0.1 });
+        return;
+      }
+      case 'death': {
+        sfx.unloop(`cast:${ev.entityId}`, 0);
+        this.castLoopIds.delete(ev.entityId);
+        const ent = sim.entities.get(ev.entityId);
+        if (!ent) return;
+        const p = ent.pos;
+        if (ent.kind === 'mob') {
+          this.mobAggroed.delete(ev.entityId);
+          const fam = mobVoiceFamily(ent.templateId);
+          if (fam && shouldPlayMobVoiceSfxForEntity(ent)) this.combat(`mob_${fam}_death`, p.x, p.y, p.z, 0.8);
+        } else if (ent.kind === 'player' && ev.entityId !== sim.playerId) {
+          this.combat('player_death', p.x, p.y, p.z, 0.7);
+        }
+        return;
+      }
+    }
+  }
+
+  // First contact with a mob (it hits you, or you hit it) plays its aggro alert
+  // once — the "engage" sound. Returns true if this call fired it. Cleared on
+  // death / when the mob leaves interest (reconcileSfx).
+  private ensureMobEngaged(mob: Entity): boolean {
+    if (this.mobAggroed.has(mob.id)) return false;
+    this.mobAggroed.add(mob.id);
+    const fam = mobVoiceFamily(mob.templateId);
+    if (fam && shouldPlayMobVoiceSfxForEntity(mob)) this.combat(`mob_${fam}_aggro`, mob.pos.x, mob.pos.y, mob.pos.z, 0.7);
+    return true;
+  }
+
+  // Attacker side of a damage event: a creature roars on engage then grunts on
+  // subsequent strikes; a player swings their weapon.
+  private playAttackerSfx(src: Entity): void {
+    if (src.kind === 'mob') {
+      if (this.ensureMobEngaged(src)) return; // just fired the aggro alert
+      const fam = mobVoiceFamily(src.templateId);
+      if (fam && shouldPlayMobVoiceSfxForEntity(src)) this.combat(`mob_${fam}_attack`, src.pos.x, src.pos.y, src.pos.z, 0.55, { cooldown: 0.25 });
+    } else if (src.kind === 'player') {
+      this.combat(weaponSwingKey(src.templateId), src.pos.x, src.pos.y, src.pos.z, 0.5, { cooldown: 0.08 });
+    }
+  }
+
+  private isNythraxisEntity(id: number | null | undefined): boolean {
+    if (id === null || id === undefined) return false;
+    const e = this.sim.entities.get(id);
+    return e?.templateId === 'nythraxis_scourge_of_thornpeak'
+      || e?.templateId === 'nythraxis_skeleton_warrior';
+  }
+
+  private isNythraxisEvent(ev: SimEvent): boolean {
+    if ('sourceId' in ev && this.isNythraxisEntity(ev.sourceId)) return true;
+    if ('targetId' in ev && this.isNythraxisEntity(ev.targetId)) return true;
+    if ('entityId' in ev && this.isNythraxisEntity(ev.entityId)) return true;
+    return false;
+  }
+
   handleEvents(events: SimEvent[]): void {
     const sim = this.sim;
     for (const ev of events) {
       // visual effects (swings, projectiles, glows) — for everyone nearby,
       // not just events involving this player
       this.renderer.handleEvent(ev);
+      this.playEventSfx(ev); // positional sound for nearby combat/creatures
       this.meters.onEvent(ev);
+      if (this.isNythraxisEvent(ev)) this.lastNythraxisCombatEventAt = performance.now();
       switch (ev.type) {
         case 'damage': {
           const src = sim.entities.get(ev.sourceId);
@@ -2356,12 +4088,16 @@ export class Hud {
           if (isPlayerSource || isPlayerTarget) this.lastCombatEventAt = performance.now();
           if (ev.kind === 'miss' || ev.kind === 'dodge') {
             this.fct(tgt, ev.kind === 'miss' ? t('hud.combat.floatingMiss') : t('hud.combat.floatingDodge'), isPlayerTarget ? '#bbb' : '#fff', false);
+            // Fiesta: a dodge is a moment — pop a big exaggerated word for it.
+            if (ev.kind === 'dodge' && (isPlayerSource || isPlayerTarget) && this.inFiesta()) {
+              this.fiestaWordPop(t('fiesta.word.dodge'), '#7fd4ff', 1);
+              this.renderer.addShake(0.15);
+            }
             if (isPlayerSource) {
               this.combatLog(t(ev.kind === 'miss' ? 'hud.combat.miss' : 'hud.combat.dodged', {
                 ability: combatAbilityName(ev.ability),
                 target: entityDisplayName(tgt),
               }), '#ccc');
-              audio.meleeMiss();
             }
             break;
           }
@@ -2373,23 +4109,25 @@ export class Hud {
               target: entityDisplayName(tgt),
               amount: ev.amount,
             }), ev.ability ? '#ffe97a' : '#eee');
-            if (ev.school === 'fire') audio.fire();
-            else if (ev.school === 'frost') audio.frost();
-            else if (ev.school === 'arcane') audio.arcane();
-            else audio.meleeHit(ev.crit);
+            // combat SFX (swing + material/school impact + crit) is spatial now —
+            // see playEventSfx, which runs for every damage event above.
+            // Fiesta: every blow you land kicks the camera (bigger on a crit).
+            if (this.inFiesta()) this.renderer.addShake(ev.crit ? 0.3 : 0.12);
           } else if (isPlayerTarget) {
             this.fct(tgt, `-${ev.amount}`, '#ff5544', ev.crit);
             this.combatLog(t(ev.crit ? 'hud.combat.damageTakenCrit' : 'hud.combat.damageTaken', {
               source: src ? entityDisplayName(src) : '?',
               amount: ev.amount,
             }), '#ff8877');
-            audio.hitTaken();
+            // player-hit SFX is spatial now (see playEventSfx). Keep the Fiesta kick.
+            if (this.inFiesta()) this.renderer.addShake(ev.crit ? 0.34 : 0.14);
           }
           break;
         }
         case 'heal': {
-          if (ev.targetId === sim.playerId && ev.amount > 0) {
-            this.fct(sim.player, `+${ev.amount}`, '#3ce63c', false);
+          if (ev.amount > 0) {
+            const healed = ev.targetId === sim.playerId ? sim.player : sim.entities.get(ev.targetId);
+            if (healed) this.fct(healed, `+${ev.amount}`, '#3ce63c', false);
           }
           break;
         }
@@ -2400,13 +4138,19 @@ export class Hud {
         }
         case 'xp': {
           this.fct(sim.player, t('hud.core.xpFloat', { amount: ev.amount }), '#b974ff', false);
-          this.log(t('hud.core.xpGain', { amount: ev.amount }), '#a980d8');
+          if (ev.rested && ev.rested > 0) {
+            this.fct(sim.player, t('hud.core.xpFloatRested', { amount: ev.rested }), '#4a9eff', false);
+            this.log(t('hud.core.xpGainRested', { amount: ev.amount, rested: ev.rested }), '#a980d8');
+          } else {
+            this.log(t('hud.core.xpGain', { amount: ev.amount }), '#a980d8');
+          }
           break;
         }
         case 'levelup': {
           this.showBanner(t('hud.core.levelBanner', { level: ev.level }));
           this.log(t('hud.core.levelLog', { level: ev.level }), '#ffd100');
           audio.levelUp();
+          if (ev.level === 5) trackMetaPixel('ReachedLevel5', { level: ev.level });
           // First talent point (and spec) unlock — nudge the player to the panel.
           if (ev.level === FIRST_TALENT_LEVEL && talentsFor(this.sim.cfg.playerClass)) {
             this.showBanner(t('game.talents.unlockBanner'));
@@ -2432,9 +4176,14 @@ export class Hud {
         case 'comboPoint': break;
         case 'loot': {
           this.log(this.localizeLootText(ev.text), '#7fdc4f');
+          if (/ wins .+ \(\d+\)$/.test(ev.text) || /^Everyone passed on .+\.$/.test(ev.text)) this.closeLootRollsForItem(ev.text);
           if (ev.text.includes('loot') || ev.text.includes('Sold') || ev.text.includes('Bought back')) audio.coin();
           else audio.lootItem();
           if ($('#bags').style.display !== 'none') this.renderBags();
+          break;
+        }
+        case 'lootRoll': {
+          this.showLootRoll(ev);
           break;
         }
         case 'vendor': {
@@ -2442,15 +4191,20 @@ export class Hud {
           if (this.openVendorNpcId !== null) this.renderVendor();
           break;
         }
+        case 'skinEvent': this.openSkinEvent(ev.rank, ev.catalog === 'mech' ? { mech: true } : undefined); break;
         case 'error': this.showError(this.localizeErrorText(ev.text)); break;
         case 'questAccepted':
           audio.questAccept();
           this.refreshGossip();
           break;
-        case 'questProgress': this.log(this.localizeQuestProgressText(ev.questId, ev.text), '#dcd29f'); break;
+        case 'questProgress':
+          this.log(this.localizeQuestProgressText(ev.questId, ev.text), '#dcd29f');
+          this.refreshGossip();
+          break;
         case 'questReady': {
           this.showBanner(t('questUi.logs.ready', { name: questTitle(ev.questId), status: t('questUi.log.readyStatus') }));
           audio.questDone();
+          this.refreshGossip();
           break;
         }
         case 'questDone':
@@ -2460,25 +4214,32 @@ export class Hud {
         case 'chat': {
           if (this.isChatIgnored(ev.from)) break;
           switch (ev.channel) {
-            case 'party': this.chatLogFrom(ev.from, ev.text, '#7fd4ff', CHAT_TEMPLATE_KEYS.party); break;
-            case 'yell': this.chatLogFrom(ev.from, ev.text, '#ff5040', CHAT_TEMPLATE_KEYS.yell); break;
+            case 'party': this.chatLogFrom(ev.from, ev.text, '#7fd4ff', CHAT_TEMPLATE_KEYS.party, 'party'); break;
+            case 'yell': this.chatLogFrom(ev.from, ev.text, '#ff5040', CHAT_TEMPLATE_KEYS.yell, 'yell'); break;
             case 'whisper':
-              if (ev.to) this.chatLogFrom(ev.to, ev.text, '#ff80ff', CHAT_TEMPLATE_KEYS.toWhisper);
-              else { this.chatLogFrom(ev.from, ev.text, '#ff80ff', CHAT_TEMPLATE_KEYS.whisper); audio.whisper(); }
+              if (ev.to) this.chatLogFrom(ev.to, ev.text, '#ff80ff', CHAT_TEMPLATE_KEYS.toWhisper, 'whisper');
+              else { this.chatLogFrom(ev.from, ev.text, '#ff80ff', CHAT_TEMPLATE_KEYS.whisper, 'whisper'); audio.whisper(); }
               break;
-            case 'general': this.chatLogFrom(ev.from, ev.text, '#ffc864', CHAT_TEMPLATE_KEYS.general); break;
-            case 'world': this.chatLogFrom(ev.from, ev.text, '#ff9d5c', CHAT_TEMPLATE_KEYS.world); break;
-            case 'lfg': this.chatLogFrom(ev.from, ev.text, '#5cd6a0', CHAT_TEMPLATE_KEYS.lfg); break;
-            case 'guild': this.chatLogFrom(ev.from, ev.text, '#40d264', CHAT_TEMPLATE_KEYS.guild); break;
-            case 'officer': this.chatLogFrom(ev.from, ev.text, '#4ce0c0', CHAT_TEMPLATE_KEYS.officer); break;
-            case 'emote': this.chatLogFrom(ev.from, ev.text, '#ff8040', CHAT_TEMPLATE_KEYS.emote); break;
-            case 'roll': this.chatLogFrom(ev.from, ev.text, '#ffd100', CHAT_TEMPLATE_KEYS.roll); break;
-            default: this.chatLogFrom(ev.from, ev.text, '#f0ead8', CHAT_TEMPLATE_KEYS.say); break;
+            case 'general': this.chatLogFrom(ev.from, ev.text, '#ffc864', CHAT_TEMPLATE_KEYS.general, 'general'); break;
+            case 'world': this.chatLogFrom(ev.from, ev.text, '#ff9d5c', CHAT_TEMPLATE_KEYS.world, 'world'); break;
+            case 'lfg': this.chatLogFrom(ev.from, ev.text, '#5cd6a0', CHAT_TEMPLATE_KEYS.lfg, 'lfg'); break;
+            case 'guild': this.chatLogFrom(ev.from, ev.text, '#40d264', CHAT_TEMPLATE_KEYS.guild, 'guild'); break;
+            case 'officer': this.chatLogFrom(ev.from, ev.text, '#4ce0c0', CHAT_TEMPLATE_KEYS.officer, 'officer'); break;
+            case 'emote': this.chatLogFrom(ev.from, ev.text, '#ff8040', CHAT_TEMPLATE_KEYS.emote, 'emote'); break;
+            case 'roll': this.chatLogFrom(ev.from, ev.text, '#ffd100', CHAT_TEMPLATE_KEYS.roll, 'roll'); break;
+            default: this.chatLogFrom(ev.from, ev.text, '#f0ead8', CHAT_TEMPLATE_KEYS.say, 'say'); break;
           }
           if ((ev.channel === 'say' || ev.channel === 'yell' || ev.channel === 'emote') && ev.entityId !== undefined) {
             const masked = this.maskChat(ev.text);
             const bubble = ev.channel === 'emote' ? `${ev.from} ${masked}` : masked;
             this.renderer.showChatBubble(ev.entityId, bubble, ev.channel === 'yell');
+          }
+          // Voiced encounter dialogue (boss/NPC yells) — no-op unless a clip was
+          // generated for this exact line (scripts/voices/extra_lines.mjs).
+          if (ev.channel === 'yell') {
+            const voiced = nextVoicedYell(this.lastVoicedYell, yellVoiceKey(ev.text), performance.now());
+            this.lastVoicedYell = voiced.state;
+            if (voiced.play) voice.play(voiced.state.key, { gain: voicedYellGain(ev.from) });
           }
           break;
         }
@@ -2536,20 +4297,25 @@ export class Hud {
           audio.duelEnd();
           break;
         case 'arenaQueued':
-          this.log(t('hud.system.arenaQueued', { position: ev.position }), '#ffa040');
+          this.log(t('hud.system.arenaQueued', { position: formatNumber(ev.position, { maximumFractionDigits: 0 }) }), '#ffa040');
           break;
         case 'arenaUnqueued':
           this.log(t('hud.system.arenaUnqueued'), '#ffa040');
           break;
         case 'arenaFound': {
+          const name = ev.enemies.length > 1 ? ev.enemies.map((e) => e.name).join(' & ') : ev.oppName;
           const cls = CLASSES[ev.oppClass] ? classDisplayName(ev.oppClass) : ev.oppClass;
-          this.showBanner(t('hud.system.arenaFoundBanner', { name: ev.oppName }));
-          this.log(t('hud.system.arenaFoundLog', { name: ev.oppName, level: ev.oppLevel, className: cls }), '#ffa040');
+          this.showBanner(t('hud.system.arenaFoundBanner', { name }));
+          this.log(t('hud.system.arenaFoundLog', {
+            name,
+            level: formatNumber(ev.oppLevel, { maximumFractionDigits: 0 }),
+            className: cls,
+          }), '#ffa040');
           audio.duelChallenge();
           break;
         }
         case 'arenaCountdown':
-          this.showBanner(t('hud.system.arenaCountdown', { seconds: ev.seconds }));
+          this.showBanner(t('hud.system.arenaCountdown', { seconds: formatNumber(ev.seconds, { maximumFractionDigits: 0 }) }));
           audio.duelCountdownTick();
           break;
         case 'arenaStart':
@@ -2557,37 +4323,103 @@ export class Hud {
           audio.duelStart();
           break;
         case 'arenaEnd': {
+          if (ev.format === 'fiesta') {
+            if (ev.draw) { this.showBanner(t('fiesta.end.draw')); this.combatLog(t('fiesta.end.draw'), '#fa6'); }
+            else if (ev.won) { this.showBanner(t('fiesta.end.win')); this.combatLog(t('fiesta.end.win'), '#7fdc4f'); audio.fiestaWave(); }
+            else { this.showBanner(t('fiesta.end.loss')); this.combatLog(t('fiesta.end.loss'), '#ff7a6a'); audio.death(); }
+            break;
+          }
           const delta = ev.ratingAfter - ev.ratingBefore;
           const sign = delta >= 0 ? '+' : '';
-          const ratingDelta = `${sign}${delta}`;
+          const ratingDelta = `${sign}${formatNumber(delta, { maximumFractionDigits: 0 })}`;
+          const ratingAfter = formatNumber(ev.ratingAfter, { maximumFractionDigits: 0 });
           if (ev.draw) {
             this.showBanner(t('hud.system.arenaDrawBanner', { name: ev.oppName, delta: ratingDelta }));
-            this.combatLog(t('hud.system.arenaDrawLog', { name: ev.oppName, rating: ev.ratingAfter, delta: ratingDelta }), '#fa6');
+            this.combatLog(t('hud.system.arenaDrawLog', { name: ev.oppName, rating: ratingAfter, delta: ratingDelta }), '#fa6');
           } else if (ev.won) {
-            this.showBanner(t('hud.system.arenaVictoryBanner', { name: ev.oppName, rating: ev.ratingAfter, delta: ratingDelta }));
-            this.combatLog(t('hud.system.arenaVictoryLog', { name: ev.oppName, rating: ev.ratingAfter, delta: ratingDelta }), '#7fdc4f');
+            this.showBanner(t('hud.system.arenaVictoryBanner', { name: ev.oppName, rating: ratingAfter, delta: ratingDelta }));
+            this.combatLog(t('hud.system.arenaVictoryLog', { name: ev.oppName, rating: ratingAfter, delta: ratingDelta }), '#7fdc4f');
             audio.duelEnd();
           } else {
-            this.showBanner(t('hud.system.arenaDefeatBanner', { name: ev.oppName, rating: ev.ratingAfter, delta: ratingDelta }));
-            this.combatLog(t('hud.system.arenaDefeatLog', { name: ev.oppName, rating: ev.ratingAfter, delta: ratingDelta }), '#ff7a6a');
+            this.showBanner(t('hud.system.arenaDefeatBanner', { name: ev.oppName, rating: ratingAfter, delta: ratingDelta }));
+            this.combatLog(t('hud.system.arenaDefeatLog', { name: ev.oppName, rating: ratingAfter, delta: ratingDelta }), '#ff7a6a');
             audio.death();
           }
           break;
         }
-        case 'log': this.log(this.localizeSystemText(ev.text), ev.color ?? '#ccc'); break;
+        case 'fiestaWord': {
+          const { text, tier, color } = this.fiestaWordParts(ev.flavor, ev.n);
+          this.fiestaWordPop(text, color, tier);
+          this.renderer.addShake(0.35 + tier * 0.2);
+          audio.fiestaWord(tier);
+          break;
+        }
+        case 'fiestaWave': {
+          this.showBanner(t('fiesta.banner.wave', {
+            wave: formatNumber(ev.wave, { maximumFractionDigits: 0 }),
+            total: formatNumber(ev.totalWaves, { maximumFractionDigits: 0 }),
+          }));
+          this.fiestaWordPop(t('fiesta.word.wave'), '#ffd24a', 2);
+          this.renderer.addShake(0.4);
+          audio.fiestaWave();
+          break;
+        }
+        case 'fiestaScore': break; // the score HUD + ping are driven by the snapshot
+        case 'fiestaDown': {
+          audio.fiestaDown();
+          break;
+        }
+        case 'augmentOffer': break; // the pick modal is driven by the snapshot
+        case 'augmentChosen': {
+          const name = this.augmentName(ev.augmentId);
+          if (ev.mine) {
+            this.renderer.fiestaAugmentBurst(this.sim.playerId);
+            audio.fiestaAugment();
+            this.showBanner(t('fiesta.banner.augmentGained', { name }));
+            this.log(t('fiesta.log.augmentGained', { name }), '#ff3df0');
+          } else {
+            this.log(t('fiesta.log.allyAugment', { player: ev.byName, name }), '#c98bff');
+          }
+          break;
+        }
+        case 'fiestaPowerup': {
+          const name = tOptional(`fiesta.powerup.${ev.defId}.name`) ?? ev.defId;
+          const who = sim.entities.get(ev.entityId)?.name ?? '?';
+          this.log(t('fiesta.log.powerup', { player: who, name }), '#ffd24a');
+          if (ev.entityId === sim.playerId) {
+            audio.fiestaAugment();
+            this.showBanner(t('fiesta.banner.powerup', { name }));
+            this.fiestaWordPop(name.toUpperCase(), '#32e0ff', 2);
+          }
+          break;
+        }
+        case 'log': {
+          const text = this.localizeSystemText(ev.text);
+          this.log(text, ev.color ?? '#ccc');
+          const isNythraxisVisionLine = [
+            'My king was a good man.',
+            'I swore my blade to him.',
+            'I would do so again.',
+            'There had to be another way.',
+            'I could not let him die.',
+            'I only wanted to save him.',
+            'The king was already dead.',
+            'Malric refused to accept it.',
+            'We should have let him rest.',
+            'If you find the crypt... end this.',
+          ].includes(ev.text);
+          if (ev.entityId !== undefined && (isNythraxisVisionLine || ev.text.includes(' yells, "'))) {
+            this.renderer.showChatBubble(ev.entityId, text, ev.text.includes(' yells, "'));
+          }
+          break;
+        }
         case 'playerDeath': {
           this.log(t('hud.system.playerDeath'), '#ff4444');
           audio.death();
           break;
         }
         case 'respawn': this.log(t('hud.system.respawn'), '#7fdc4f'); break;
-        case 'castStart': {
-          const a = ABILITIES[ev.ability];
-          if (a?.school === 'fire') audio.castStart();
-          else if (a?.school === 'frost') audio.castStart();
-          else audio.castStart();
-          break;
-        }
+        case 'castStart': break; // cast-loop SFX is spatial now (see playEventSfx)
         case 'castStop': break;
         case 'aura': {
           const tgt = sim.entities.get(ev.targetId);
@@ -2605,7 +4437,18 @@ export class Hud {
   }
 
   log(text: string, color = '#ccc'): void {
-    this.appendLog(this.chatLogEl, text, color);
+    this.appendLog(this.chatLogEl, text, color, true, 'system');
+  }
+
+  // Prepend a dim bracketed wall-clock prefix to a chat line when the "Show
+  // Timestamps" option is on. No-op otherwise. Wall-clock time is fine here —
+  // the determinism ban is sim-only.
+  private prependTimestamp(div: HTMLElement): void {
+    if (!this.chatTimestamps) return;
+    const ts = document.createElement('span');
+    ts.className = 'chat-ts';
+    ts.textContent = `${formatChatTimestamp(new Date(), this.chatClock)} `;
+    div.appendChild(ts);
   }
 
   private logZoneWelcome(zone: ZoneDef): void {
@@ -2613,10 +4456,13 @@ export class Hud {
     this.log(zoneWelcome(zone.id), '#ffd100');
   }
 
-  private chatLogFrom(name: string, text: string, color: string, templateKey: TranslationKey): void {
+  private chatLogFrom(name: string, text: string, color: string, templateKey: TranslationKey, chan: string): void {
     const wasNearBottom = this.chatLogEl.scrollHeight - this.chatLogEl.scrollTop - this.chatLogEl.clientHeight < 24;
     const div = document.createElement('div');
     div.style.color = color;
+    div.dataset.chan = chan;
+    this.hideIfFiltered(div, chan);
+    this.prependTimestamp(div);
     const sender = document.createElement('span');
     sender.className = 'chat-player-name';
     sender.textContent = name;
@@ -2677,6 +4523,7 @@ export class Hud {
   private localizeErrorText(text: string): string {
     const exact: Record<string, TranslationKey> = {
       'You are stunned!': 'hud.errors.stunned',
+      'You are silenced!': 'hud.errors.silenced',
       'You are busy.': 'hud.errors.busy',
       'That ability is not ready yet.': 'hud.errors.abilityNotReady',
       'Not enough rage!': 'hud.errors.notEnoughRage',
@@ -2744,6 +4591,8 @@ export class Hud {
 
     let match = /^You must be in (Bear|Wolf) Form\.$/.exec(text);
     if (match) return t('hud.errors.requiresForm', { form: t(match[1] === 'Bear' ? 'hud.errors.bear' : 'hud.errors.cat') });
+    match = /^You can't do that in (Bear|Wolf|Travel) Form\.$/.exec(text);
+    if (match) return t('hud.errors.cantInForm', { form: t(match[1] === 'Bear' ? 'hud.errors.bear' : match[1] === 'Travel' ? 'hud.errors.travel' : 'hud.errors.cat') });
     match = /^That ability requires the target below (\d+)% health\.$/.exec(text);
     if (match) return t('hud.errors.targetHealthBelow', { percent: match[1] });
     match = /^Not enough (.+)!$/.exec(text);
@@ -2871,6 +4720,8 @@ export class Hud {
     if (match) return t('hud.logs.lootReceiveMoney', { money: this.localizeSimMoney(match[1]) });
     match = /^You loot (.+)\.$/.exec(text);
     if (match) return t('hud.logs.lootMoney', { money: this.localizeSimMoney(match[1]) });
+    match = /^Everyone passed on (.+)\.$/.exec(text);
+    if (match) return t('itemUi.lootRoll.everyonePassed', { item: itemDisplayNameFromSource(match[1]) });
     match = /^Sold (.+) for (.+)\.$/.exec(text);
     if (match) return t('hud.logs.soldItem', { item: itemDisplayNameFromSource(match[1]), money: this.localizeSimMoney(match[2]) });
     match = /^Listed (.+?)( x\d+)? on the World Market for (.+)\.$/.exec(text);
@@ -2917,14 +4768,23 @@ export class Hud {
     this.appendLog(this.combatLogEl, text, color);
   }
 
-  private appendLog(el: HTMLElement, text: string, color: string): void {
+  private appendLog(el: HTMLElement, text: string, color: string, timestamp = false, chan = 'system'): void {
     const wasNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
     const div = document.createElement('div');
-    div.textContent = text;
     div.style.color = color;
+    if (timestamp) this.prependTimestamp(div);
+    // tag + filter only the chat pane; the combat pane is a separate view
+    if (el === this.chatLogEl) { div.dataset.chan = chan; this.hideIfFiltered(div, chan); }
+    div.append(document.createTextNode(text));
     el.appendChild(div);
     while (el.children.length > 200) el.removeChild(el.firstChild!);
     if (wasNearBottom) el.scrollTop = el.scrollHeight;
+  }
+
+  // A floating note over the local player (e.g. "Can't move!" when a movement
+  // command lands while rooted/stunned). Throttling is the caller's job.
+  showSelfNote(text: string, color = '#ff8c66'): void {
+    this.fct(this.sim.player, text, color, false);
   }
 
   private fct(target: Entity, text: string, color: string, crit: boolean): void {
@@ -2933,8 +4793,11 @@ export class Hud {
     const el = document.createElement('div');
     el.className = 'fct' + (crit ? ' crit' : '');
     el.style.color = color;
-    el.style.left = `${v.x + (Math.random() * 30 - 15)}px`;
-    el.style.top = `${v.y}px`;
+    // worldToScreen() is in the unzoomed renderer viewport, but #ui (this node's
+    // parent) is scaled by `zoom`, so divide into author space before writing.
+    const z = getUiScale();
+    el.style.left = `${(v.x + (Math.random() * 30 - 15)) / z}px`;
+    el.style.top = `${v.y / z}px`;
     el.textContent = text;
     document.getElementById('ui')!.appendChild(el);
     setTimeout(() => el.remove(), 1250);
@@ -2955,6 +4818,250 @@ export class Hud {
     this.bannerTimer = window.setTimeout(() => { this.bannerEl.style.opacity = '0'; }, 2600);
   }
 
+  showSubzone(text: string): void {
+    this.subzoneEl.textContent = text;
+    this.subzoneEl.style.opacity = '1';
+    clearTimeout(this.subzoneTimer);
+    this.subzoneTimer = window.setTimeout(() => { this.subzoneEl.style.opacity = '0'; }, 2600);
+  }
+
+  // -------------------------------------------------------------------------
+  // 2v2 Fiesta HUD — live score, respawn timer, augment picks, word pops.
+  // Everything here is driven by the per-frame snapshot (arenaInfo.match.fiesta)
+  // so it self-heals on reconnect; one-shot juice (word pops, shake, audio)
+  // rides the SimEvents handled in handleEvents().
+  // -------------------------------------------------------------------------
+
+  setFiestaPracticeHook(fn: (() => void) | null): void {
+    this.fiestaPracticeHook = fn;
+  }
+
+  private inFiesta(): boolean {
+    const match = this.sim.arenaInfo?.match;
+    return !!match?.fiesta && match.state === 'active';
+  }
+
+  private updateFiestaHud(): void {
+    const match = this.sim.arenaInfo?.match;
+    const f = match?.fiesta;
+    const active = !!f && match?.state === 'active';
+    if (!f || !active) {
+      if (this.fiestaActiveSeen) this.teardownFiestaHud();
+      this.fiestaActiveSeen = false;
+      return;
+    }
+    this.fiestaActiveSeen = true;
+    this.renderFiestaScore(f);
+    this.renderFiestaRespawn(f);
+    this.renderFiestaOffer(f);
+    this.renderFiestaPending(f);
+  }
+
+  // "Augment pending" indicator: a banked offer waiting for the player's next
+  // death (so it never interrupts a live fight). Hidden once it's on offer.
+  private renderFiestaPending(f: import('../world_api').FiestaMatchInfo): void {
+    const el = this.getFiestaEl('fiesta-pending', 'fiesta-pending');
+    const show = f.augmentPending > 0 && !f.offer && !f.down;
+    if (!show) { el.style.display = 'none'; el.dataset.sig = ''; return; }
+    el.style.display = 'flex';
+    const sig = `${f.augmentPending}`;
+    if (el.dataset.sig !== sig) {
+      el.dataset.sig = sig;
+      el.innerHTML = `<span class="fpend-gem">${this.augmentCategorySvg('utility')}</span>`
+        + `<span class="fpend-text">${esc(t('fiesta.pending.label'))}</span>`;
+    }
+  }
+
+  private getFiestaEl(id: string, cls: string): HTMLElement {
+    let el = document.getElementById(id);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = id;
+      el.className = cls;
+      document.getElementById('ui')!.appendChild(el);
+    }
+    return el;
+  }
+
+  private renderFiestaScore(f: import('../world_api').FiestaMatchInfo): void {
+    const el = this.getFiestaEl('fiesta-score', 'fiesta-score');
+    const num = (n: number) => formatNumber(n, { maximumFractionDigits: 0 });
+    const dots = Array.from({ length: f.totalWaves }, (_, i) =>
+      `<span class="fw-dot${i < f.wave ? ' on' : ''}"></span>`).join('');
+    const myTeam = f.team === 'A' ? f.teamA : f.teamB;
+    const enemyTeam = f.team === 'A' ? f.teamB : f.teamA;
+    const faces = (players: import('../world_api').FiestaScoreboardPlayer[]) => players.map((p) =>
+      `<div class="fp${p.me ? ' me' : ''}${p.down ? ' down' : ''}" title="${esc(p.name)}">`
+      + `<img class="fp-face" src="${iconDataUrl('crest', p.cls)}" alt="" draggable="false">`
+      + `<span class="fp-kills">${num(p.kills)}</span></div>`).join('');
+    const teamSig = (ps: import('../world_api').FiestaScoreboardPlayer[]) => ps.map((p) => `${p.kills}${p.down ? 'd' : ''}`).join(',');
+    const sig = `${f.myScore}|${f.theirScore}|${f.scoreLimit}|${f.wave}|${teamSig(myTeam)}|${teamSig(enemyTeam)}`;
+    if (el.dataset.sig === sig) return;
+    const scored = this.fiestaScoreSeen.a >= 0 && (this.fiestaScoreSeen.a !== f.scoreA || this.fiestaScoreSeen.b !== f.scoreB);
+    const myPrev = f.team === 'A' ? this.fiestaScoreSeen.a : this.fiestaScoreSeen.b;
+    const theirPrev = f.team === 'A' ? this.fiestaScoreSeen.b : this.fiestaScoreSeen.a;
+    el.dataset.sig = sig;
+    el.innerHTML = `
+      <div class="fs-team mine" aria-hidden="true">${faces(myTeam)}</div>
+      <div class="fs-core">
+        <span class="fs-num mine">${num(f.myScore)}</span>
+        <div class="fs-mid">
+          <div class="fs-title">${esc(t('fiesta.score.title'))}</div>
+          <div class="fs-waves">${dots}</div>
+          <div class="fs-limit">${esc(t('fiesta.score.toWin', { n: num(f.scoreLimit) }))}</div>
+        </div>
+        <span class="fs-num theirs">${num(f.theirScore)}</span>
+      </div>
+      <div class="fs-team theirs" aria-hidden="true">${faces(enemyTeam)}</div>`;
+    el.setAttribute('aria-label', t('fiesta.score.aria', { mine: num(f.myScore), theirs: num(f.theirScore), limit: num(f.scoreLimit) }));
+    if (scored) {
+      const mineScored = f.myScore > myPrev;
+      audio.fiestaScorePing(mineScored);
+      el.classList.remove('flash-mine', 'flash-theirs');
+      void el.offsetWidth; // restart the CSS flash
+      el.classList.add(mineScored ? 'flash-mine' : 'flash-theirs');
+      // Confetti rains in the killing team's colour (from this viewer's POV).
+      if (f.myScore > myPrev) this.fiestaConfetti('#1b9fff');
+      if (f.theirScore > theirPrev) this.fiestaConfetti('#ff2d66');
+    }
+    this.fiestaScoreSeen = { a: f.scoreA, b: f.scoreB };
+  }
+
+  // A burst of CSS confetti raining down the screen in a team colour.
+  private fiestaConfetti(color: string): void {
+    const ui = document.getElementById('ui')!;
+    const layer = document.createElement('div');
+    layer.className = 'fiesta-confetti';
+    const tints = [color, '#ffffff', '#ffd24a'];
+    for (let i = 0; i < 36; i++) {
+      const bit = document.createElement('i');
+      bit.style.left = `${Math.random() * 100}%`;
+      bit.style.background = tints[i % tints.length];
+      bit.style.animationDelay = `${Math.random() * 0.5}s`;
+      bit.style.animationDuration = `${1.4 + Math.random() * 1.1}s`;
+      bit.style.transform = `rotate(${Math.random() * 360}deg)`;
+      layer.appendChild(bit);
+    }
+    ui.appendChild(layer);
+    setTimeout(() => layer.remove(), 2800);
+  }
+
+  private renderFiestaRespawn(f: import('../world_api').FiestaMatchInfo): void {
+    const el = this.getFiestaEl('fiesta-respawn', 'fiesta-respawn');
+    if (f.down && f.respawnIn > 0) {
+      el.style.display = 'flex';
+      const sig = `${f.respawnIn}`;
+      if (el.dataset.sig !== sig) {
+        el.dataset.sig = sig;
+        el.innerHTML = `
+          <div class="fr-title">${esc(t('fiesta.respawn.title'))}</div>
+          <div class="fr-count">${esc(formatNumber(f.respawnIn, { maximumFractionDigits: 0 }))}</div>
+          <div class="fr-sub">${esc(t('fiesta.respawn.sub'))}</div>`;
+      }
+      this.fiestaWasDown = true;
+    } else {
+      if (this.fiestaWasDown) audio.fiestaRevive();
+      this.fiestaWasDown = false;
+      el.style.display = 'none';
+      el.dataset.sig = '';
+    }
+  }
+
+  private renderFiestaOffer(f: import('../world_api').FiestaMatchInfo): void {
+    const offer = f.offer;
+    const key = offer ? `${offer.wave}:${offer.choices.join(',')}` : '';
+    if (key === this.fiestaOfferKey) return;
+    this.fiestaOfferKey = key;
+    if (offer) this.renderFiestaAugments(offer);
+    else this.closeFiestaAugments();
+  }
+
+  private renderFiestaAugments(offer: import('../world_api').FiestaAugmentOffer): void {
+    const el = this.getFiestaEl('fiesta-augments', 'fiesta-augments');
+    el.style.display = 'flex';
+    const tierLabel = esc(t(`fiesta.tier.${offer.tier}` as TranslationKey));
+    el.innerHTML = `<div class="fa-head">${esc(t('fiesta.augment.choose'))} <span class="fa-tier ${offer.tier}">${tierLabel}</span></div>
+      <div class="fa-cards"></div>`;
+    const cards = el.querySelector('.fa-cards')!;
+    for (const id of offer.choices) {
+      const cat = augmentCategory(id);
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = `fa-card ${offer.tier}`;
+      card.innerHTML = `<span class="fa-icon cat-${cat}">${this.augmentCategorySvg(cat)}</span>`
+        + `<span class="fa-name">${esc(this.augmentName(id))}</span>`
+        + `<span class="fa-desc">${esc(this.augmentDesc(id))}</span>`
+        + `<span class="fa-cat cat-${cat}">${esc(t(`fiesta.category.${cat}` as TranslationKey))}</span>`;
+      card.setAttribute('aria-label', `${this.augmentName(id)} (${t(`fiesta.category.${cat}` as TranslationKey)}) — ${this.augmentDesc(id)}`);
+      card.addEventListener('click', () => {
+        audio.click();
+        this.sim.arenaAugmentPick(id);
+        this.closeFiestaAugments();
+      });
+      cards.appendChild(card);
+    }
+  }
+
+  private closeFiestaAugments(): void {
+    const el = document.getElementById('fiesta-augments');
+    if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+  }
+
+  // A small inline-SVG glyph per augment category (offense/defense/sustain/
+  // mobility/utility). currentColor is set by the .cat-* CSS class.
+  private augmentCategorySvg(cat: AugmentCategory): string {
+    const p: Record<AugmentCategory, string> = {
+      offense: '<path d="M3 21l6-6m0 0l9-9 2 2-9 9m-2-2l-2 2 2 2 2-2m-2-2l2 2"/>', // sword
+      defense: '<path d="M12 2l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V5z"/>', // shield
+      sustain: '<path d="M12 21s-7-4.6-9.2-9C1.3 8.7 3 5 6.5 5c2 0 3.5 1.5 5.5 4 2-2.5 3.5-4 5.5-4C21 5 22.7 8.7 21.2 12 19 16.4 12 21 12 21z"/>', // heart
+      mobility: '<path d="M5 18l6-6-6-6m7 12l6-6-6-6"/>', // chevrons
+      utility: '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8L12 17.8 5.9 20.6l1.4-6.8L2.2 9.1l6.9-.8z"/>', // star
+    };
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${p[cat]}</svg>`;
+  }
+
+  private teardownFiestaHud(): void {
+    for (const id of ['fiesta-score', 'fiesta-respawn', 'fiesta-augments', 'fiesta-pending']) {
+      const el = document.getElementById(id);
+      if (el) { el.style.display = 'none'; el.innerHTML = ''; el.dataset.sig = ''; }
+    }
+    this.fiestaScoreSeen = { a: -1, b: -1 };
+    this.fiestaOfferKey = '';
+    this.fiestaWasDown = false;
+  }
+
+  private augmentName(id: string): string {
+    return tOptional(`fiesta.augment.${id}.name`) ?? id;
+  }
+
+  private augmentDesc(id: string): string {
+    return tOptional(`fiesta.augment.${id}.desc`) ?? '';
+  }
+
+  // Map a sim word-pop flavor to its localized text, dopamine tier (0..3), and
+  // accent colour.
+  private fiestaWordParts(flavor: string, n?: number): { text: string; tier: number; color: string } {
+    switch (flavor) {
+      case 'firstblood': return { text: t('fiesta.word.firstblood'), tier: 3, color: '#ff3df0' };
+      case 'doublekill': return { text: t('fiesta.word.doublekill'), tier: 3, color: '#ffae00' };
+      case 'shutdown': return { text: t('fiesta.word.shutdown'), tier: 3, color: '#00e5ff' };
+      case 'spree': return { text: t('fiesta.word.spree', { n: formatNumber(n ?? 3, { maximumFractionDigits: 0 }) }), tier: 2, color: '#ff7a1a' };
+      case 'revived': return { text: t('fiesta.word.revived'), tier: 0, color: '#7fdc4f' };
+      case 'ringclose': return { text: t('fiesta.word.ringclose'), tier: 1, color: '#ff3df0' };
+      default: return { text: t('fiesta.word.kill'), tier: 1, color: '#ffd24a' };
+    }
+  }
+
+  // A big exaggerated word that punches in at screen-centre and fades out.
+  private fiestaWordPop(text: string, color: string, tier: number): void {
+    const el = document.createElement('div');
+    el.className = `fiesta-word tier${tier}`;
+    el.textContent = text;
+    el.style.setProperty('--fw-color', color);
+    document.getElementById('ui')!.appendChild(el);
+    setTimeout(() => el.remove(), 1400);
+  }
+
   // -------------------------------------------------------------------------
   // Quest dialog (gossip)
   // -------------------------------------------------------------------------
@@ -2962,8 +5069,13 @@ export class Hud {
   openQuestDialog(npcId: number): void {
     const npc = this.sim.entities.get(npcId);
     if (!npc || npc.kind !== 'npc') return;
+    this.questDialogOpenedAtMs = performance.now();
     if ($('#quest-dialog').style.display !== 'block') this.questDialogReturnFocus = this.currentFocusableElement();
     this.closeOtherWindows('#quest-dialog');
+    // Voice the greeting only on the initial open — renderGossip also runs when
+    // navigating back from a quest detail or after accept/turn-in, where a
+    // re-greeting would be noise.
+    voice.play(`greeting__${npc.templateId}`);
     this.renderGossip(npc);
   }
 
@@ -2977,13 +5089,21 @@ export class Hud {
     const interesting = npc.questIds.filter((q) => {
       const st = this.sim.questState(q);
       return (st === 'available' && QUESTS[q].giverNpcId === npc.templateId)
-        || (st === 'ready' && QUESTS[q].turnInNpcId === npc.templateId);
+        || (st === 'ready' && isQuestTurnInNpc(QUESTS[q], npc.templateId));
     });
+    const discussionQuests = [...this.sim.questLog.values()]
+      .filter((qp) => qp.state === 'active' && npc.questIds.includes(qp.questId))
+      .filter((qp) => QUESTS[qp.questId].objectives.some((objective, objectiveIndex) =>
+        objective.type === 'interact'
+        && objective.targetNpcId === npc.templateId
+        && qp.counts[objectiveIndex] < objective.count,
+      ))
+      .map((qp) => qp.questId);
     el.setAttribute('role', 'dialog');
     el.setAttribute('aria-modal', 'false');
     el.setAttribute('aria-labelledby', 'quest-dialog-title');
     el.setAttribute('tabindex', '-1');
-    const npcName = npcDisplayName(npc.templateId);
+    const npcName = def ? npcDisplayName(npc.templateId) : mobDisplayName(npc.templateId);
     const npcTitle = def ? npcDisplayTitle(def.id) : '';
     let html = `<div class="panel-title"><span id="quest-dialog-title">${esc(npcName)}<span class="quest-muted"> &lt;${esc(npcTitle)}&gt;</span></span><button type="button" class="x-btn" data-close aria-label="${esc(t('questUi.dialog.close'))}">${svgIcon('close')}</button></div>`;
     html += `<div class="qd-text">"${esc(def ? npcGreeting(def.id, this.sim.cfg.playerClass, this.sim.player.name) : t('questUi.dialog.greetingFallback'))}"</div>`;
@@ -2998,6 +5118,12 @@ export class Hud {
         html += `<button type="button" class="qd-list-item" data-quest="${esc(qid)}" aria-label="${esc(aria)}">${icon}${esc(title)}</button>`;
       }
     }
+    if (discussionQuests.length > 0) {
+      for (const qid of discussionQuests) {
+        const title = questTitle(qid);
+        html += `<button type="button" class="qd-list-item" data-discuss="${esc(qid)}" aria-label="${esc(t('questUi.dialog.discussQuestAria', { name: title }))}"><span class="gold">?</span> ${esc(t('questUi.dialog.discussQuest', { name: title }))}</button>`;
+      }
+    }
     if (npc.vendorItems.length > 0) {
       html += `<button type="button" class="qd-list-item" data-vendor="1" aria-label="${esc(t('questUi.dialog.browseGoodsAria', { name: npcName }))}"><span class="quest-complete">$</span> ${esc(t('questUi.dialog.browseGoods'))}</button>`;
     }
@@ -3007,6 +5133,14 @@ export class Hud {
     el.innerHTML = html;
     el.querySelectorAll('[data-quest]').forEach((item) => {
       item.addEventListener('click', () => this.renderQuestDetail(npc, (item as HTMLElement).dataset.quest!));
+    });
+    el.querySelectorAll('[data-discuss]').forEach((item) => {
+      item.addEventListener('click', () => {
+        const questId = (item as HTMLElement).dataset.discuss!;
+        this.sim.targetEntity(npc.id);
+        this.sim.interact();
+        (item as HTMLButtonElement).disabled = true;
+      });
     });
     el.querySelector('[data-vendor]')?.addEventListener('click', () => {
       this.closeQuestDialog(false);
@@ -3027,11 +5161,15 @@ export class Hud {
     this.openQuestDetailId = questId;
     const state = this.sim.questState(questId);
     const text = questNarrative(questId, state === 'ready' ? 'completion' : 'text', this.sim.player.name);
+    voice.play(state === 'ready' ? `quest__${questId}__complete` : `quest__${questId}__offer`);
     el.setAttribute('role', 'dialog');
     el.setAttribute('aria-modal', 'false');
     el.setAttribute('aria-labelledby', 'quest-dialog-title');
     el.setAttribute('tabindex', '-1');
     let html = `<div class="panel-title"><span id="quest-dialog-title">${esc(questTitle(questId))}${this.questSuggestedPlayersHtml(quest.suggestedPlayers)}</span><button type="button" class="x-btn" data-close aria-label="${esc(t('questUi.dialog.close'))}">${svgIcon('close')}</button></div>`;
+    if (state === 'available' && quest.minLevel) {
+      html += `<div class="qd-req">${esc(t('questUi.detail.requiresLevel', { level: this.questNumber(quest.minLevel) }))}</div>`;
+    }
     html += `<div class="qd-text">${esc(text)}</div>`;
     if (state !== 'ready') {
       const qp = this.sim.questLog.get(questId);
@@ -3054,16 +5192,63 @@ export class Hud {
       btn.className = 'btn';
       btn.type = 'button';
       btn.textContent = t('questUi.dialog.accept');
-      btn.addEventListener('click', () => { this.sim.acceptQuest(questId); this.renderGossip(npc); });
+      btn.addEventListener('click', () => {
+        this.sim.acceptQuest(questId);
+        this.sim.reportTelemetry('quest_accept', { timeMs: performance.now() - this.questDialogOpenedAtMs });
+        this.renderGossip(npc);
+      });
       el.appendChild(btn);
     } else if (state === 'ready') {
       const btn = document.createElement('button');
       btn.className = 'btn';
       btn.type = 'button';
       btn.textContent = t('questUi.dialog.completeQuest');
-      btn.addEventListener('click', () => { this.sim.turnInQuest(questId); this.renderGossip(npc); });
+      btn.addEventListener('click', () => {
+        this.sim.turnInQuest(questId);
+        this.sim.reportTelemetry('quest_turnin', { timeMs: performance.now() - this.questDialogOpenedAtMs });
+        this.renderGossip(npc);
+      });
       el.appendChild(btn);
     }
+    const back = document.createElement('button');
+    back.className = 'btn';
+    back.type = 'button';
+    back.textContent = t('questUi.dialog.back');
+    back.addEventListener('click', () => this.renderGossip(npc));
+    el.appendChild(back);
+    el.querySelector('[data-close]')?.addEventListener('click', () => this.closeQuestDialog());
+    el.style.display = 'block';
+    this.focusFirstInteractive(el);
+  }
+
+  private renderQuestDiscussion(npc: Entity, questId: string, page: number): void {
+    const el = $('#quest-dialog');
+    const pages = [
+      questNarrative(questId, 'text', this.sim.player.name),
+      questNarrative(questId, 'completion', this.sim.player.name),
+    ];
+    const clampedPage = Math.max(0, Math.min(page, pages.length - 1));
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'false');
+    el.setAttribute('aria-labelledby', 'quest-dialog-title');
+    el.setAttribute('tabindex', '-1');
+    el.innerHTML = `<div class="panel-title"><span id="quest-dialog-title">${esc(questTitle(questId))}</span><button type="button" class="x-btn" data-close aria-label="${esc(t('questUi.dialog.close'))}">${svgIcon('close')}</button></div>`
+      + `<div class="qd-text">${esc(pages[clampedPage])}</div>`;
+    const action = document.createElement('button');
+    action.className = 'btn';
+    action.type = 'button';
+    if (clampedPage < pages.length - 1) {
+      action.textContent = t('questUi.dialog.continue');
+      action.addEventListener('click', () => this.renderQuestDiscussion(npc, questId, clampedPage + 1));
+    } else {
+      action.textContent = t('questUi.dialog.done');
+      action.addEventListener('click', () => {
+        this.sim.targetEntity(npc.id);
+        this.sim.interact();
+        this.renderGossip(npc);
+      });
+    }
+    el.appendChild(action);
     const back = document.createElement('button');
     back.className = 'btn';
     back.type = 'button';
@@ -3098,6 +5283,102 @@ export class Hud {
   // Loot window
   // -------------------------------------------------------------------------
 
+  private lootRollRoot(): HTMLElement {
+    let root = document.getElementById('loot-rolls');
+    const uiRoot = document.getElementById('ui');
+    if (!root) {
+      root = document.createElement('div');
+      root.id = 'loot-rolls';
+      root.setAttribute('aria-live', 'polite');
+    }
+    if (uiRoot && root.parentElement !== uiRoot) uiRoot.appendChild(root);
+    else if (!root.parentElement) document.body.appendChild(root);
+    return root;
+  }
+
+  private showLootRoll(ev: Extract<SimEvent, { type: 'lootRoll' }>): void {
+    this.activeLootRolls.set(ev.rollId, { event: ev, receivedAt: performance.now(), durationMs: 30_000 });
+    this.renderLootRolls();
+  }
+
+  private submitLootRoll(rollId: number, choice: LootRollChoice): void {
+    this.sim.submitLootRoll(rollId, choice);
+    this.activeLootRolls.delete(rollId);
+    this.renderLootRolls();
+  }
+
+  private updateLootRollTimers(now: number): void {
+    if (this.activeLootRolls.size === 0) return;
+    let changed = false;
+    for (const [rollId, roll] of this.activeLootRolls) {
+      if (now - roll.receivedAt >= roll.durationMs) {
+        this.activeLootRolls.delete(rollId);
+        changed = true;
+      }
+    }
+    if (changed) this.renderLootRolls();
+    const root = document.getElementById('loot-rolls');
+    if (!root) return;
+    for (const row of root.querySelectorAll<HTMLElement>('.loot-roll')) {
+      const rollId = Number(row.dataset.rollId);
+      const roll = this.activeLootRolls.get(rollId);
+      if (!roll) continue;
+      const remaining = Math.max(0, 1 - (now - roll.receivedAt) / roll.durationMs);
+      row.style.setProperty('--loot-roll-frac', remaining.toFixed(3));
+    }
+  }
+
+  private closeLootRollsForItem(text: string): void {
+    const match = /^.+ wins (.+) \(\d+\)$/.exec(text) ?? /^Everyone passed on (.+)\.$/.exec(text);
+    if (!match) return;
+    for (const [rollId, roll] of this.activeLootRolls) {
+      if (roll.event.itemName === match[1]) this.activeLootRolls.delete(rollId);
+    }
+    this.renderLootRolls();
+  }
+
+  private renderLootRolls(): void {
+    const root = this.lootRollRoot();
+    if (this.activeLootRolls.size === 0) {
+      root.style.display = 'none';
+      root.innerHTML = '';
+      return;
+    }
+    root.style.display = 'flex';
+    root.innerHTML = '';
+    for (const [rollId, roll] of this.activeLootRolls) {
+      const ev = roll.event;
+      const item = ITEMS[ev.itemId];
+      const itemName = item ? itemDisplayName(item) : ev.itemName;
+      const quality = item?.quality ?? ev.quality ?? 'common';
+      const row = document.createElement('div');
+      row.className = 'loot-roll panel';
+      row.dataset.rollId = String(rollId);
+      row.style.setProperty('--loot-roll-frac', '1');
+      row.innerHTML = `
+        <div class="loot-roll-item">
+          ${item ? this.itemIcon(item) : `<img class="item-icon q-${quality}" src="${iconDataUrl('item', ev.itemId)}" alt="" draggable="false">`}
+          <div class="loot-roll-copy">
+            <div class="loot-roll-title">${esc(t('itemUi.lootRoll.title'))}</div>
+            <div class="loot-roll-name" style="color:${QUALITY_COLOR[quality] ?? '#fff'}">${esc(itemName)}</div>
+          </div>
+        </div>
+        <div class="loot-roll-timer" aria-hidden="true"><span></span></div>
+        <div class="loot-roll-actions">
+          <button type="button" class="loot-roll-btn need" data-choice="need">${esc(t('itemUi.lootRoll.need'))}</button>
+          <button type="button" class="loot-roll-btn greed" data-choice="greed">${esc(t('itemUi.lootRoll.greed'))}</button>
+          <button type="button" class="loot-roll-btn pass" data-choice="pass">${esc(t('itemUi.lootRoll.pass'))}</button>
+        </div>`;
+      if (item) this.attachTooltip(row.querySelector('.loot-roll-item') as HTMLElement, () => this.itemTooltip(item));
+      row.querySelectorAll<HTMLButtonElement>('[data-choice]').forEach((btn) => {
+        const choice = btn.dataset.choice as LootRollChoice;
+        btn.setAttribute('aria-label', t(`itemUi.lootRoll.${choice}Aria`, { item: itemName }));
+        btn.addEventListener('click', () => this.submitLootRoll(rollId, choice));
+      });
+      root.appendChild(row);
+    }
+  }
+
   openLoot(mobId: number, screenX: number, screenY: number): void {
     const mob = this.sim.entities.get(mobId);
     if (!mob?.loot) return;
@@ -3125,8 +5406,7 @@ export class Hud {
     btn.addEventListener('click', () => { this.sim.lootCorpse(mobId); this.closeLoot(); });
     el.appendChild(btn);
     el.querySelector('[data-close]')?.addEventListener('click', () => this.closeLoot());
-    el.style.left = `${Math.min(window.innerWidth - 260, Math.max(10, screenX - 115))}px`;
-    el.style.top = `${Math.min(window.innerHeight - 280, Math.max(10, screenY - 30))}px`;
+    this.placePopupAt(el, screenX - 115, screenY - 30, 260, 280, 10, 10);
     el.style.transform = 'none'; // loot pops at the cursor, not the centred slot
     el.style.display = 'block';
   }
@@ -3201,7 +5481,7 @@ export class Hud {
       row.innerHTML = `${this.itemIcon(item)}<span class="vi-name">${esc(itemName)}${s.count > 1 ? ` x${s.count}` : ''}</span><span class="vi-price">${this.moneyHtml(item.sellValue)}</span>`;
       row.addEventListener('click', () => {
         this.sim.buyBackItem(s.itemId);
-        if ($('#bags').style.display === 'block') this.renderBags();
+        if ($('#bags').style.display !== 'none') this.renderBags();
         this.renderVendor();
       });
       this.attachTooltip(row, () => this.itemTooltip(item) + `<div class="tt-sub">${esc(t('itemUi.tooltip.clickBuyback'))}</div>`);
@@ -3217,11 +5497,17 @@ export class Hud {
   }
 
   closeVendor(): void {
+    const closeMobileBags = document.body.classList.contains('mobile-touch') && $('#bags').style.display !== 'none';
     $('#vendor-window').style.display = 'none';
     this.openVendorNpcId = null;
     document.body.classList.remove('vendor-open'); // bags (if still open) re-centres
     this.hideTooltip();
-    if ($('#bags').style.display !== 'none') this.renderBags();
+    if (closeMobileBags) {
+      $('#bags').style.display = 'none';
+      this.cancelPetFeed();
+    } else if ($('#bags').style.display !== 'none') {
+      this.renderBags();
+    }
   }
 
   get vendorOpen(): boolean {
@@ -3236,7 +5522,13 @@ export class Hud {
     this.closeOtherWindows('#market-window');
     this.marketOpen = true;
     this.marketTab = 'browse';
+    this.marketItemTypeFilter = 'all';
+    this.marketSubtypeFilter = 'all';
+    this.marketRarityFilter = 'all';
+    this.marketBrowsePage = 0;
     this.marketSellItem = null;
+    this.marketSearchQuery = '';
+    this.sim.marketSearch('');
     this.lastMarketSig = '';
     this.renderMarket();
     $('#market-window').style.display = 'flex';
@@ -3271,6 +5563,76 @@ export class Hud {
     return this.sim.inventory.filter((s) => s.itemId === itemId).reduce((n, s) => n + s.count, 0);
   }
 
+  private marketItemTypeLabelKey(filter: MarketItemTypeFilter): TranslationKey {
+    if (filter === 'weapon') return 'itemUi.market.filterTypeWeapon';
+    if (filter === 'armor') return 'itemUi.market.filterTypeArmor';
+    if (filter === 'consumable') return 'itemUi.market.filterTypeConsumable';
+    if (filter === 'material') return 'itemUi.market.filterTypeMaterial';
+    if (filter === 'cosmetic') return 'itemUi.market.filterTypeCosmetic';
+    if (filter === 'other') return 'itemUi.market.filterTypeOther';
+    return 'itemUi.market.filterTypeAll';
+  }
+
+  private marketRarityLabelKey(filter: MarketRarityFilter): TranslationKey {
+    if (filter === 'poor') return 'itemUi.market.rarityPoor';
+    if (filter === 'common') return 'itemUi.market.rarityCommon';
+    if (filter === 'uncommon') return 'itemUi.market.rarityUncommon';
+    if (filter === 'rare') return 'itemUi.market.rarityRare';
+    if (filter === 'epic') return 'itemUi.market.rarityEpic';
+    return 'itemUi.market.filterRarityAll';
+  }
+
+  private marketSubtypeOptions(): readonly MarketSubtypeFilter[] {
+    if (this.marketItemTypeFilter === 'armor') return MARKET_ARMOR_TYPE_FILTERS;
+    if (this.marketItemTypeFilter === 'weapon') return MARKET_WEAPON_TYPE_FILTERS;
+    return ['all'];
+  }
+
+  private marketSubtypeLabel(): string {
+    return t(this.marketItemTypeFilter === 'armor' ? 'itemUi.market.filterArmorType' : 'itemUi.market.filterWeaponType');
+  }
+
+  private marketSubtypeOptionLabel(filter: MarketSubtypeFilter): string {
+    if (filter === 'all') return t(this.marketItemTypeFilter === 'armor' ? 'itemUi.market.filterArmorAll' : 'itemUi.market.filterWeaponAll');
+    if (this.marketItemTypeFilter === 'armor') return itemSlotName(filter as EquipSlot);
+    if (filter === 'sword') return t('itemUi.market.weaponSword');
+    if (filter === 'dagger') return t('itemUi.market.weaponDagger');
+    if (filter === 'staff') return t('itemUi.market.weaponStaff');
+    if (filter === 'mace') return t('itemUi.market.weaponMace');
+    if (filter === 'axe') return t('itemUi.market.weaponAxe');
+    return t('itemUi.market.weaponOther');
+  }
+
+  private renderMarketFilterMenu(
+    menu: 'itemType' | 'subtype' | 'rarity',
+    label: string,
+    value: string,
+    options: readonly string[],
+    optionLabel: (option: string) => string,
+  ): string {
+    const current = optionLabel(value);
+    const optionHtml = options.map((option) => {
+      const selected = option === value;
+      return `<button type="button" class="mkt-select-option${selected ? ' sel' : ''}" role="option" aria-selected="${selected ? 'true' : 'false'}" data-market-filter-option="${option}">${esc(optionLabel(option))}</button>`;
+    }).join('');
+    return `<div class="mkt-filter"><span>${esc(label)}</span><div class="mkt-select" data-market-filter-menu="${menu}">`
+      + `<button type="button" class="mkt-select-btn" aria-haspopup="listbox" aria-expanded="false" aria-label="${esc(`${label}: ${current}`)}"><span>${esc(current)}</span><span class="mkt-select-chevron" aria-hidden="true"></span></button>`
+      + `<div class="mkt-select-menu" role="listbox" hidden>${optionHtml}</div>`
+      + `</div></div>`;
+  }
+
+  private renderMarketFilters(): string {
+    if (this.marketTab !== 'browse') return '';
+    const hasSubtype = this.marketItemTypeFilter === 'armor' || this.marketItemTypeFilter === 'weapon';
+    return `<div class="mkt-filters${hasSubtype ? ' has-subtype' : ''}" role="group" aria-label="${esc(t('itemUi.market.filters'))}">`
+      + this.renderMarketFilterMenu('itemType', t('itemUi.market.filterType'), this.marketItemTypeFilter, MARKET_ITEM_TYPE_FILTERS, (filter) => t(this.marketItemTypeLabelKey(filter as MarketItemTypeFilter)))
+      + (hasSubtype
+        ? this.renderMarketFilterMenu('subtype', this.marketSubtypeLabel(), this.marketSubtypeFilter, this.marketSubtypeOptions(), (filter) => this.marketSubtypeOptionLabel(filter as MarketSubtypeFilter))
+        : '')
+      + this.renderMarketFilterMenu('rarity', t('itemUi.market.filterRarity'), this.marketRarityFilter, MARKET_RARITY_FILTERS, (filter) => t(this.marketRarityLabelKey(filter as MarketRarityFilter)))
+      + `</div>`;
+  }
+
   private renderMarket(): void {
     const el = $('#market-window');
     this.hideTooltip();
@@ -3292,6 +5654,7 @@ export class Hud {
       + tab('sell')
       + tab('collect')
       + `</div>`
+      + this.renderMarketFilters()
       + `<div id="market-body"></div>`;
     el.querySelector('[data-close]')?.addEventListener('click', () => this.closeMarket());
     el.querySelectorAll('[data-tab]').forEach((t) => {
@@ -3299,11 +5662,60 @@ export class Hud {
         const next = (t as HTMLElement).dataset.tab as typeof this.marketTab;
         if (next === this.marketTab) return;
         this.marketTab = next;
+        this.marketBrowsePage = 0;
         this.lastMarketSig = '';
         audio.click();
         this.renderMarket();
       });
     });
+    const closeFilterMenus = () => {
+      el.querySelectorAll<HTMLElement>('.mkt-select.open').forEach((menu) => {
+        menu.classList.remove('open');
+        menu.querySelector<HTMLButtonElement>('.mkt-select-btn')?.setAttribute('aria-expanded', 'false');
+        const list = menu.querySelector<HTMLElement>('.mkt-select-menu');
+        if (list) list.hidden = true;
+      });
+    };
+    el.querySelectorAll<HTMLButtonElement>('.mkt-select-btn').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const menu = button.closest<HTMLElement>('.mkt-select');
+        if (!menu) return;
+        const open = !menu.classList.contains('open');
+        closeFilterMenus();
+        menu.classList.toggle('open', open);
+        button.setAttribute('aria-expanded', open ? 'true' : 'false');
+        const list = menu.querySelector<HTMLElement>('.mkt-select-menu');
+        if (list) list.hidden = !open;
+      });
+    });
+    el.querySelectorAll<HTMLButtonElement>('[data-market-filter-option]').forEach((option) => {
+      option.addEventListener('click', () => {
+        const menu = option.closest<HTMLElement>('[data-market-filter-menu]');
+        const key = menu?.dataset.marketFilterMenu;
+        const value = option.dataset.marketFilterOption ?? 'all';
+        if (key === 'itemType') {
+          const next = value as MarketItemTypeFilter;
+          if (next !== this.marketItemTypeFilter) {
+            this.marketItemTypeFilter = next;
+            this.marketSubtypeFilter = 'all';
+            this.marketBrowsePage = 0;
+          }
+        } else if (key === 'subtype') {
+          this.marketSubtypeFilter = value as MarketSubtypeFilter;
+          this.marketBrowsePage = 0;
+        } else if (key === 'rarity') {
+          this.marketRarityFilter = value as MarketRarityFilter;
+          this.marketBrowsePage = 0;
+        } else {
+          return;
+        }
+        this.lastMarketSig = '';
+        audio.click();
+        this.renderMarket();
+      });
+    });
+    el.addEventListener('click', closeFilterMenus);
     this.renderMarketContent(info);
   }
 
@@ -3313,7 +5725,18 @@ export class Hud {
     if (!this.marketOpen || this.marketTab === 'sell') return;
     const info = this.sim.marketInfo;
     const collectN = info ? (info.collectionCopper > 0 ? 1 : 0) + info.collectionItems.length : 0;
-    const sig = JSON.stringify([this.marketTab, info?.listings, info?.collectionCopper, info?.collectionItems]);
+    const sig = JSON.stringify([
+      this.marketTab,
+      this.marketItemTypeFilter,
+      this.marketSubtypeFilter,
+      this.marketRarityFilter,
+      this.marketBrowsePage,
+      info?.listings,
+      info?.totalCount,
+      info?.filter,
+      info?.collectionCopper,
+      info?.collectionItems,
+    ]);
     if (sig === this.lastMarketSig) return;
     this.lastMarketSig = sig;
     const collectTab = $('#market-window').querySelector('[data-tab="collect"]');
@@ -3335,12 +5758,64 @@ export class Hud {
   }
 
   private renderMarketBrowse(body: HTMLElement, info: MarketInfo): void {
+    // Reuse the search field and list container across refreshes so typing in
+    // the box never loses focus when the server streams back filtered results.
+    let search = body.querySelector('.mkt-search') as HTMLInputElement | null;
+    let list = body.querySelector('.mkt-list') as HTMLElement | null;
+    if (!search || !list) {
+      body.innerHTML = '';
+      search = document.createElement('input');
+      search.type = 'search';
+      search.className = 'mkt-search';
+      search.placeholder = t('itemUi.market.searchPlaceholder');
+      search.setAttribute('aria-label', t('itemUi.market.searchAria'));
+      search.value = this.marketSearchQuery;
+      search.addEventListener('input', () => {
+        this.marketSearchQuery = search!.value;
+        this.marketBrowsePage = 0;
+        this.sim.marketSearch(search!.value);
+      });
+      body.appendChild(search);
+      list = document.createElement('div');
+      list.className = 'mkt-list';
+      body.appendChild(list);
+    }
+    // Keep the field in sync on external resets, but never clobber active typing.
+    if (document.activeElement !== search && search.value !== this.marketSearchQuery) {
+      search.value = this.marketSearchQuery;
+    }
+    list.innerHTML = '';
     if (info.listings.length === 0) {
-      body.innerHTML = `<div class="mkt-empty">${esc(t('itemUi.market.emptyBrowse'))}</div>`;
+      const empty = document.createElement('div');
+      empty.className = 'mkt-empty';
+      empty.textContent = info.filter.trim()
+        ? t('itemUi.market.emptySearch')
+        : t('itemUi.market.emptyBrowse');
+      list.appendChild(empty);
       return;
     }
-    body.innerHTML = `<div class="mkt-note">${esc(t('itemUi.market.browseNote'))}</div>`;
-    for (const l of info.listings) {
+    const listings = filterMarketListings(info.listings, {
+      itemType: this.marketItemTypeFilter,
+      subtype: this.marketSubtypeFilter,
+      rarity: this.marketRarityFilter,
+    });
+    if (listings.length === 0) {
+      this.marketBrowsePage = 0;
+      const empty = document.createElement('div');
+      empty.className = 'mkt-empty';
+      empty.textContent = t('itemUi.market.emptyFiltered');
+      list.appendChild(empty);
+      return;
+    }
+    const page = paginateMarketListings(listings, this.marketBrowsePage, MARKET_PAGE_SIZE);
+    this.marketBrowsePage = page.page;
+    const note = document.createElement('div');
+    note.className = 'mkt-note';
+    const shown = `${formatNumber(page.start + 1, { maximumFractionDigits: 0 })}-${formatNumber(page.end, { maximumFractionDigits: 0 })}`;
+    const total = formatNumber(page.total, { maximumFractionDigits: 0 });
+    note.textContent = t('itemUi.market.pageRange', { shown, total });
+    list.appendChild(note);
+    for (const l of page.items) {
       const item = ITEMS[l.itemId];
       if (!item) continue;
       const qColor = QUALITY_COLOR[item.quality ?? 'common'] ?? '#fff';
@@ -3368,7 +5843,28 @@ export class Hud {
       });
       row.appendChild(btn);
       this.attachTooltip(row, () => this.itemTooltip(item));
-      body.appendChild(row);
+      list.appendChild(row);
+    }
+    if (page.pageCount > 1) {
+      const pager = document.createElement('div');
+      pager.className = 'mkt-page';
+      const pageNumber = formatNumber(page.page + 1, { maximumFractionDigits: 0 });
+      const pageCount = formatNumber(page.pageCount, { maximumFractionDigits: 0 });
+      pager.innerHTML =
+        `<button type="button" class="mkt-page-btn" data-market-page="prev"${page.page <= 0 ? ' disabled' : ''} aria-label="${esc(t('itemUi.market.pagePrevAria'))}">${esc(t('itemUi.market.pagePrev'))}</button>`
+        + `<span class="mkt-page-info">${esc(t('itemUi.market.pageStatus', { current: pageNumber, total: pageCount }))}</span>`
+        + `<button type="button" class="mkt-page-btn" data-market-page="next"${page.page >= page.pageCount - 1 ? ' disabled' : ''} aria-label="${esc(t('itemUi.market.pageNextAria'))}">${esc(t('itemUi.market.pageNext'))}</button>`;
+      pager.querySelectorAll<HTMLButtonElement>('[data-market-page]').forEach((button) => {
+        button.addEventListener('click', () => {
+          if (button.disabled) return;
+          this.marketBrowsePage += button.dataset.marketPage === 'next' ? 1 : -1;
+          this.lastMarketSig = '';
+          audio.click();
+          this.renderMarketContent(info);
+          body.scrollTop = 0;
+        });
+      });
+      list.appendChild(pager);
     }
   }
 
@@ -3387,6 +5883,13 @@ export class Hud {
       body.appendChild(pick);
       return;
     }
+    if (item.kind === 'quest' || item.noMarketList) {
+      this.marketSellItem = null;
+      pick.className = 'mkt-sell-pick empty';
+      pick.textContent = t('itemUi.tooltip.cannotMarket');
+      body.appendChild(pick);
+      return;
+    }
     const qColor = QUALITY_COLOR[item.quality ?? 'common'] ?? '#fff';
     pick.className = 'mkt-sell-pick';
     pick.innerHTML = `${this.itemIcon(item)}<span class="ps-name" style="color:${qColor}">${esc(itemDisplayName(item))}</span>`;
@@ -3402,9 +5905,9 @@ export class Hud {
     const g = Math.floor(suggested / 10000), s = Math.floor((suggested % 10000) / 100), c = suggested % 100;
     form.innerHTML = qtyRow
       + `<div class="mkt-price-row"><label>${esc(t('itemUi.market.priceEach'))}</label>`
-      + `<input class="coininput" id="mkt-g" type="number" min="0" value="${g}" aria-label="${esc(t('itemUi.money.gold'))}"><span class="mkt-coin-tag">${esc(t('itemUi.money.goldShort'))}</span>`
-      + `<input class="coininput" id="mkt-s" type="number" min="0" max="99" value="${s}" aria-label="${esc(t('itemUi.money.silver'))}"><span class="mkt-coin-tag">${esc(t('itemUi.money.silverShort'))}</span>`
-      + `<input class="coininput" id="mkt-c" type="number" min="0" max="99" value="${c}" aria-label="${esc(t('itemUi.money.copper'))}"><span class="mkt-coin-tag">${esc(t('itemUi.money.copperShort'))}</span></div>`;
+      + `<input class="coininput" id="mkt-g" type="number" min="0" value="${g}" aria-label="${esc(t('itemUi.money.gold'))}"><span class="coin g" aria-hidden="true"></span><span class="mkt-coin-tag">${esc(t('itemUi.money.goldShort'))}</span>`
+      + `<input class="coininput" id="mkt-s" type="number" min="0" max="99" value="${s}" aria-label="${esc(t('itemUi.money.silver'))}"><span class="coin s" aria-hidden="true"></span><span class="mkt-coin-tag">${esc(t('itemUi.money.silverShort'))}</span>`
+      + `<input class="coininput" id="mkt-c" type="number" min="0" max="99" value="${c}" aria-label="${esc(t('itemUi.money.copper'))}"><span class="coin c" aria-hidden="true"></span><span class="mkt-coin-tag">${esc(t('itemUi.money.copperShort'))}</span></div>`;
     body.appendChild(form);
 
     const listBtn = document.createElement('button');
@@ -3459,13 +5962,34 @@ export class Hud {
   // Bags
   // -------------------------------------------------------------------------
 
+  // True when the player has at least one edible food stack — mirrors the
+  // food check in Sim.feedPet so the pet-feed flow never starts when it can't
+  // possibly complete.
+  private hasPetFood(): boolean {
+    return this.sim.inventory.some((s) => {
+      const item = ITEMS[s.itemId];
+      return !!item && item.kind === 'food' && !!item.foodHp && s.count > 0;
+    });
+  }
+
+  // Leave pet food-selection mode. Safe to call unconditionally; it only
+  // redraws the pet bar when something actually changed.
+  private cancelPetFeed(): void {
+    if (!this.pendingPetFeed) return;
+    this.pendingPetFeed = false;
+    this.lastPetBarSig = '';
+  }
+
   toggleBags(): void {
     const el = $('#bags');
-    if (el.style.display !== 'none') { el.style.display = 'none'; this.hideTooltip(); audio.bagClose(); return; }
+    if (el.style.display !== 'none') { el.style.display = 'none'; this.hideTooltip(); audio.bagClose(); this.cancelPetFeed(); return; }
     this.closeOtherWindows('#bags');
     this.renderBags();
     el.style.display = 'flex';
     audio.bagOpen();
+    // Pull a fresh on-chain $WOC balance for the footer; the async result
+    // re-renders the bag via the onWalletUiChange listener wired in the ctor.
+    this.optionsHooks?.refreshWocBalance();
   }
 
   // Called when an authoritative inventory delta lands (online snapshots
@@ -3476,6 +6000,10 @@ export class Hud {
     this.renderCharIfOpen();
   }
 
+  onCosmeticsChanged(): void {
+    this.renderCharIfOpen();
+  }
+
   private renderCharIfOpen(): void {
     if ($('#char-window').style.display === 'block') this.renderChar();
   }
@@ -3483,6 +6011,10 @@ export class Hud {
   renderBags(): void {
     const el = $('#bags');
     const sim = this.sim;
+    // .bag-grid (not #bags) is the scroll container; it is recreated on every
+    // rebuild, so capture its scroll offset and reapply it to the fresh grid —
+    // otherwise using an item (e.g. a potion) snaps the list back to the top.
+    const prevScrollTop = el.querySelector('.bag-grid')?.scrollTop ?? 0;
     el.innerHTML = `<div class="panel-title"><span>${esc(t('itemUi.bags.title'))}</span><button type="button" class="x-btn" data-close aria-label="${esc(t('itemUi.bags.close'))}">${svgIcon('close')}</button></div>`;
     const grid = document.createElement('div');
     grid.className = 'bag-grid';
@@ -3507,12 +6039,13 @@ export class Hud {
           this.addItemToTrade(s.itemId);
         } else if (this.marketOpen && this.marketTab === 'sell') {
           if (item.kind === 'quest') { this.showError(t('itemUi.errors.noQuestItems')); return; }
+          if (item.noMarketList) { this.showError(t('itemUi.tooltip.cannotMarket')); return; }
           this.marketSellItem = s.itemId;
           this.renderMarket();
         } else if (this.vendorOpen) {
           this.sellBagItem(s, ev);
         } else if (this.pendingPetFeed) {
-          if (item.kind !== 'food') { this.showError('Your pet can only eat food.'); return; }
+          if (item.kind !== 'food') { this.showError(t('hud.pet.petEatsFoodOnly')); return; }
           this.sim.feedPet(s.itemId);
           this.pendingPetFeed = false;
           this.lastPetBarSig = '';
@@ -3547,7 +6080,7 @@ export class Hud {
       this.attachTooltip(row, () => {
         let extra = '';
         if (this.tradeOpen) extra = `<div class="tt-sub">${esc(t('itemUi.tooltip.clickTradeOffer'))}</div>`;
-        else if (this.marketOpen && this.marketTab === 'sell') extra = item.kind === 'quest' ? `<div class="tt-sub">${esc(t('itemUi.tooltip.cannotMarket'))}</div>` : `<div class="tt-sub">${esc(t('itemUi.tooltip.clickMarketList'))}</div>`;
+        else if (this.marketOpen && this.marketTab === 'sell') extra = item.kind === 'quest' || item.noMarketList ? `<div class="tt-sub">${esc(t('itemUi.tooltip.cannotMarket'))}</div>` : `<div class="tt-sub">${esc(t('itemUi.tooltip.clickMarketList'))}</div>`;
         else if (this.vendorOpen) extra = item.kind === 'quest' ? `<div class="tt-sub">${esc(t('itemUi.tooltip.cannotVendor'))}</div>` : `<div class="tt-sub">${esc(t('itemUi.tooltip.clickSell'))}</div>`;
         else if (item.kind === 'quest') extra = `<div class="tt-sub">${esc(t('itemUi.tooltip.clickDestroy'))}</div>`;
         else if (item.kind === 'weapon' || item.kind === 'armor') extra = `<div class="tt-sub">${esc(t('itemUi.tooltip.clickEquip'))}</div>`;
@@ -3559,11 +6092,20 @@ export class Hud {
       grid.appendChild(row);
     }
     el.appendChild(grid);
+    grid.scrollTop = prevScrollTop;
     const money = document.createElement('div');
     money.className = 'money';
-    money.innerHTML = this.moneyHtml(sim.copper);
+    money.innerHTML = `${this.wocBalanceHtml()}${this.moneyHtml(sim.copper)}`;
     el.appendChild(money);
-    el.querySelector('[data-close]')?.addEventListener('click', () => { el.style.display = 'none'; this.hideTooltip(); });
+    el.querySelector('[data-close]')?.addEventListener('click', () => {
+      if (this.vendorOpen && document.body.classList.contains('mobile-touch')) {
+        this.closeVendor();
+        return;
+      }
+      el.style.display = 'none';
+      this.hideTooltip();
+      this.cancelPetFeed();
+    });
   }
 
   private sellBagItem(slot: InvSlot, ev: MouseEvent): void {
@@ -3680,44 +6222,136 @@ export class Hud {
     const p = sim.player;
     const cls = CLASSES[sim.cfg.playerClass];
     const className = classDisplayName(cls.id);
-    let html = `<div class="panel-title"><span>${esc(p.name)} <span class="panel-subtitle">${esc(t('itemUi.equipment.levelClass', { level: formatNumber(p.level, { maximumFractionDigits: 0 }), className }))}</span></span><button type="button" class="x-btn" data-close aria-label="${esc(t('hud.options.returnToGame'))}">${svgIcon('close')}</button></div>`;
+    let html = `<div class="panel-title char-title-portrait">${portraitChipHtml({ cls: sim.cfg.playerClass, skin: p.skin ?? 0, name: p.name, variant: 'md' })}<span class="char-title-text">${esc(p.name)} <span class="panel-subtitle">${esc(t('itemUi.equipment.levelClass', { level: formatNumber(p.level, { maximumFractionDigits: 0 }), className }))}</span></span><button type="button" class="x-btn" data-close aria-label="${esc(t('hud.options.returnToGame'))}">${svgIcon('close')}</button></div>`;
     html += `<div class="paperdoll">
-      <div class="equip-col" id="equip-col"></div>
+      <div class="equip-col" id="equip-col-left"></div>
       <div class="char-model-panel">
         <div id="char-model-preview" class="char-model-preview"></div>
-        <div id="char-skin-row" class="skin-row char-skin-row" role="list" aria-label="Chroma"></div>
+        <div id="char-skin-row" class="skin-row char-skin-row" role="list" aria-label="${esc(t('auth.appearance'))}"></div>
       </div>
+      <div class="equip-col equip-col-right" id="equip-col-right"></div>
     </div>`;
-    const wpn = sim.equipment.mainhand ? ITEMS[sim.equipment.mainhand] : null;
-    const dps = wpn?.weapon ? ((wpn.weapon.min + wpn.weapon.max) / 2 + (p.attackPower / 14) * wpn.weapon.speed) / wpn.weapon.speed : 0;
+    // Ten focusable stat cells, primaries down the left column and derived stats
+    // down the right. The cell markup, value formatting, and the visually-hidden
+    // aria breakdown all come from the pure, unit-tested stat_tooltip_view module;
+    // each cell's value is read from the model so it cannot drift from the tooltip
+    // it opens, and the post-render pass below attaches the floating breakdown.
+    const statCell = (stat: StatId) => statCellHtml(this.statModel(stat), STAT_VIEW_DEPS);
     html += `<div class="char-stats">
-      <span>${esc(t('itemUi.stats.str'))}: <b>${formatNumber(p.stats.str, { maximumFractionDigits: 0 })}</b></span><span>${esc(t('itemUi.stats.armor'))}: <b>${formatNumber(p.stats.armor, { maximumFractionDigits: 0 })}</b></span>
-      <span>${esc(t('itemUi.stats.agi'))}: <b>${formatNumber(p.stats.agi, { maximumFractionDigits: 0 })}</b></span><span>${esc(t('itemUi.stats.attackPower'))}: <b>${formatNumber(p.attackPower, { maximumFractionDigits: 0 })}</b></span>
-      <span>${esc(t('itemUi.stats.sta'))}: <b>${formatNumber(p.stats.sta, { maximumFractionDigits: 0 })}</b></span><span>${esc(t('itemUi.stats.dps'))}: <b>${formatNumber(dps, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</b></span>
-      <span>${esc(t('itemUi.stats.int'))}: <b>${formatNumber(p.stats.int, { maximumFractionDigits: 0 })}</b></span><span>${esc(t('itemUi.stats.critChance'))}: <b>${formatNumber(p.critChance * 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%</b></span>
-      <span>${esc(t('itemUi.stats.spi'))}: <b>${formatNumber(p.stats.spi, { maximumFractionDigits: 0 })}</b></span><span>${esc(t('itemUi.stats.dodge'))}: <b>${formatNumber(p.dodgeChance * 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%</b></span>
+      ${statCell('str')}${statCell('armor')}
+      ${statCell('agi')}${statCell('attackPower')}
+      ${statCell('sta')}${statCell('dps')}
+      ${statCell('int')}${statCell('critChance')}
+      ${statCell('spi')}${statCell('dodge')}
     </div>`;
     html += this.talentSummaryHtml();
     html += this.progressionHtml(p.level);
+    const shareGlyph = `<svg class="pc-share-ico" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M18 16.1a3 3 0 0 0-2.3 1.1l-6.7-3.9a3 3 0 0 0 0-2.6l6.7-3.9A3 3 0 1 0 15 4l-6.7 3.9a3 3 0 1 0 0 8.2L15 20a3 3 0 1 0 3-3.9z"/></svg>`;
+    html += `<div class="pc-share-row"><button type="button" class="btn pc-share-btn" data-act="share-card">${shareGlyph}<span>${esc(t('playerCard.shareButton'))}</span></button></div>`;
     el.innerHTML = html;
+    hydratePortraits(el);
     el.querySelector('[data-act="prestige"]')?.addEventListener('click', () => this.openPrestigeDialog());
-    const col = el.querySelector('#equip-col')!;
-    const slots: { key: EquipSlot; name: string }[] = [
-      { key: 'mainhand', name: itemSlotName('mainhand') },
+    el.querySelector('[data-act="share-card"]')?.addEventListener('click', () => { audio.click(); void this.openPlayerCard(); });
+    const leftCol = el.querySelector('#equip-col-left')!;
+    const rightCol = el.querySelector('#equip-col-right')!;
+    // Two columns flanking the model, like the classic WoW character sheet:
+    // the left column holds head/shoulder/chest (+ weapon, since we have no
+    // neck/back/wrist slots to fill it) and the right column holds the
+    // hands/waist/legs/feet quartet.
+    const leftSlots: { key: EquipSlot; name: string }[] = [
+      { key: 'helmet', name: itemSlotName('helmet') },
+      { key: 'shoulder', name: itemSlotName('shoulder') },
       { key: 'chest', name: itemSlotName('chest') },
+      { key: 'mainhand', name: itemSlotName('mainhand') },
+    ];
+    const rightSlots: { key: EquipSlot; name: string }[] = [
+      { key: 'gloves', name: itemSlotName('gloves') },
+      { key: 'waist', name: itemSlotName('waist') },
       { key: 'legs', name: itemSlotName('legs') },
       { key: 'feet', name: itemSlotName('feet') },
     ];
-    for (const slot of slots) {
+    const buildSlotRow = (slot: { key: EquipSlot; name: string }): HTMLElement => {
       const itemId = sim.equipment[slot.key];
       const item = itemId ? ITEMS[itemId] : null;
       const row = document.createElement('div');
       row.className = 'equip-slot';
+      // Stable id + programmatic focusability so the corner-× rebuild can hand
+      // focus back to this slot (the rebuilt row may be empty, with no × to focus).
+      row.id = `equip-slot-${slot.key}`;
+      row.tabIndex = -1;
       const qColor = !item ? '#666' : QUALITY_COLOR[item.quality ?? 'common'] ?? '#fff';
       row.innerHTML = `${item ? this.itemIcon(item) : `<img class="item-icon" style="border-color:#444" src="${iconDataUrl('item', 'slot_empty')}" alt="" draggable="false">`}
         <div><div class="slot-name">${esc(slot.name)}</div><div class="slot-item" style="color:${qColor}">${item ? esc(itemDisplayName(item)) : esc(t('itemUi.equipment.empty'))}</div></div>`;
-      if (item) this.attachTooltip(row, () => this.itemTooltip(item));
-      col.appendChild(row);
+      if (item) {
+        // Remove the piece back to bags, leaving the slot empty (equipping only
+        // ever swaps in a replacement — this is the way to fully unequip). Three
+        // affordances all route through here: the corner ×, right-click, and
+        // dragging the piece out onto the bags window.
+        // `keepFocus` rebuilds the paperdoll (renderChar replaces the subtree via
+        // innerHTML, which otherwise drops focus to <body>) and hands focus back to
+        // the now-empty slot row — the keyboard/touch × path needs this; right-click
+        // and drag are mouse-only and don't.
+        const doUnequip = (keepFocus = false) => {
+          this.sim.unequipItem(slot.key);
+          audio.click();
+          this.hideTooltip();
+          this.renderBags();
+          this.renderCharIfOpen();
+          if (keepFocus) {
+            const rebuilt = document.getElementById(`equip-slot-${slot.key}`);
+            this.restoreFocus(rebuilt instanceof HTMLElement ? rebuilt : null);
+          }
+        };
+        this.attachTooltip(row, () => `${this.itemTooltip(item)}<div class="tt-sub">${esc(t('hudChrome.paperdoll.unequipHint'))}</div>`);
+        // Corner ×: a styled glyph control (not an in-game icon), revealed on
+        // hover/focus and always shown on touch where right-click is unavailable.
+        const unequip = document.createElement('button');
+        unequip.type = 'button';
+        unequip.className = 'equip-unequip-btn';
+        unequip.textContent = '×';
+        unequip.setAttribute('aria-label', t('hudChrome.paperdoll.unequipAria', { item: itemDisplayName(item) }));
+        unequip.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          doUnequip(true);
+        });
+        row.appendChild(unequip);
+        // Right-click the slot (classic-MMO muscle memory; matches the bags grid).
+        row.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          doUnequip();
+        });
+        // Drag the piece out onto the bags window to unequip it.
+        row.draggable = true;
+        row.addEventListener('dragstart', (e) => {
+          this.dragUnequipSlot = slot.key;
+          e.dataTransfer!.effectAllowed = 'move';
+          this.hideTooltip();
+          // Open the bags window if it's closed so there's a visible drop target —
+          // otherwise the drag silently snaps back with no feedback.
+          const bags = $('#bags');
+          if (bags.style.display !== 'block') {
+            bags.style.display = 'block';
+            this.renderBags();
+          }
+        });
+        row.addEventListener('dragend', () => {
+          this.dragUnequipSlot = null;
+          $('#bags').classList.remove('drop-target');
+        });
+      } else {
+        // Empty slot: still swallow the native browser menu so right-click feels
+        // consistent across the paperdoll (an empty slot has nothing to unequip).
+        row.addEventListener('contextmenu', (ev) => ev.preventDefault());
+      }
+      return row;
+    };
+    for (const slot of leftSlots) leftCol.appendChild(buildSlotRow(slot));
+    for (const slot of rightSlots) rightCol.appendChild(buildSlotRow(slot));
+    for (const cell of el.querySelectorAll<HTMLElement>('.char-stats [data-stat]')) {
+      const stat = cell.dataset.stat as StatId;
+      // Resolve the model lazily, on show, so the breakdown reflects the player's
+      // current stats (gear/buffs/talents) at the moment they hover, not at render.
+      this.attachTooltip(cell, () => statTooltipHtml(this.statModel(stat), STAT_VIEW_DEPS));
     }
     this.renderCharPreview();
     this.renderCharSkinPicker();
@@ -3727,6 +6361,34 @@ export class Hud {
   private renderCharPreview(): void {
     const container = $('#char-model-preview') as HTMLElement | null;
     if (!container) return;
+    const preview = activeCharacterAppearancePreview(
+      this.sim.cfg.playerClass,
+      this.sim.player.skin ?? 0,
+      this.sim.player.skinCatalog ?? 'class',
+    );
+    if (preview.visualKey !== 'player_mech') {
+      this.mountCharPreview(container, this.sim.cfg.playerClass, preview.skin, preview.visualKey);
+      return;
+    }
+    const mechAssets = this.mechAssetsPromise ?? (this.mechAssetsPromise = preloadMechAssets());
+    void mechAssets.then(() => {
+      const charWindow = $('#char-window') as HTMLElement | null;
+      if (charWindow?.style.display !== 'block') return;
+      const currentPreview = activeCharacterAppearancePreview(
+        this.sim.cfg.playerClass,
+        this.sim.player.skin ?? 0,
+        this.sim.player.skinCatalog ?? 'class',
+      );
+      if (currentPreview.visualKey === 'player_mech') {
+        this.mountCharPreview(container, this.sim.cfg.playerClass, currentPreview.skin, currentPreview.visualKey);
+      }
+    }).catch((err) => console.error('failed to load mech cosmetic preview:', err));
+  }
+
+  /** Mount the shared character turntable into `container` showing `cls`/`skin`.
+   *  The single CharacterPreview canvas is moved between hosts (char sheet, the
+   *  skin-select overlay) via setContainer, so only one WebGL context exists. */
+  private mountCharPreview(container: HTMLElement, cls: PlayerClass, skin: number, previewKey?: string): void {
     if (!this.charPreviewCanvas) this.charPreviewCanvas = document.createElement('canvas');
     if (!this.charPreview) {
       container.appendChild(this.charPreviewCanvas);
@@ -3734,34 +6396,792 @@ export class Hud {
     } else {
       this.charPreview.setContainer(container);
     }
-    this.charPreview.setClass(this.sim.cfg.playerClass);
-    this.charPreview.setSkin(this.sim.player.skin ?? 0);
+    if (previewKey) this.charPreview.setVisualKey(previewKey);
+    else this.charPreview.setClass(cls);
+    this.charPreview.setSkin(skin);
   }
 
   private renderCharSkinPicker(): void {
     const row = $('#char-skin-row') as HTMLElement | null;
     if (!row) return;
     const cls = this.sim.cfg.playerClass;
-    const count = skinCount(`player_${cls}`);
+    const options = characterAppearanceOptions(cls, this.sim.accountCosmetics.mechChromaIds);
     row.innerHTML = '';
     row.style.setProperty('--class-color', classCss(cls));
-    if (count <= 1) return;
-    const current = Math.max(0, Math.min(count - 1, this.sim.player.skin ?? 0));
-    for (let i = 0; i < count; i++) {
+    if (options.length <= 1) return;
+    if (options.some((option) => option.kind === 'mech') && !this.mechAssetsPromise) {
+      this.mechAssetsPromise = preloadMechAssets();
+    }
+    const current = Math.max(0, this.sim.player.skin ?? 0);
+    const currentCatalog = this.sim.player.skinCatalog ?? 'class';
+    for (const option of options) {
+      const labelNumber = formatNumber(option.label, { maximumFractionDigits: 0 });
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'skin-swatch' + (i === current ? ' sel' : '');
-      b.textContent = String(i + 1);
+      b.className = 'skin-swatch' + (option.kind === currentCatalog && option.skin === current ? ' sel' : '');
+      b.textContent = labelNumber;
       b.setAttribute('role', 'listitem');
-      b.setAttribute('aria-label', `Chroma ${i + 1}`);
+      b.setAttribute('aria-label', option.kind === 'class'
+        ? t('auth.chromaOption', { n: labelNumber })
+        : this.mechChromaName(option.chromaId));
       b.addEventListener('click', () => {
         row.querySelectorAll('.skin-swatch').forEach((x) => x.classList.remove('sel'));
         b.classList.add('sel');
-        this.sim.changeSkin(i);
-        this.charPreview?.setSkin(i);
+        if (option.kind === 'class') {
+          this.sim.changeSkin(option.skin, 'class');
+          const preview = activeCharacterAppearancePreview(this.sim.cfg.playerClass, option.skin, 'class');
+          this.mountCharPreview($('#char-model-preview'), this.sim.cfg.playerClass, preview.skin, preview.visualKey);
+          return;
+        }
+        this.sim.changeSkin(option.skin, 'mech');
+        const mechAssets = this.mechAssetsPromise ?? (this.mechAssetsPromise = preloadMechAssets());
+        void mechAssets.then(() => {
+          if (($('#char-window') as HTMLElement).style.display === 'block' && b.classList.contains('sel')) {
+            const preview = activeCharacterAppearancePreview(this.sim.cfg.playerClass, option.skin, 'mech');
+            this.mountCharPreview($('#char-model-preview'), this.sim.cfg.playerClass, preview.skin, preview.visualKey);
+          }
+        }).catch((err) => console.error('failed to load mech cosmetic preview:', err));
+        audio.click();
       });
+      if (option.kind === 'mech') {
+        this.attachTooltip(b, () => `<div class="tt-name">${esc(this.mechChromaName(option.chromaId))}</div><div class="tt-sub">${esc(t('skinEvent.unlocked'))}</div>`);
+      }
       row.appendChild(b);
     }
+    const currentChroma = currentCatalog === 'mech' ? MECH_CHROMAS[current] : null;
+    if (currentChroma && this.sim.accountCosmetics.mechChromaIds.includes(currentChroma.id)) {
+      const unequip = document.createElement('button');
+      unequip.type = 'button';
+      unequip.className = 'skin-unequip-btn';
+      unequip.textContent = t('skinEvent.unequip');
+      unequip.setAttribute('aria-label', t('skinEvent.unequip'));
+      unequip.addEventListener('click', () => {
+        this.sim.unequipMechChroma(currentChroma.id);
+        audio.click();
+        this.renderBags();
+        this.renderCharIfOpen();
+      });
+      this.attachTooltip(unequip, () => `<div class="tt-name">${esc(this.mechChromaName(currentChroma.id))}</div><div class="tt-sub">${esc(t('skinEvent.unequip'))}</div>`);
+      row.appendChild(unequip);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Cosmetic skin-select event overlay (opened by the server-rolled `skinEvent`
+  // cue). Left column: rank-gated tier list of selectable skins. Right column:
+  // the shared rotatable 3D preview + a Lock In button that commits the choice
+  // through IWorld.claimEventSkin (re-validated server-side against the rank).
+  // -------------------------------------------------------------------------
+
+  private static readonly SKIN_RANK_NAME_KEY: Record<SkinRank, TranslationKey> = {
+    uncommon: 'itemUi.quality.uncommon',
+    rare: 'itemUi.quality.rare',
+    epic: 'itemUi.quality.epic',
+  };
+
+  private skinRankName(rank: SkinRank): string {
+    return t(Hud.SKIN_RANK_NAME_KEY[rank]);
+  }
+
+  // Combat Mech chroma id -> display-name key. Keyed by MECH_CHROMAS[].id.
+  private static readonly MECH_NAME_KEY: Record<string, TranslationKey> = {
+    amber_crimson: 'skinEvent.mech.amber_crimson',
+    crimson_amber: 'skinEvent.mech.crimson_amber',
+    cyan_magenta: 'skinEvent.mech.cyan_magenta',
+    magenta_cyan: 'skinEvent.mech.magenta_cyan',
+    orange_steel: 'skinEvent.mech.orange_steel',
+    steel_orange: 'skinEvent.mech.steel_orange',
+    forest_pink: 'skinEvent.mech.forest_pink',
+    pink_forest: 'skinEvent.mech.pink_forest',
+    amethyst_silver: 'skinEvent.mech.amethyst_silver',
+    ivory_copper: 'skinEvent.mech.ivory_copper',
+    onyx_gold: 'skinEvent.mech.onyx_gold',
+    imperial_crimson: 'skinEvent.mech.imperial_crimson',
+    imperial_gold: 'skinEvent.mech.imperial_gold',
+    vanguard_azure: 'skinEvent.mech.vanguard_azure',
+    vanguard_chrome: 'skinEvent.mech.vanguard_chrome',
+  };
+
+  private mechChromaName(id: string): string {
+    const key = Hud.MECH_NAME_KEY[id];
+    return key ? t(key) : id;
+  }
+
+  // The selectable skins for the current overlay mode, each carrying its rank,
+  // skin index, a stable choice key, and (mech only) the chroma id for naming.
+  private skinEventChoices(): { rank: SkinRank; index: number; key: string; id?: string }[] {
+    if (this.skinEventMode === 'mech') {
+      return MECH_CHROMAS.map((c, i) => ({ rank: c.rank, index: i, key: `mech:${i}`, id: c.id }));
+    }
+    return this.skinEventTiers.map((tier) => ({ rank: tier.rank, index: tier.skin, key: this.skinTierKey(tier) }));
+  }
+
+  private skinEventPreviewKey(): string {
+    return this.skinEventMode === 'mech' ? 'player_mech' : `player_${this.sim.cfg.playerClass}`;
+  }
+
+  // Whether a choice's skin actually exists to render. Mech chromas always do;
+  // class skins are bounded by how many that class's model ships.
+  private skinChoiceAvailable(index: number): boolean {
+    if (this.skinEventMode === 'mech') return true;
+    return index < skinCount(`player_${this.sim.cfg.playerClass}`);
+  }
+
+  private skinChoiceThumb(index: number): string | null {
+    return this.skinEventMode === 'mech'
+      ? visualPortraitDataUrl('player_mech', index)
+      : playerPortraitDataUrl(this.sim.cfg.playerClass, index);
+  }
+
+  /** Best choice the rolled rank unlocks AND that exists, or null. Works for
+   *  both modes via skinEventChoices(). */
+  private defaultChoiceSelection(rank: SkinRank): { index: number; key: string } | null {
+    const granted = skinRankOrder(rank);
+    let best: { index: number; key: string } | null = null;
+    let bestOrder = -1;
+    for (const ch of this.skinEventChoices()) {
+      const order = skinRankOrder(ch.rank);
+      if (order > granted || !this.skinChoiceAvailable(ch.index)) continue;
+      if (order > bestOrder) { bestOrder = order; best = { index: ch.index, key: ch.key }; }
+    }
+    return best;
+  }
+
+  /** Open the skin-select overlay for a server-rolled rank, defaulting the
+   *  selection to the best skin the rank unlocks.
+   *  `opts.mech` opens the real Combat Mech cosmetic catalog. */
+  openSkinEvent(rank: SkinRank, opts?: { mech?: boolean }): void {
+    for (let i = 0; i < 20 && this.closeAll(); i++) { /* close stacked HUD overlays before the roll reveal */ }
+    this.skinEventRank = rank;
+    this.skinEventMode = opts?.mech ? 'mech' : 'class';
+    if (this.skinEventMode === 'mech') {
+      // Kick off the lazy asset fetch; the reveal waits on it before rendering.
+      this.mechAssetsPromise = preloadMechAssets();
+    } else {
+      this.skinEventTiers = EVENT_SKIN_TIERS;
+    }
+    this.skinEventWheelAngle = this.randomSkinEventLandingAngle(rank);
+    const selected = this.defaultChoiceSelection(rank);
+    this.skinEventSelected = selected?.index ?? -1;
+    this.skinEventSelectedKey = selected?.key ?? '';
+    this.hideTooltip();
+    // Render the tier list once data + assets are ready. For mech that means the
+    // lazy GLB/chromas; otherwise once portraits finish their boot preload.
+    const reveal = (): void => {
+      if (this.skinEventRank === null) return;
+      if (this.skinEventMode === 'mech' && this.mechAssetsPromise) {
+        void this.mechAssetsPromise.then(() => { if (this.skinEventRank !== null) this.renderSkinEvent(); });
+      } else {
+        this.renderSkinEvent();
+      }
+    };
+    onPortraitsReady(() => {
+      if (this.skinEventEl?.classList.contains('open') && this.skinEventRevealTimer === null) reveal();
+    });
+    this.renderSkinEventWheel();
+    const reduceMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (this.skinEventRevealTimer !== null) window.clearTimeout(this.skinEventRevealTimer);
+    this.skinEventRevealTimer = window.setTimeout(() => {
+      this.skinEventRevealTimer = null;
+      reveal();
+    }, reduceMotion ? 140 : 6600);
+    audio.bagOpen();
+  }
+
+  closeSkinEvent(): void {
+    if (!this.skinEventEl) return;
+    if (this.skinEventRevealTimer !== null) {
+      window.clearTimeout(this.skinEventRevealTimer);
+      this.skinEventRevealTimer = null;
+    }
+    this.skinEventEl.classList.remove('open');
+    this.skinEventRank = null;
+    this.skinEventTiers = EVENT_SKIN_TIERS;
+    this.skinEventMode = 'class';
+    this.skinEventSelectedKey = '';
+    this.skinEventWheelAngle = 0;
+    audio.bagClose();
+  }
+
+  private skinTierKey(tier: SkinTier): string {
+    return `${tier.rank}:${tier.skin}`;
+  }
+
+  private randomSkinEventLandingAngle(rank: SkinRank): number {
+    // CSS wheel uses `conic-gradient(from -90deg, ...)`, so the visual centers
+    // are shifted 90deg from the raw stop midpoints. Add bounded per-roll
+    // jitter so repeat rolls of the same rarity do not stop at the same point.
+    const jitter = (span: number): number => (Math.random() - 0.5) * span;
+    switch (rank) {
+      case 'uncommon': return -15 + jitter(150);
+      case 'rare': return -172.5 + jitter(72);
+      case 'epic': return -247.5 + jitter(28);
+    }
+    return 0;
+  }
+
+  private renderSkinEventWheel(): void {
+    const rank = this.skinEventRank;
+    if (rank === null) return;
+
+    let el = this.skinEventEl;
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'skin-event';
+      el.className = 'skin-event-overlay';
+      el.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.closeSkinEvent(); });
+      el.addEventListener('mousedown', (e) => { if (e.target === el) this.closeSkinEvent(); });
+      document.body.appendChild(el);
+      this.skinEventEl = el;
+    }
+
+    const title = esc(t('skinEvent.title'));
+    const landed = esc(this.skinRankName(rank));
+    el.innerHTML = `<div class="se-wheel-stage" role="dialog" aria-modal="true" aria-label="${title}">`
+      + `<div class="se-wheel-pointer" aria-hidden="true"></div>`
+      + `<div class="se-wheel" style="--land-angle:${this.skinEventWheelAngle}deg" aria-hidden="true">`
+      + `<svg class="se-wheel-labels" viewBox="0 0 200 200">`
+      + `<defs><path id="se-wheel-label-ring" d="M 100 25 A 75 75 0 1 1 99.9 25"/></defs>`
+      + `<text class="se-wheel-label-bg uncommon"><textPath href="#se-wheel-label-ring" startOffset="4%">${esc(this.skinRankName('uncommon'))}</textPath></text>`
+      + `<text class="se-wheel-label-bg rare"><textPath href="#se-wheel-label-ring" startOffset="48%">${esc(this.skinRankName('rare'))}</textPath></text>`
+      + `<text class="se-wheel-label-bg epic"><textPath href="#se-wheel-label-ring" startOffset="69%">${esc(this.skinRankName('epic'))}</textPath></text>`
+      + `<text class="se-wheel-label-fg"><textPath href="#se-wheel-label-ring" startOffset="4%">${esc(this.skinRankName('uncommon'))}</textPath></text>`
+      + `<text class="se-wheel-label-fg"><textPath href="#se-wheel-label-ring" startOffset="48%">${esc(this.skinRankName('rare'))}</textPath></text>`
+      + `<text class="se-wheel-label-fg"><textPath href="#se-wheel-label-ring" startOffset="69%">${esc(this.skinRankName('epic'))}</textPath></text>`
+      + `</svg>`
+      + `</div>`
+      + `<div class="se-wheel-result" style="--tier-color:${QUALITY_COLOR[rank] ?? '#fff'}">`
+      + `<span>${landed}</span>`
+      + `<i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>`
+      + `<b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b>`
+      + `<b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></div>`
+      + `</div>`;
+    el.classList.add('open');
+  }
+
+  private renderSkinEvent(): void {
+    const rank = this.skinEventRank;
+    if (rank === null) return;
+    const cls = this.sim.cfg.playerClass;
+    const granted = skinRankOrder(rank);
+    const mech = this.skinEventMode === 'mech';
+    const previewKey = this.skinEventPreviewKey();
+
+    // Build the shell once and reuse it across opens so the single 3D canvas
+    // can be moved in/out via setContainer without being recreated.
+    let el = this.skinEventEl;
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'skin-event';
+      el.className = 'skin-event-overlay';
+      el.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.closeSkinEvent(); });
+      el.addEventListener('mousedown', (e) => { if (e.target === el) this.closeSkinEvent(); });
+      document.body.appendChild(el);
+      this.skinEventEl = el;
+    }
+
+    const title = esc(t('skinEvent.title'));
+    const rankName = this.skinRankName(rank);
+    el.innerHTML = `<div class="panel skin-event-panel" role="dialog" aria-modal="true" aria-label="${title}">`
+      + `<div class="se-body"><div class="se-left">`
+      + `<div class="se-roll-banner" style="--tier-color:${QUALITY_COLOR[rank] ?? '#fff'}">${esc(t('skinEvent.rolled', { rank: rankName }))}</div>`
+      + `<div class="se-tiers" role="radiogroup" aria-label="${title}"></div>`
+      + `<button type="button" class="btn se-lockin" data-lockin>${esc(t('skinEvent.lockIn'))}</button>`
+      + `</div><div class="se-preview-col">`
+      + `<div class="se-preview"><div class="se-preview-hint">${esc(t('skinEvent.previewHint'))}</div></div>`
+      + `<div class="se-preview-name" data-preview-name></div>`
+      + `</div></div></div>`;
+
+    const tiersEl = el.querySelector('.se-tiers') as HTMLElement;
+    const lockInBtn = el.querySelector('[data-lockin]') as HTMLButtonElement;
+    const swatches: HTMLButtonElement[] = [];
+
+    const syncSelection = (): void => {
+      let selectedCanLock = false;
+      for (const b of swatches) {
+        const sel = b.dataset.choice === this.skinEventSelectedKey;
+        b.classList.toggle('sel', sel);
+        b.setAttribute('aria-checked', String(sel));
+        b.tabIndex = sel ? 0 : -1;
+        if (sel && b.dataset.lockable === 'true') selectedCanLock = true;
+      }
+      lockInBtn.disabled = !selectedCanLock;
+    };
+
+    const nameEl = el.querySelector('[data-preview-name]') as HTMLElement;
+    const choiceName = (ch: { rank: SkinRank; id?: string }): string =>
+      mech && ch.id ? this.mechChromaName(ch.id) : this.skinRankName(ch.rank);
+
+    const select = (ch: { rank: SkinRank; index: number; key: string; id?: string }): void => {
+      this.skinEventSelected = ch.index;
+      this.skinEventSelectedKey = ch.key;
+      this.charPreview?.setSkin(ch.index);
+      nameEl.textContent = choiceName(ch);
+      syncSelection();
+      audio.click();
+    };
+
+    const choices = this.skinEventChoices();
+    // Highest rank at the top (epic → uncommon), matching the design sketch.
+    // Class mode shows one swatch per tier; mech mode shows every chroma in it.
+    for (const tierRank of [...SKIN_RANKS].reverse()) {
+      const rankChoices = choices.filter((c) => c.rank === tierRank);
+      if (!rankChoices.length) continue;
+      const order = skinRankOrder(tierRank);
+      const unlocked = order <= granted;
+      const anyAvailable = rankChoices.some((c) => this.skinChoiceAvailable(c.index));
+      const rawName = this.skinRankName(tierRank);
+      const row = document.createElement('div');
+      row.className = 'se-tier' + (unlocked ? '' : ' locked');
+      row.style.setProperty('--tier-color', QUALITY_COLOR[tierRank] ?? '#fff');
+      const hint = !unlocked
+        ? `<span class="se-tier-hint">${svgIcon('lock')}${esc(t('skinEvent.lockedHint', { rank: rawName }))}</span>`
+        : !anyAvailable ? `<span class="se-tier-hint">${esc(t('skinEvent.unavailable'))}</span>` : '';
+      row.innerHTML = `<div class="se-tier-head"><span class="se-tier-name">${esc(rawName)}</span>${hint}</div>`
+        + `<div class="se-swatches"></div>`;
+      const swatchesEl = row.querySelector('.se-swatches') as HTMLElement;
+
+      rankChoices.forEach((ch, i) => {
+        const available = this.skinChoiceAvailable(ch.index);
+        const label = choiceName(ch);
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'se-swatch';
+        b.dataset.skin = String(ch.index);
+        b.dataset.choice = ch.key;
+        b.dataset.lockable = String(unlocked && available);
+        b.setAttribute('role', 'radio');
+        if (available) {
+          const url = this.skinChoiceThumb(ch.index);
+          if (!unlocked) b.classList.add('locked');
+          b.innerHTML = url ? `<img src="${esc(url)}" alt="">` : String(i + 1);
+          b.setAttribute('aria-label', mech ? label : t('skinEvent.optionAria', { rank: rawName, index: i + 1 }));
+          b.addEventListener('click', () => select(ch));
+          this.attachTooltip(b, () => `<div class="tt-name">${esc(label)}</div>`
+            + (unlocked ? '' : `<div class="tt-sub">${esc(t('skinEvent.lockedHint', { rank: rawName }))}</div>`));
+          swatches.push(b);
+        } else {
+          b.classList.add('unavailable');
+          b.setAttribute('aria-disabled', 'true');
+          b.innerHTML = unlocked ? '<span class="se-lock">—</span>' : `<span class="se-lock">${svgIcon('lock')}</span>`;
+          b.setAttribute('aria-label', unlocked ? t('skinEvent.unavailable') : t('skinEvent.locked'));
+          this.attachTooltip(b, () => `<div class="tt-name">${esc(rawName)}</div><div class="tt-sub">${esc(t('skinEvent.unavailable'))}</div>`);
+        }
+        swatchesEl.appendChild(b);
+      });
+      tiersEl.appendChild(row);
+    }
+
+    lockInBtn.addEventListener('click', () => {
+      if (this.skinEventSelected < 0 || lockInBtn.disabled) return;
+      if (mech) {
+        this.sim.claimEventSkin(this.skinEventSelected);
+        this.showBanner(t('skinEvent.unlocked'));
+        audio.levelUp();
+        this.closeSkinEvent();
+        if ($('#bags').style.display !== 'none') this.renderBags();
+        return;
+      }
+      this.sim.claimEventSkin(this.skinEventSelected);
+      this.showBanner(t('skinEvent.unlocked'));
+      audio.levelUp();
+      this.closeSkinEvent();
+      if ($('#bags').style.display !== 'none') this.renderBags();
+    });
+
+    // Show, mount the shared 3D preview into the right column, focus the choice.
+    el.classList.add('open');
+    this.mountCharPreview(el.querySelector('.se-preview') as HTMLElement, cls, this.skinEventSelected >= 0 ? this.skinEventSelected : 0, mech ? previewKey : undefined);
+    const selChoice = choices.find((c) => c.key === this.skinEventSelectedKey);
+    if (selChoice) nameEl.textContent = choiceName(selChoice);
+    syncSelection();
+    (swatches.find((b) => b.dataset.choice === this.skinEventSelectedKey) ?? swatches[0])?.focus();
+  }
+
+  // -------------------------------------------------------------------------
+  // Shareable player card. Captures a crisp close-up of the character from the
+  // character-window preview, composites it with the player's stats, gear, and
+  // $WOC holder badge, and offers share/download/publish actions. Hosting a
+  // public card link is online-only (requires the injected uploader); offline
+  // play still gets download + native share.
+  // -------------------------------------------------------------------------
+
+  private async openPlayerCard(): Promise<void> {
+    // The button lives in the character window, so the preview already exists;
+    // create it defensively in case that ever changes.
+    if (!this.charPreview) this.renderCharPreview();
+    const preview = this.charPreview;
+    if (!preview) return;
+
+    this.closePlayerCardModal(false);
+    // Pull a fresh on-chain $WOC balance so the holder badge isn't stale. The
+    // async result lands via onWalletUiChange → recomposeOpenCard (below), which
+    // re-composites the card with the current pose once the new value arrives.
+    this.optionsHooks?.refreshWocBalance();
+    this.cardModalReturnFocus = this.currentFocusableElement();
+    const back = document.createElement('div');
+    back.className = 'modal-backdrop';
+    back.id = 'player-card-modal';
+    const poseBtns = CARD_POSES.map((p, i) =>
+      `<button type="button" class="btn pc-pose${i === 0 ? ' sel' : ''}" data-pose="${i}">${esc(t(p.labelKey))}</button>`).join('');
+    back.innerHTML = `<div class="panel pc-modal" role="dialog" aria-modal="true" aria-labelledby="player-card-modal-title">`
+      + `<div class="panel-title"><span id="player-card-modal-title">${esc(t('playerCard.title'))}</span><button type="button" class="x-btn" data-close aria-label="${esc(t('playerCard.close'))}">${svgIcon('close')}</button></div>`
+      + `<div class="pc-preview pc-loading">${esc(t('playerCard.loading'))}</div>`
+      + `<div class="pc-poses" role="group" aria-label="${esc(t('playerCard.poseGroup'))}">${poseBtns}</div>`
+      + `<div class="pc-options"><button type="button" class="btn pc-wallet-toggle" data-wallet-card-toggle><span>${esc(t('hudChrome.playerCard.showWalletBadge'))}</span><span class="pc-toggle-state"></span></button></div>`
+      + `<div class="pc-actions"></div>`
+      + `<div class="pc-link" hidden><span class="pc-link-label">${esc(t('playerCard.referralLinkLabel'))}</span>`
+      + `<input class="pc-link-input" type="text" readonly aria-label="${esc(t('playerCard.referralLinkAria'))}"></div>`
+      + `<div class="pc-status" aria-live="polite"></div>`
+      + `</div>`;
+    document.body.appendChild(back);
+    this.cardModalEl = back;
+    const close = () => this.closePlayerCardModal();
+    back.addEventListener('click', (e) => { if (e.target === back) close(); });
+    back.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    });
+    back.querySelector('[data-close]')?.addEventListener('click', () => { audio.click(); close(); });
+    this.focusFirstInteractive(back, '[data-close]');
+
+    const previewBox = back.querySelector('.pc-preview') as HTMLElement;
+    const status = back.querySelector('.pc-status') as HTMLElement;
+    const linkRow = back.querySelector('.pc-link') as HTMLElement;
+    const setStatus = (msg: string) => { status.textContent = msg; };
+    const walletToggle = back.querySelector<HTMLButtonElement>('[data-wallet-card-toggle]');
+    const walletToggleState = walletToggle?.querySelector<HTMLElement>('.pc-toggle-state') ?? null;
+
+    // Current card state, shared with the action handlers by reference so a pose
+    // change (which re-captures + re-composites) also invalidates any publish.
+    const state: { canvas: HTMLCanvasElement | null; data: PlayerCardData | null; published: PublishedCard | null } =
+      { canvas: null, data: null, published: null };
+
+    const poseButtons = Array.from(back.querySelectorAll<HTMLButtonElement>('.pc-pose'));
+    let requestedPoseIndex = 0;
+    let showWalletOnCard = walletDisplayAvailable() && (this.optionsHooks?.settings.get('showWalletOnPlayerCard') ?? true);
+    let metadataReady = false;
+    let referral: Awaited<ReturnType<typeof fetchReferralInfo>> = null;
+    let standing: CharacterStanding | null = null;
+    const selectPose = (poseIndex: number): void => {
+      requestedPoseIndex = poseIndex;
+      poseButtons.forEach((b, i) => b.classList.toggle('sel', i === poseIndex));
+    };
+    const syncWalletToggle = (): void => {
+      if (!walletToggle || !walletToggleState) return;
+      const on = walletDisplayAvailable() && showWalletOnCard;
+      walletToggle.classList.toggle('off', !on);
+      walletToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+      walletToggle.setAttribute('aria-label', t('hudChrome.playerCard.showWalletBadge'));
+      walletToggleState.textContent = on ? t('hud.options.on') : t('hud.options.off');
+    };
+    syncWalletToggle();
+    // Generation guard: rapid pose clicks fire concurrent async renders; only the
+    // most recent one may apply its result, or a slow earlier render could
+    // overwrite a newer pose and desync state.canvas from what's shown.
+    let composeSeq = 0;
+    const compose = async (poseIndex: number): Promise<void> => {
+      const seq = ++composeSeq;
+      const pose = CARD_POSES[poseIndex];
+      selectPose(poseIndex);
+      try {
+        const characterImage = preview.captureCloseup({ poseClips: pose.clips, poseFraction: pose.fraction });
+        const data = this.buildPlayerCardData(characterImage, referral, standing, walletDisplayAvailable() && showWalletOnCard);
+        const canvas = await renderPlayerCardCanvas(data);
+        if (this.cardModalEl !== back || seq !== composeSeq) return; // closed or superseded
+        canvas.classList.add('pc-card-canvas');
+        previewBox.classList.remove('pc-loading');
+        previewBox.innerHTML = '';
+        previewBox.appendChild(canvas);
+        // A new pose is a different image, so any prior publish is stale.
+        state.canvas = canvas;
+        state.data = data;
+        state.published = null;
+        linkRow.hidden = true;
+        setStatus('');
+      } catch {
+        // A failed capture/composite must not leave the modal stuck on "Forging…".
+        if (this.cardModalEl !== back || seq !== composeSeq) return;
+        previewBox.classList.remove('pc-loading');
+        previewBox.textContent = t('playerCard.renderFailed');
+        setStatus(t('playerCard.renderFailedStatus'));
+      }
+    };
+
+    poseButtons.forEach((b, i) => b.addEventListener('click', () => {
+      if (requestedPoseIndex === i) return;
+      audio.click();
+      if (!metadataReady) {
+        selectPose(i);
+        return;
+      }
+      void compose(i);
+    }));
+    walletToggle?.addEventListener('click', () => {
+      if (!walletDisplayAvailable()) return;
+      audio.click();
+      showWalletOnCard = !showWalletOnCard;
+      this.optionsHooks?.onSettingChange('showWalletOnPlayerCard', showWalletOnCard);
+      syncWalletToggle();
+      state.published = null;
+      linkRow.hidden = true;
+      setStatus('');
+      if (metadataReady) void compose(requestedPoseIndex);
+    });
+
+    // Re-composite the card with the current pose whenever the wallet balance
+    // (or availability) changes while this modal is open — e.g. the fresh read
+    // kicked at open lands, or tokens move during the session. Registered BEFORE
+    // the awaits below so a balance landing during that window isn't dropped; it
+    // no-ops until metadataReady, and the first compose picks up the fresh store
+    // value anyway.
+    this.recomposeOpenCard = () => { if (this.cardModalEl === back && metadataReady) void compose(requestedPoseIndex); };
+
+    // Referral info + realm standing are online-only (null offline). Fetch once
+    // and reuse across pose re-renders. Pose clicks before this resolves update
+    // requestedPoseIndex, so the latest visible choice renders when ready.
+    [referral, standing] = await Promise.all([fetchReferralInfo(), fetchStanding()]);
+    metadataReady = true;
+    if (this.cardModalEl !== back) return; // modal closed while awaiting
+
+    await compose(requestedPoseIndex);
+    if (this.cardModalEl !== back) return;
+    this.wireCardActions(back, state, setStatus);
+  }
+
+  private closePlayerCardModal(restoreFocus = true): void {
+    const back = this.cardModalEl;
+    if (!back) return;
+    back.remove();
+    if (this.cardModalEl === back) this.cardModalEl = null;
+    this.recomposeOpenCard = null;
+    const target = this.cardModalReturnFocus;
+    this.cardModalReturnFocus = null;
+    if (restoreFocus) this.restoreFocus(target);
+  }
+
+  private wireCardActions(
+    back: HTMLElement,
+    state: { canvas: HTMLCanvasElement | null; data: PlayerCardData | null; published: PublishedCard | null },
+    setStatus: (msg: string) => void,
+  ): void {
+    const actions = back.querySelector('.pc-actions') as HTMLElement;
+    const linkRow = back.querySelector('.pc-link') as HTMLElement;
+    const linkInput = back.querySelector('.pc-link-input') as HTMLInputElement;
+    const fileName = () => `${(state.data?.referralHandle || t('playerCard.fileNameFallback')).replace(/[^a-z0-9-]/g, '')}-woc-card.png`;
+    const mkBtn = (label: string, cls = ''): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn' + (cls ? ` ${cls}` : '');
+      b.textContent = label;
+      actions.appendChild(b);
+      return b;
+    };
+    const errMsg = () => t('playerCard.statusGenericError');
+
+    // Publish-once per pose: hosting a public card is needed for X / copy-link.
+    // The result is cached on `state` and cleared whenever the pose changes, so
+    // switching pose after publishing re-uploads the new image on next share.
+    const publishOnce = async (): Promise<PublishedCard> => {
+      if (state.published) return state.published;
+      if (!state.canvas) throw new Error(t('playerCard.statusStillRendering'));
+      setStatus(t('playerCard.statusPublishing'));
+      const pub = await publishCard(await cardCanvasToUploadBlob(state.canvas));
+      state.published = pub;
+      linkInput.value = pub.url;
+      linkRow.hidden = false;
+      setStatus(t('playerCard.statusPublished'));
+      return pub;
+    };
+
+    if (cardHostingAvailable()) {
+      const xb = mkBtn(t('playerCard.actionShareX'), 'cd-ok');
+      xb.addEventListener('click', async () => {
+        audio.click();
+        xb.disabled = true;
+        try {
+          // X's intent URL can only carry text + a link; it cannot attach media.
+          // So copy the card PNG to the clipboard first (inside the click gesture,
+          // passing the blob promise to ClipboardItem so the write stays valid
+          // while the PNG encodes) for the user to paste (⌘V) into the post. The
+          // link still rides along and unfurls the card image on a public domain.
+          let copied = false;
+          if (state.canvas && typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+            try {
+              await navigator.clipboard.write([new ClipboardItem({ 'image/png': cardCanvasToBlob(state.canvas) })]);
+              copied = true;
+            } catch { copied = false; /* clipboard blocked → fall back to link-only */ }
+          }
+          const pub = await publishOnce();
+          const text = state.data ? this.cardShareText(state.data) : t('playerCard.nativeShareTitle');
+          const intent = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(pub.url)}`;
+          window.open(intent, '_blank', 'noopener,noreferrer');
+          setStatus(copied
+            ? t('playerCard.statusOpenedXWithImage')
+            : t('playerCard.statusOpenedXWithLink'));
+        } catch {
+          setStatus(errMsg());
+        } finally {
+          xb.disabled = false;
+        }
+      });
+      const cb = mkBtn(t('playerCard.actionCopyReferral'));
+      cb.addEventListener('click', async () => {
+        audio.click();
+        cb.disabled = true;
+        try {
+          const pub = await publishOnce();
+          await navigator.clipboard.writeText(pub.url);
+          linkInput.select();
+          setStatus(t('playerCard.statusReferralCopied'));
+        } catch {
+          setStatus(errMsg());
+        } finally {
+          cb.disabled = false;
+        }
+      });
+    }
+
+    const dl = mkBtn(t('playerCard.actionDownload'));
+    dl.addEventListener('click', async () => {
+      audio.click();
+      if (!state.canvas) return;
+      const blob = await cardCanvasToBlob(state.canvas);
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = fileName();
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 4000);
+      setStatus(t('playerCard.statusDownloaded'));
+    });
+
+    // Native share (mobile): share the PNG file, plus the hosted link when one
+    // is available. navigator.canShare with files is the capability gate.
+    const nav = navigator as Navigator & { canShare?: (d?: ShareData) => boolean };
+    if (typeof nav.canShare === 'function') {
+      const sb = mkBtn(t('playerCard.actionShareNative'));
+      sb.addEventListener('click', async () => {
+        audio.click();
+        if (!state.canvas) return;
+        sb.disabled = true;
+        try {
+          const file = new File([await cardCanvasToBlob(state.canvas)], fileName(), { type: 'image/png' });
+          const payload: ShareData = {
+            files: [file],
+            title: t('playerCard.nativeShareTitle'),
+            text: state.data ? this.cardShareText(state.data) : t('playerCard.nativeShareTitle'),
+          };
+          // Attach the hosted link when hosting is available; if publishing
+          // fails, fall back to sharing just the image file.
+          if (cardHostingAvailable()) {
+            try { payload.url = (await publishOnce()).url; } catch { /* share file-only */ }
+          }
+          if (nav.canShare!(payload)) await nav.share!(payload);
+          else if (nav.canShare!({ files: [file] })) await nav.share!({ files: [file] });
+          else setStatus(t('playerCard.statusShareUnsupported'));
+        } catch (err) {
+          if (!(err instanceof Error && err.name === 'AbortError')) setStatus(errMsg());
+        } finally {
+          sb.disabled = false;
+        }
+      });
+    }
+  }
+
+  private cardShareText(data: PlayerCardData): string {
+    const tier = holderTierForBalance(data.balance);
+    const tierBit = tier ? t('playerCard.shareTierBit', { tier: holderTierDisplayName(tier) }) : '';
+    // The URL X appends to this text is the player's card page; it unfurls the
+    // card image and credits the referral when a recruit joins through it.
+    return t('playerCard.shareText', {
+      level: formatNumber(data.level, { maximumFractionDigits: 0 }),
+      className: data.className,
+      tierBit,
+    });
+  }
+
+  private buildPlayerCardData(
+    characterImage: string,
+    referral: { count: number; slug: string | null } | null,
+    standing: CharacterStanding | null,
+    showWallet: boolean,
+  ): PlayerCardData {
+    const sim = this.sim;
+    const p = sim.player;
+    const cls = sim.cfg.playerClass;
+    const classColor = '#' + (p.color & 0xffffff).toString(16).padStart(6, '0');
+    const num = (n: number) => formatNumber(n, { maximumFractionDigits: 0 });
+    const pct = (n: number) => `${formatNumber(n * 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+
+    // Realm standing by lifetime XP: the same metric the in-game leaderboard
+    // ranks on (server: lifetimeXpStanding). Surfaced as a "TOP N%" flex when the
+    // realm has enough players to be meaningful and the character is in the top
+    // half, since no one wants to broadcast "Top 90%".
+    let topPercent: number | null = null;
+    if (standing && standing.total >= 5 && standing.rank >= 1) {
+      const p100 = (standing.rank / standing.total) * 100;
+      if (p100 <= 50) topPercent = p100;
+    }
+
+    const wpn = sim.equipment.mainhand ? ITEMS[sim.equipment.mainhand] : null;
+    const dps = weaponDps(wpn?.weapon, p.attackPower);
+
+    const primaryStats: PlayerCardStat[] = [
+      { label: t('itemUi.stats.str'), value: num(p.stats.str) },
+      { label: t('itemUi.stats.agi'), value: num(p.stats.agi) },
+      { label: t('itemUi.stats.sta'), value: num(p.stats.sta) },
+      { label: t('itemUi.stats.int'), value: num(p.stats.int) },
+      { label: t('itemUi.stats.spi'), value: num(p.stats.spi) },
+      { label: t('itemUi.stats.armor'), value: num(p.stats.armor) },
+    ];
+    const combatStats: PlayerCardStat[] = [
+      { label: t('itemUi.stats.attackPower'), value: num(p.attackPower) },
+      { label: t('itemUi.stats.dps'), value: formatNumber(dps, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) },
+      { label: t('itemUi.stats.critChance'), value: pct(p.critChance) },
+      { label: t('itemUi.stats.dodge'), value: pct(p.dodgeChance) },
+    ];
+    const rating = sim.arenaInfo?.rating ?? null;
+    if (rating !== null) combatStats.push({ label: t('playerCard.arenaStat'), value: num(rating) });
+    if (sim.prestigeRank > 0) combatStats.push({ label: t('game.prestige.rank'), value: num(sim.prestigeRank) });
+
+    const slots: EquipSlot[] = ['mainhand', 'chest', 'legs', 'feet'];
+    const gear = slots.map((slot) => {
+      const id = sim.equipment[slot];
+      const item = id ? ITEMS[id] : null;
+      return {
+        slot: itemSlotName(slot),
+        name: item ? itemDisplayName(item) : t('itemUi.equipment.empty'),
+        color: item ? (QUALITY_COLOR[item.quality ?? 'common'] ?? '#cfc3a0') : '#7c7058',
+      };
+    });
+
+    return {
+      name: p.name,
+      className: classDisplayName(cls),
+      classColor,
+      level: p.level,
+      realm: sim.realm,
+      characterImage,
+      primaryStats,
+      combatStats,
+      gear,
+      topPercent,
+      balance: showWallet ? verifiedWocBalance() : null,
+      referralHandle: referral?.slug ?? this.cardSlug(p.name),
+      referralCount: referral?.count ?? null,
+      siteUrl: 'worldofclaudecraft.com',
+    };
+  }
+
+  // Client-side mirror of the server's slugify (server/player_card.ts), used
+  // only for the footer handle preview before the card is published.
+  private cardSlug(name: string): string {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
   }
 
   // -------------------------------------------------------------------------
@@ -3842,18 +7262,22 @@ export class Hud {
     );
   }
 
-  // Minimal modal confirm dialog (reuses the .window/.panel chrome). Used by the
-  // prestige flow; built on demand and removed on dismiss.
+  // Minimal modal confirm dialog (reuses the .window/.panel chrome). Built on
+  // demand and removed on dismiss.
   private confirmDialog(title: string, body: string, okText: string, cancelText: string, onOk: () => void): void {
     document.getElementById('confirm-dialog')?.remove();
     const el = document.createElement('div');
     el.id = 'confirm-dialog';
     el.className = 'window panel';
     el.style.display = 'block';
-    el.innerHTML = `<div class="panel-title"><span>${title}</span><span class="x-btn" data-cancel>${svgIcon('close')}</span></div>`
-      + `<div class="cd-body">${body}</div>`
-      + `<div class="cd-actions"><button class="btn" data-cancel>${cancelText}</button><button class="btn cd-ok" data-ok>${okText}</button></div>`;
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    el.innerHTML = `<div class="panel-title"><span>${esc(title)}</span><button type="button" class="x-btn" data-cancel aria-label="${esc(cancelText)}">${svgIcon('close')}</button></div>`
+      + `<div class="cd-body">${esc(body)}</div>`
+      + `<div class="cd-actions"><button type="button" class="btn" data-cancel>${esc(cancelText)}</button><button type="button" class="btn cd-ok" data-ok>${esc(okText)}</button></div>`;
     document.body.appendChild(el);
+    this.bringWindowToFront(el);
+    el.querySelector<HTMLElement>('[data-ok]')?.focus();
     const close = () => el.remove();
     el.querySelectorAll('[data-cancel]').forEach((b) => b.addEventListener('click', () => { audio.click(); close(); }));
     el.querySelector('[data-ok]')?.addEventListener('click', () => { close(); onOk(); });
@@ -3901,31 +7325,104 @@ export class Hud {
 
   // Generic in-app dropdown (replaces native <select>). The selected value lives
   // in root.dataset.value; pass onChange to react live. Closes on click-away.
-  private buildDropdown(options: { value: string; label: string }[], current: string, onChange?: (value: string) => void, placeholder?: string): HTMLElement {
+  // Implements the WAI-ARIA listbox pattern so it keeps the keyboard + screen
+  // reader semantics a native <select> has: the trigger is aria-haspopup, the
+  // menu is role="listbox" with aria-selected options, and Enter/Space/Arrows/
+  // Home/End/Esc are all handled (see dropdown_nav.ts for the pure key math).
+  private buildDropdown(options: { value: string; label: string }[], current: string, onChange?: (value: string) => void, placeholder?: string, a11y?: { ariaLabel?: string; labelledBy?: string }): HTMLElement {
+    const uid = `ui-dd-${++Hud.ddSeq}`;
     const root = document.createElement('div');
     root.className = 'ui-dd';
     root.dataset.value = current;
+    // Accessible name for both the trigger button and the listbox: prefer an
+    // explicit aria-label, else associate an existing <label>/heading via id.
+    const nameAttr = a11y?.ariaLabel
+      ? ` aria-label="${esc(a11y.ariaLabel)}"`
+      : a11y?.labelledBy
+        ? ` aria-labelledby="${esc(a11y.labelledBy)}"`
+        : '';
     const labelOf = (v: string) => options.find((o) => o.value === v)?.label ?? placeholder ?? '';
-    root.innerHTML = `<button type="button" class="btn ui-dd-btn"><span class="ui-dd-label">${esc(labelOf(current))}</span><span class="ui-dd-caret">▾</span></button>`
-      + `<div class="ui-dd-menu" hidden>${options.map((o) => `<div class="ui-dd-item${o.value === current ? ' sel' : ''}" data-val="${esc(o.value)}">${esc(o.label)}</div>`).join('')}</div>`;
+    root.innerHTML = `<button type="button" class="btn ui-dd-btn" aria-haspopup="listbox" aria-expanded="false" aria-controls="${uid}"${nameAttr}><span class="ui-dd-label">${esc(labelOf(current))}</span><span class="ui-dd-caret" aria-hidden="true">▾</span></button>`
+      + `<div class="ui-dd-menu" id="${uid}" role="listbox"${nameAttr} hidden>${options.map((o, i) => `<div class="ui-dd-item${o.value === current ? ' sel' : ''}" id="${uid}-o${i}" role="option" aria-selected="${o.value === current ? 'true' : 'false'}" data-val="${esc(o.value)}">${esc(o.label)}</div>`).join('')}</div>`;
+    const btn = root.querySelector('.ui-dd-btn') as HTMLButtonElement;
     const menu = root.querySelector('.ui-dd-menu') as HTMLElement;
     const labelEl = root.querySelector('.ui-dd-label') as HTMLElement;
-    root.querySelector('.ui-dd-btn')!.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (menu.hasAttribute('hidden')) {
-        menu.removeAttribute('hidden');
-        setTimeout(() => document.addEventListener('click', () => menu.setAttribute('hidden', ''), { once: true }), 0);
-      } else menu.setAttribute('hidden', '');
-    });
-    root.querySelectorAll('.ui-dd-item').forEach((item) => item.addEventListener('click', () => {
+    const items = [...root.querySelectorAll<HTMLElement>('.ui-dd-item')];
+    const isOpen = () => !menu.hasAttribute('hidden');
+    const focusedIndex = () => items.findIndex((it) => it === document.activeElement);
+
+    const open = (focusIndex: number) => {
+      menu.removeAttribute('hidden');
+      btn.setAttribute('aria-expanded', 'true');
+      items[focusIndex]?.focus();
+      setTimeout(() => document.addEventListener('click', onAway, { once: true }), 0);
+    };
+    const close = (returnFocus = true) => {
+      if (!isOpen()) return;
+      menu.setAttribute('hidden', '');
+      btn.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('click', onAway);
+      if (returnFocus) btn.focus();
+    };
+    const onAway = () => close(false);
+    const commit = (item: HTMLElement) => {
       const v = item.getAttribute('data-val') ?? '';
       root.dataset.value = v;
       labelEl.textContent = labelOf(v);
-      root.querySelectorAll('.ui-dd-item').forEach((x) => x.classList.toggle('sel', x === item));
-      menu.setAttribute('hidden', '');
+      items.forEach((x) => {
+        const sel = x === item;
+        x.classList.toggle('sel', sel);
+        x.setAttribute('aria-selected', sel ? 'true' : 'false');
+      });
+      close();
       onChange?.(v);
-    }));
+    };
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isOpen()) close(false);
+      else open(Math.max(0, items.findIndex((it) => it.classList.contains('sel'))));
+    });
+    // tabindex=-1 keeps options out of the Tab order but programmatically focusable.
+    items.forEach((item) => {
+      item.tabIndex = -1;
+      item.addEventListener('click', () => commit(item));
+    });
+    root.addEventListener('keydown', (e) => {
+      const action = dropdownKeyNav(e.key, isOpen(), focusedIndex(), items.length);
+      if (action.kind === 'none') return;
+      // Tab closes the menu and returns focus to the trigger button (a real
+      // tab-order element) WITHOUT preventDefault, so the native Tab/Shift+Tab
+      // then deterministically advances/retreats from there. Without returning
+      // focus, display:none-ing the focused option would drop focus to <body>.
+      if (action.kind === 'tab') { close(true); return; }
+      e.preventDefault();
+      switch (action.kind) {
+        case 'open': open(action.index); break;
+        case 'move': items[action.index]?.focus(); break;
+        case 'select': { const cur = items[focusedIndex()]; if (cur) commit(cur); break; }
+        case 'close': close(); break;
+      }
+    });
     return root;
+  }
+
+  // Reset a buildDropdown's visible label + dataset.value + aria-selected to a
+  // value in place, WITHOUT firing onChange or rebuilding the node. Used to
+  // revert the language picker after a failed locale switch so the trigger never
+  // advertises a language that never loaded (and so the adjacent aria-live status
+  // node survives to announce the failure). Mirrors commit()'s DOM writes.
+  private setDropdownValue(root: HTMLElement, value: string): void {
+    const items = [...root.querySelectorAll<HTMLElement>('.ui-dd-item')];
+    const match = items.find((x) => x.getAttribute('data-val') === value) ?? null;
+    root.dataset.value = value;
+    const labelEl = root.querySelector('.ui-dd-label');
+    if (labelEl && match) labelEl.textContent = match.textContent;
+    items.forEach((x) => {
+      const sel = x === match;
+      x.classList.toggle('sel', sel);
+      x.setAttribute('aria-selected', sel ? 'true' : 'false');
+    });
   }
 
   // classic-MMO-style choice-node picker: clicking an octagon node opens a flyout of its
@@ -4043,7 +7540,12 @@ export class Hud {
     const cls = CLASSES[sim.cfg.playerClass];
     const className = classDisplayName(cls.id);
     el.setAttribute('aria-label', t('abilityUi.spellbook.title'));
-    el.innerHTML = `<div class="panel-title"><span>${esc(t('abilityUi.spellbook.title'))} <span class="spellbook-class">${esc(t('abilityUi.spellbook.classSubtitle', { className }))}</span></span><button type="button" class="x-btn" data-close aria-label="${esc(t('abilityUi.spellbook.close'))}">${svgIcon('close')}</button></div>`;
+    // "Reset bar" only applies to classes with per-form bars (druid); other
+    // classes have a single bar, so the button is omitted for them.
+    const resetBtnHtml = this.classHasFormBars()
+      ? `<button type="button" class="x-btn spellbook-reset" data-reset-bar aria-label="${esc(t('abilityUi.spellbook.resetBarAria'))}">${esc(t('abilityUi.spellbook.resetBar'))}</button>`
+      : '';
+    el.innerHTML = `<div class="panel-title"><span>${esc(t('abilityUi.spellbook.title'))} <span class="spellbook-class">${esc(t('abilityUi.spellbook.classSubtitle', { className }))}</span></span><div class="panel-title-actions">${resetBtnHtml}<button type="button" class="x-btn" data-close aria-label="${esc(t('abilityUi.spellbook.close'))}">${svgIcon('close')}</button></div></div>`;
     const list = document.createElement('div');
     list.className = 'spell-list';
     list.setAttribute('role', 'list');
@@ -4067,6 +7569,27 @@ export class Hud {
         <div class="spell-text"><div class="spell-name">${esc(name)}${known && known.rank > 1 ? ` <span class="spell-rank">${esc(t('abilityUi.tooltip.rank', { rank: formatAbilityNumber(known.rank) }))}</span>` : ''}</div>
         <div class="spell-sub">${locked ? esc(t('abilityUi.spellbook.trainableAtLevel', { level: learnLevel })) : esc(summary)}</div></div>`;
       if (known) {
+        const onBar = this.hotbarIndexForAbility(known.def.id) !== -1;
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'spell-hotbar-toggle' + (onBar ? ' remove' : '');
+        toggle.dataset.abilityId = known.def.id;
+        toggle.textContent = onBar ? '-' : '+';
+        toggle.setAttribute('aria-label', `${name} ${onBar ? '-' : '+'}`);
+        toggle.setAttribute('aria-pressed', onBar ? 'true' : 'false');
+        toggle.disabled = !onBar && this.firstEmptyHotbarIndex() === -1;
+        toggle.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+        toggle.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const changed = this.hotbarIndexForAbility(known.def.id) !== -1
+            ? this.removeAbilityFromHotbar(known.def.id)
+            : this.addAbilityToHotbar(known.def.id);
+          if (!changed) return;
+          audio.click();
+          this.refreshSpellbookHotbarControls();
+        });
+        row.appendChild(toggle);
         row.draggable = true;
         row.addEventListener('dragstart', (e) => {
           const action = { type: 'ability' as const, id: known.def.id };
@@ -4093,6 +7616,14 @@ export class Hud {
       list.appendChild(empty);
     }
     el.querySelector('[data-close]')?.addEventListener('click', () => { el.style.display = 'none'; this.hideTooltip(); });
+    const resetBtn = el.querySelector('[data-reset-bar]');
+    resetBtn?.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    resetBtn?.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.resetActiveFormBarToDefault();
+      audio.click();
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -4391,7 +7922,7 @@ export class Hud {
     const promptNewBuild = (): void => {
       this.inputDialog({
         title: t('game.talents.saveBuildAs'), label: t('game.talents.namePrompt'),
-        value: `Build ${this.sim.loadouts.length + 1}`, okText: t('game.talents.save'),
+        value: t('hudChrome.talents.defaultBuildName', { n: this.sim.loadouts.length + 1 }), okText: t('game.talents.save'),
         selectText: true,
         onOk: saveStagedBuild,
       });
@@ -4427,13 +7958,13 @@ export class Hud {
         this.applyLoadoutBar(lo.bar);
         this.talentStage = cloneAllocation(lo.alloc);
         this.renderTalents();
-      }, t('game.talents.loadouts')));
+      }, t('game.talents.loadouts'), { ariaLabel: t('game.talents.loadouts') }));
     }
     el.querySelector('[data-act="del"]')?.addEventListener('click', () => {
       if (this.sim.activeLoadout < 0) { this.showError(t('game.talents.selectBuildFirst')); return; }
       const active = this.sim.loadouts[this.sim.activeLoadout];
       if (!active) { this.showError(t('game.talents.selectBuildFirst')); return; }
-      const body = esc(t('game.talents.deleteBuildBody').replace('{name}', active.name));
+      const body = t('game.talents.deleteBuildBody', { name: active.name });
       this.confirmDialog(t('game.talents.deleteBuildTitle'), body, t('game.talents.deleteBuildConfirm'), t('game.talents.cancel'), () => {
         this.sim.deleteLoadout(this.sim.activeLoadout);
         this.renderTalents();
@@ -4478,7 +8009,7 @@ export class Hud {
   toggleQuestLog(): void {
     const el = $('#quest-log-window');
     if (el.style.display === 'block') { this.closeQuestLog(); return; }
-    this.questLogReturnFocus = this.currentFocusableElement() ?? $('#mm-quest');
+    this.questLogReturnFocus = this.currentFocusableElement();
     this.closeOtherWindows('#quest-log-window');
     this.renderQuestLog();
     el.style.display = 'block';
@@ -4487,9 +8018,9 @@ export class Hud {
   private closeQuestLog(restoreFocus = true): void {
     $('#quest-log-window').style.display = 'none';
     this.hideTooltip();
-    const target = this.questLogReturnFocus ?? $('#mm-quest');
+    const target = this.questLogReturnFocus;
     this.questLogReturnFocus = null;
-    if (restoreFocus) this.restoreFocus(target, $('#mm-quest'));
+    if (restoreFocus) this.restoreFocus(target);
   }
 
   renderQuestLog(): void {
@@ -4515,7 +8046,7 @@ export class Hud {
     const quests = [...sim.questLog.values()];
     if (quests.length === 0) {
       list.innerHTML = `<div class="ql-empty">${esc(t('questUi.log.emptyTitle'))}</div>`;
-      detail.innerHTML = `<div class="qd-text">${esc(t('questUi.log.emptyHint'))}</div>`;
+      detail.innerHTML = `<div class="ql-detail-body"><div class="qd-text">${esc(t('questUi.log.emptyHint'))}</div></div>`;
     }
     if (!this.selectedQuestLogId || !sim.questLog.has(this.selectedQuestLogId)) {
       this.selectedQuestLogId = quests[0]?.questId ?? null;
@@ -4547,15 +8078,35 @@ export class Hud {
       }
       const giver = NPCS[quest.turnInNpcId];
       html += `<div class="qd-obj quest-return">${esc(t('questUi.log.returnTo', { name: giver ? npcDisplayName(giver.id) : '?' }))}</div>`;
-      detail.innerHTML = html;
-      const rewardRow = detail.querySelector('[data-reward]') as HTMLElement | null;
+      const body = document.createElement('div');
+      body.className = 'ql-detail-body';
+      body.innerHTML = html;
+      detail.replaceChildren(body);
+      const rewardRow = body.querySelector('[data-reward]') as HTMLElement | null;
       if (rewardRow && rewardItem) this.attachTooltip(rewardRow, () => this.itemTooltip(ITEMS[rewardItem]));
+      const actions = document.createElement('div');
+      actions.className = 'ql-detail-actions';
       const abandon = document.createElement('button');
       abandon.className = 'btn';
       abandon.type = 'button';
       abandon.textContent = t('questUi.log.abandon');
-      abandon.addEventListener('click', () => { sim.abandonQuest(this.selectedQuestLogId!); this.renderQuestLog(); });
-      detail.appendChild(abandon);
+      abandon.addEventListener('click', () => {
+        const questId = this.selectedQuestLogId;
+        if (!questId) return;
+        this.confirmDialog(
+          t('questUi.log.abandonConfirmTitle'),
+          t('questUi.log.abandonConfirmBody', { name: questTitle(questId) }),
+          t('questUi.log.abandonConfirm'),
+          t('questUi.log.abandonCancel'),
+          () => {
+            sim.abandonQuest(questId);
+            this.selectedQuestLogId = null;
+            this.renderQuestLog();
+          },
+        );
+      });
+      actions.appendChild(abandon);
+      detail.appendChild(actions);
     }
     el.querySelector('[data-close]')?.addEventListener('click', () => this.closeQuestLog());
     this.focusFirstInteractive(el);
@@ -4576,12 +8127,13 @@ export class Hud {
       return;
     }
     const p = this.sim.player;
+    const myGroup = info.members.find((m) => m.pid === this.sim.playerId)?.group ?? 1;
     const others = info.members.map((m) => ({
       ...m,
       oor: !m.dead && Math.hypot(m.x - p.pos.x, m.z - p.pos.z) > PARTY_RANGE_YD,
-    })).filter((m) => m.pid !== this.sim.playerId);
+    })).filter((m) => m.pid !== this.sim.playerId && (!info.raid || m.group === myGroup));
     // include combat/range state so the frames rebuild when a badge changes
-    const sig = others.map((m) => `${m.pid}:${m.hp}/${m.mhp}:${m.res}:${m.dead}:${m.inCombat}:${m.oor ? 1 : 0}:${m.level}`).join('|') + `L${info.leader}`;
+    const sig = others.map((m) => `${m.pid}:${m.group}:${m.hp}/${m.mhp}:${m.res}:${m.dead}:${m.inCombat}:${m.oor ? 1 : 0}:${m.level}`).join('|') + `L${info.leader}:R${info.raid ? 1 : 0}:G${myGroup}`;
     if (sig === this.lastPartySig) return;
     this.lastPartySig = sig;
     el.innerHTML = '';
@@ -4619,6 +8171,27 @@ export class Hud {
   // Context menu on players
   // -------------------------------------------------------------------------
 
+  private openSelfContextMenu(x: number, y: number): void {
+    const el = $('#ctx-menu');
+    const party = this.sim.partyInfo;
+    const canConvert = !!party && party.leader === this.sim.playerId && !party.raid && party.members.length >= 5;
+    let html = `<div class="ctx-title ctx-title-player">${portraitChipHtml({ cls: this.sim.cfg.playerClass, skin: this.sim.player.skin ?? 0, name: this.sim.player.name, variant: 'sm' })}<span class="ctx-title-name">${esc(this.sim.player.name)}</span></div>`;
+    if (canConvert) html += `<div class="ctx-item" data-act="convert-raid">${esc(t('hud.chat.context.convertToRaid'))}</div>`;
+    html += `<div class="ctx-item" data-act="close">${esc(t('hud.chat.context.cancel'))}</div>`;
+    el.innerHTML = html;
+    hydratePortraits(el);
+    el.style.left = `${Math.min(window.innerWidth - 170, x)}px`;
+    el.style.top = `${Math.min(window.innerHeight - 160, y)}px`;
+    el.style.display = 'block';
+    this.bindContextMenuActions((act) => {
+      if (act === 'convert-raid') {
+        this.sim.convertPartyToRaid();
+        this.socialTab = 'raid';
+        if ($('#social-window').classList.contains('open')) this.renderSocial();
+      }
+    });
+  }
+
   openContextMenu(pid: number, name: string, x: number, y: number): void {
     const el = $('#ctx-menu');
     const party = this.sim.partyInfo;
@@ -4634,7 +8207,10 @@ export class Hud {
     const ignored = online
       ? !!social?.blocks.some((b) => b.name === name)
       : this.isChatIgnored(name);
-    let html = `<div class="ctx-title">${esc(name)}</div>`;
+    const ent = this.sim.entities.get(pid);
+    const entCls = ent && ent.kind === 'player' ? (ent.templateId as PlayerClass) : null;
+    let html = `<div class="ctx-title ctx-title-player">${entCls ? portraitChipHtml({ cls: entCls, skin: ent!.skin ?? 0, name, variant: 'sm' }) : ''}<span class="ctx-title-name">${esc(name)}</span></div>`;
+    if (entCls) html += `<div class="ctx-item" data-act="inspect">${esc(t('character.viewProfile'))}</div>`;
     if (!isMember) html += `<div class="ctx-item" data-act="invite">${esc(t('hud.chat.context.invite'))}</div>`;
     html += `<div class="ctx-item" data-act="trade">${esc(t('hud.chat.context.trade'))}</div>`;
     html += `<div class="ctx-item" data-act="duel">${esc(t('hud.chat.context.challengeDuel'))}</div>`;
@@ -4647,11 +8223,12 @@ export class Hud {
     if (isLeader && isMember && pid !== this.sim.playerId) html += `<div class="ctx-item" data-act="kick">${esc(t('hud.chat.context.removeParty'))}</div>`;
     html += `<div class="ctx-item" data-act="close">${esc(t('hud.chat.context.cancel'))}</div>`;
     el.innerHTML = html;
-    el.style.left = `${Math.min(window.innerWidth - 170, x)}px`;
-    el.style.top = `${Math.min(window.innerHeight - 240, y)}px`;
+    hydratePortraits(el);
+    this.placePopupAt(el, x, y, 170, 240);
     el.style.display = 'block';
     this.bindContextMenuActions((act) => {
-      if (act === 'invite') this.sim.partyInvite(pid);
+      if (act === 'inspect') this.openInspect(pid);
+      else if (act === 'invite') this.sim.partyInvite(pid);
       else if (act === 'trade') this.sim.tradeRequest(pid);
       else if (act === 'duel') this.sim.duelRequest(pid);
       else if (act === 'friend') this.sim.friendAdd(name);
@@ -4663,6 +8240,42 @@ export class Hud {
       } else if (act === 'report') this.openReportWindow({ pid, name });
       else if (act === 'kick') this.sim.partyKick(pid);
     });
+  }
+
+  /** Inspect another player: a profile window with their portrait, name, level
+   *  and class — rendered locally from their entity's class + skin. */
+  openInspect(pid: number): void {
+    const e = this.sim.entities.get(pid);
+    if (!e || e.kind !== 'player') return;
+    const cls = e.templateId as PlayerClass;
+    const className = classDisplayName(cls);
+    const el = $('#inspect-window');
+    this.closeOtherWindows('#inspect-window');
+    // $WOC holder-tier flair: cosmetic badge for a connected/holder wallet,
+    // broadcast per-entity via the `ht`/`hb` identity fields (server-set). Shown
+    // only when the inspected player has a tier (> 0); the exact balance rides
+    // along in `hb` and reads out beneath the rung name when present.
+    const tierDef = holderTierByIndex(e.holderTier ?? 0);
+    const holderHtml = tierDef
+      ? `<div class="inspect-holder">` +
+        `<img class="inspect-holder-badge" src="${holderTierBadgeDataUrl(tierDef)}" alt="" draggable="false">` +
+        `<div class="inspect-holder-text">` +
+        `<div class="inspect-holder-name">${esc(holderTierDisplayName(tierDef))}</div>` +
+        `<div class="inspect-holder-sub">${e.holderBalance ? esc(t('wallet.balanceAmount', { amount: formatNumber(e.holderBalance, { maximumFractionDigits: 0 }) })) : esc(t('wallet.holder'))}</div>` +
+        `</div></div>`
+      : '';
+    el.innerHTML =
+      `<div class="panel-title"><span>${esc(t('character.profile'))}</span>` +
+      `<button type="button" class="x-btn" data-close aria-label="${esc(t('character.closeProfile'))}">${svgIcon('close')}</button></div>` +
+      `<div class="inspect-card">` +
+      portraitChipHtml({ cls, skin: e.skin ?? 0, name: e.name, variant: 'lg' }) +
+      `<div class="inspect-name">${esc(e.name)}</div>` +
+      `<div class="inspect-meta">${esc(t('itemUi.equipment.levelClass', { level: formatNumber(e.level, { maximumFractionDigits: 0 }), className }))}</div>` +
+      holderHtml +
+      `</div>`;
+    hydratePortraits(el);
+    el.querySelector('[data-close]')?.addEventListener('click', () => { el.style.display = 'none'; });
+    el.style.display = 'block';
   }
 
   // Raid/target marker picker for an enemy, opened from its target unit frame.
@@ -4684,8 +8297,7 @@ export class Hud {
     html += `<div class="ctx-item" role="button" tabindex="0" data-act="clear">${esc(t('hud.markers.clear'))}</div>`;
     html += `<div class="ctx-item" role="button" tabindex="0" data-act="close">${esc(t('hud.markers.cancel'))}</div>`;
     el.innerHTML = html;
-    el.style.left = `${Math.min(window.innerWidth - 170, x)}px`;
-    el.style.top = `${Math.min(window.innerHeight - 340, y)}px`;
+    this.placePopupAt(el, x, y, 170, 340);
     el.style.display = 'block';
     el.querySelectorAll('.ctx-item').forEach((item) => {
       const activate = () => {
@@ -4712,8 +8324,7 @@ export class Hud {
     if (!isWarlock) html += `<div class="ctx-item" data-act="abandon">${esc(t('hud.pet.abandon'))}</div>`;
     html += `<div class="ctx-item" data-act="close">${esc(t('hud.pet.cancel'))}</div>`;
     el.innerHTML = html;
-    el.style.left = `${Math.min(window.innerWidth - 170, x)}px`;
-    el.style.top = `${Math.min(window.innerHeight - 240, y)}px`;
+    this.placePopupAt(el, x, y, 170, 240);
     el.style.display = 'block';
     el.querySelectorAll('.ctx-item').forEach((item) => {
       item.addEventListener('click', () => {
@@ -4763,14 +8374,22 @@ export class Hud {
       alreadyGuilded,
       canReport: !!this.reportHooks?.submitByName,
     });
-    el.innerHTML = `<div class="ctx-title">${esc(name)}</div>`
+    // If the player is in view we know their class+skin, so show a portrait and
+    // a "View Profile" entry; otherwise the menu is name-only as before.
+    const livePidForMenu = this.playerPidByName(name);
+    const ent = livePidForMenu !== null ? this.sim.entities.get(livePidForMenu) : undefined;
+    const entCls = ent && ent.kind === 'player' ? (ent.templateId as PlayerClass) : null;
+    const titleHtml = `<div class="ctx-title ctx-title-player">${entCls ? portraitChipHtml({ cls: entCls, skin: ent!.skin ?? 0, name, variant: 'sm' }) : ''}<span class="ctx-title-name">${esc(name)}</span></div>`;
+    const inspectHtml = entCls ? `<div class="ctx-item" data-act="inspect">${esc(t('character.viewProfile'))}</div>` : '';
+    el.innerHTML = titleHtml + inspectHtml
       + actions.map((a) => `<div class="ctx-item" data-act="${a.id}">${esc(a.label)}</div>`).join('');
-    el.style.left = `${Math.min(window.innerWidth - 170, x)}px`;
-    el.style.top = `${Math.min(window.innerHeight - 240, y)}px`;
+    hydratePortraits(el);
+    this.placePopupAt(el, x, y, 170, 240);
     el.style.display = 'block';
     this.bindContextMenuActions((act) => {
       const livePid = this.playerPidByName(name);
-      if (act === 'whisper') this.startWhisper(name);
+      if (act === 'inspect') { if (livePid !== null) this.openInspect(livePid); }
+      else if (act === 'whisper') this.startWhisper(name);
       else if (act === 'invite') {
         if (livePid !== null) this.sim.partyInvite(livePid);
         else this.showError(t('hud.system.playerNotNearby'));
@@ -4835,7 +8454,11 @@ export class Hud {
       { value: 'cheating', label: t('hud.report.reasons.cheating') },
       { value: 'offensive_name_or_chat', label: t('hud.report.reasons.offensiveNameOrChat') },
       { value: 'other', label: t('hud.report.reasons.other') },
-    ], 'harassment');
+    ], 'harassment', undefined, undefined, { ariaLabel: t('hud.report.reason') });
+    // Give the trigger the id the <label for="report-reason"> points at, so the
+    // label (which lost its original target when the slot div was replaced)
+    // associates with a real focusable control again.
+    reasonDD.querySelector('.ui-dd-btn')?.setAttribute('id', 'report-reason');
     el.querySelector('#report-reason-slot')?.replaceWith(reasonDD);
     el.querySelectorAll('[data-close]').forEach((btn) => btn.addEventListener('click', () => { el.style.display = 'none'; }));
     const submit = $('#report-submit') as HTMLButtonElement;
@@ -4931,7 +8554,7 @@ export class Hud {
     el.classList.add('open');
     this.socialNotice = null;
     this.lastSocialStruct = this.socialStructSig();
-    this.lastSocialContent = JSON.stringify(this.sim.socialInfo);
+    this.lastSocialContent = JSON.stringify({ social: this.sim.socialInfo, party: this.sim.partyInfo });
     this.renderSocial();
   }
 
@@ -4940,7 +8563,9 @@ export class Hud {
   // friend's zone, the roster — doesn't count, so it can refresh in place.
   private socialStructSig(): string {
     const g = this.sim.socialInfo?.guild;
-    return `${this.socialTab}|${this.sim.socialInfo !== null}|${g?.id ?? 0}|${g?.rank ?? ''}`;
+    const p = this.sim.partyInfo;
+    const raidSig = p ? `${p.raid ? 1 : 0}:${p.leader}:${p.members.map((m) => `${m.pid}.${m.group}`).join(',')}` : 'solo';
+    return `${this.socialTab}|${this.sim.socialInfo !== null}|${g?.id ?? 0}|${g?.rank ?? ''}|${raidSig}`;
   }
 
   // Full rebuild: title, tabs, body, notice, and the tab's footer (with its
@@ -4956,10 +8581,11 @@ export class Hud {
       + `<button type="button" class="soc-tab ${tab === 'friends' ? 'on' : ''}" data-tab="friends" aria-pressed="${tab === 'friends' ? 'true' : 'false'}">${esc(t('hud.social.friendsTab'))}</button>`
       + `<button type="button" class="soc-tab ${tab === 'guild' ? 'on' : ''}" data-tab="guild" aria-pressed="${tab === 'guild' ? 'true' : 'false'}">${esc(t('hud.social.guildTab'))}</button>`
       + `<button type="button" class="soc-tab ${tab === 'ignore' ? 'on' : ''}" data-tab="ignore" aria-pressed="${tab === 'ignore' ? 'true' : 'false'}">${esc(t('hud.social.ignoreTab'))}</button>`
+      + `<button type="button" class="soc-tab ${tab === 'raid' ? 'on' : ''}" data-tab="raid" aria-pressed="${tab === 'raid' ? 'true' : 'false'}">${esc(t('hud.social.raidTab'))}</button>`
       + `</div>`
       + `<div class="soc-body"></div>`
       + `<div class="soc-notice"></div>`
-      + (online ? this.socialFooter() : '');
+      + (tab === 'raid' ? '' : online ? this.socialFooter() : '');
     this.wireSocialChrome(el);
     this.refreshSocialList();
     this.renderSocialNotice();
@@ -4971,11 +8597,12 @@ export class Hud {
     const body = $('#social-window').querySelector('.soc-body') as HTMLElement | null;
     if (!body) return;
     const online = this.sim.socialInfo !== null;
-    body.innerHTML = !online
-      ? `<div class="soc-empty">${esc(t('hud.social.offlineEmpty'))}</div>`
-      : this.socialTab === 'friends' ? this.friendsHtml()
-        : this.socialTab === 'guild' ? this.guildHtml()
-          : this.ignoreHtml();
+    body.innerHTML = this.socialTab === 'raid' ? this.raidHtml()
+      : !online
+        ? `<div class="soc-empty">${esc(t('hud.social.offlineEmpty'))}</div>`
+        : this.socialTab === 'friends' ? this.friendsHtml()
+          : this.socialTab === 'guild' ? this.guildHtml()
+            : this.ignoreHtml();
     this.wireSocialRows(body);
   }
 
@@ -5014,9 +8641,9 @@ export class Hud {
     const guild = this.sim.socialInfo?.guild ?? null;
     if (!guild) return `<div class="soc-empty">${esc(t('hud.social.noGuild'))}</div>`;
     const me = guild.rank;
-    const guildHeadKey = guild.members.length === 1 ? 'hud.social.guildHeadOne' : 'hud.social.guildHeadMany';
-    const guildCount = formatNumber(guild.members.length, { maximumFractionDigits: 0 });
-    const head = `<div class="soc-guild-head">&lt;${esc(guild.name)}&gt; <span class="gm">${esc(t(guildHeadKey, { rank: rankLabel(me), count: guildCount }))}</span></div>`;
+    const memberCount = guild.members.length;
+    const guildCount = formatNumber(memberCount, { maximumFractionDigits: 0 });
+    const head = `<div class="soc-guild-head">&lt;${esc(guild.name)}&gt; <span class="gm">${esc(tPlural('hudChrome.plurals.guildMembers', memberCount, { rank: rankLabel(me), count: guildCount }))}</span></div>`;
     const rows = guild.members.map((m) => {
       const dot = m.online ? (m.status ?? 'online') : 'off';
       const meta = m.online
@@ -5043,6 +8670,36 @@ export class Hud {
         + `</div>`;
     }).join('');
     return head + rows;
+  }
+
+  private raidHtml(): string {
+    const party = this.sim.partyInfo;
+    if (!party?.raid) {
+      const canConvert = !!party && party.leader === this.sim.playerId && party.members.length >= 5;
+      return `<div class="soc-empty">${esc(t('hud.social.raidEmpty'))}${canConvert ? `<div class="soc-empty-action"><button type="button" class="soc-x" data-act="convert-raid">${esc(t('hud.chat.context.convertToRaid'))}</button></div>` : ''}</div>`;
+    }
+    const leader = party.leader === this.sim.playerId;
+    const groups: Record<1 | 2, typeof party.members> = {
+      1: party.members.filter((m) => m.group === 1),
+      2: party.members.filter((m) => m.group === 2),
+    };
+    const groupHtml = (group: 1 | 2): string => {
+      const rows = groups[group].map((m) => {
+        const isLead = m.pid === party.leader;
+        const otherGroup = group === 1 ? 2 : 1;
+        const otherFull = groups[otherGroup].length >= 5;
+        const move = leader && !otherFull
+          ? `<button type="button" class="soc-x" data-act="raid-move" data-pid="${m.pid}" data-group="${otherGroup}" title="${esc(t('hud.social.raidMoveToGroup', { group: formatNumber(otherGroup, { maximumFractionDigits: 0 }) }))}">${esc(formatNumber(otherGroup, { maximumFractionDigits: 0 }))}</button>`
+          : '';
+        return `<div class="soc-row raid-row">`
+          + `<span class="soc-id"><span class="soc-name">${esc(m.name)}${isLead ? `<span class="rank">${esc(t('hud.social.raidLeader'))}</span>` : ''}</span><span class="soc-sub">${esc(t('hud.social.levelClass', { level: formatNumber(m.level, { maximumFractionDigits: 0 }), className: playerClassDisplayName(m.cls) }))}</span></span>`
+          + `<span class="soc-meta">${esc(formatNumber(Math.round((m.hp / Math.max(1, m.mhp)) * 100), { maximumFractionDigits: 0 }))}%</span>`
+          + (move ? `<span class="soc-actions">${move}</span>` : '')
+          + `</div>`;
+      }).join('') || `<div class="soc-empty">${esc(t('hud.social.raidGroupEmpty'))}</div>`;
+      return `<div class="raid-group"><div class="soc-guild-head">${esc(t('hud.social.raidGroupTitle', { position: formatNumber(group, { maximumFractionDigits: 0 }), count: formatNumber(groups[group].length, { maximumFractionDigits: 0 }) }))}</div>${rows}</div>`;
+    };
+    return `<div class="raid-groups">${groupHtml(1)}${groupHtml(2)}</div>`;
   }
 
   // The add/action row changes with the tab (and guild membership). Inputs
@@ -5073,7 +8730,7 @@ export class Hud {
   private wireSocialChrome(el: HTMLElement): void {
     el.querySelector('[data-close]')?.addEventListener('click', () => this.toggleSocial());
     el.querySelectorAll('.soc-tab').forEach((t) => t.addEventListener('click', () => {
-      this.socialTab = (t as HTMLElement).dataset.tab as 'friends' | 'guild' | 'ignore';
+      this.socialTab = (t as HTMLElement).dataset.tab as 'friends' | 'guild' | 'ignore' | 'raid';
       this.socialNotice = null;
       this.lastSocialStruct = this.socialStructSig();
       this.renderSocial();
@@ -5108,6 +8765,16 @@ export class Hud {
       else if (act === 'promote') this.sim.guildPromote(name);
       else if (act === 'demote') this.sim.guildDemote(name);
       else if (act === 'gtransfer') this.showPrompt(t('hud.social.transferPrompt', { name: `<b>${esc(name)}</b>` }), t('hud.social.transferConfirm'), () => this.sim.guildTransfer(name), () => { /* keep */ });
+      else if (act === 'raid-move') {
+        const pid = Number((x as HTMLElement).dataset.pid);
+        const group = Number((x as HTMLElement).dataset.group);
+        if (Number.isFinite(pid) && (group === 1 || group === 2)) this.sim.moveRaidMember(pid, group);
+      }
+      else if (act === 'convert-raid') {
+        this.sim.convertPartyToRaid();
+        this.socialTab = 'raid';
+        this.renderSocial();
+      }
     }));
     scope.querySelectorAll('[data-whisper]').forEach((w) => w.addEventListener('click', () => {
       this.startWhisper((w as HTMLElement).dataset.whisper ?? '');
@@ -5323,7 +8990,13 @@ export class Hud {
         <div class="trade-col ${info.myAccepted ? 'accepted' : ''}">
           <h4>${esc(t('hud.trade.yourOffer'))}</h4>
           <div class="trade-items">${info.myOffer.items.map((s) => itemRow(s, true)).join('') || `<div class="trade-empty">${esc(t('hud.trade.emptyMine'))}</div>`}</div>
-          <label class="trade-money" for="trade-copper">${esc(t('hud.trade.money'))}: <input id="trade-copper" type="number" min="0" value="${this.stagedTrade.copper}" /> ${esc(t('hud.trade.copper'))}</label>
+          <div class="trade-money"><span class="trade-money-label">${esc(t('hud.trade.money'))}:</span>
+            <span class="trade-coins">
+              <input class="coininput" id="trade-g" type="number" min="0" value="${Math.floor(this.stagedTrade.copper / 10000)}" aria-label="${esc(t('itemUi.money.gold'))}"><span class="coin g" aria-hidden="true"></span><span class="mkt-coin-tag">${esc(t('itemUi.money.goldShort'))}</span>
+              <input class="coininput" id="trade-s" type="number" min="0" max="99" value="${Math.floor((this.stagedTrade.copper % 10000) / 100)}" aria-label="${esc(t('itemUi.money.silver'))}"><span class="coin s" aria-hidden="true"></span><span class="mkt-coin-tag">${esc(t('itemUi.money.silverShort'))}</span>
+              <input class="coininput" id="trade-c" type="number" min="0" max="99" value="${this.stagedTrade.copper % 100}" aria-label="${esc(t('itemUi.money.copper'))}"><span class="coin c" aria-hidden="true"></span><span class="mkt-coin-tag">${esc(t('itemUi.money.copperShort'))}</span>
+            </span>
+          </div>
         </div>
         <div class="trade-col ${info.theirAccepted ? 'accepted' : ''}">
           <h4>${esc(t('hud.trade.theirOffer', { name: info.otherName }))}</h4>
@@ -5354,11 +9027,17 @@ export class Hud {
         }
       });
     });
-    const copperInput = el.querySelector('#trade-copper') as HTMLInputElement;
-    copperInput?.addEventListener('change', () => {
-      this.stagedTrade.copper = Math.max(0, Math.floor(Number(copperInput.value) || 0));
+    const goldInput = el.querySelector('#trade-g') as HTMLInputElement;
+    const silverInput = el.querySelector('#trade-s') as HTMLInputElement;
+    const copperInput = el.querySelector('#trade-c') as HTMLInputElement;
+    const syncTradeMoney = () => {
+      const gg = Math.max(0, Math.floor(Number(goldInput?.value) || 0));
+      const ss = Math.max(0, Math.floor(Number(silverInput?.value) || 0));
+      const cc = Math.max(0, Math.floor(Number(copperInput?.value) || 0));
+      this.stagedTrade.copper = gg * 10000 + ss * 100 + cc;
       this.pushTradeOffer();
-    });
+    };
+    [goldInput, silverInput, copperInput].forEach((input) => input?.addEventListener('change', syncTradeMoney));
     el.style.display = 'block';
   }
 
@@ -5374,13 +9053,26 @@ export class Hud {
     this.reportHooks = hooks;
   }
 
+  // Only wired online (main.ts), so its presence is what gates the "Report a Bug"
+  // option (the offline browser world has no server to receive reports).
+  attachBugReporting(hooks: BugReportHooks): void {
+    this.bugReportHooks = hooks;
+  }
+
   get optionsOpen(): boolean {
     return $('#options-menu').style.display === 'block';
   }
 
   // True while a menu that should pause character movement is up.
   isModalOpen(): boolean {
-    return this.optionsOpen || this.emoteWheelOpen || $('#emote-editor').style.display === 'block';
+    return this.optionsOpen || this.emoteWheelOpen || $('#emote-editor').style.display === 'block' || this.cardModalEl !== null;
+  }
+
+  // True when any interactive HUD surface is open: a modal OR a managed window
+  // (bags, vendor, character, etc.). Drives the gamepad's virtual-cursor mode so a
+  // controller can point at bag slots / vendor items, not just modal dialogs.
+  isWindowOpen(): boolean {
+    return this.isModalOpen() || this.topmostOpenWindow() !== null;
   }
 
   toggleOptionsMenu(): void {
@@ -5398,14 +9090,25 @@ export class Hud {
   closeOptions(): void {
     $('#options-menu').style.display = 'none';
     this.capturingKey = null;
+    this.optionsHooks?.perfOverlay.setPlacement(false);
     this.hideTooltip();
     music.resumeFromMenu();
   }
 
   private renderOptions(): void {
+    // The wide multi-column layouts belong to their own sub-views; clear each when
+    // leaving it so the other sub-views (and the main menu) keep their default width.
+    if (this.optionsView !== 'keybinds') $('#options-menu').classList.remove('kb-wide');
+    if (this.optionsView !== 'performance') $('#options-menu').classList.remove('perf-wide');
+    // The overlay is draggable only while the Performance sub-view is open.
+    this.optionsHooks?.perfOverlay.setPlacement(this.optionsView === 'performance');
     if (this.optionsView === 'keybinds') { this.renderKeybinds(); return; }
     if (this.optionsView === 'graphics') { this.renderGraphics(); return; }
     if (this.optionsView === 'audio') { this.renderAudio(); return; }
+    if (this.optionsView === 'interface') { this.renderInterface(); return; }
+    if (this.optionsView === 'controller') { this.renderController(); return; }
+    if (this.optionsView === 'performance') { this.renderPerformance(); return; }
+    if (this.optionsView === 'bugreport') { this.renderBugReport(); return; }
     const el = $('#options-menu');
     el.innerHTML = `<div class="panel-title"><span>${esc(t('hud.options.gameMenu'))}</span><button type="button" class="x-btn" data-close aria-label="${esc(t('hud.options.returnToGame'))}">${svgIcon('close')}</button></div>`;
     const list = document.createElement('div');
@@ -5417,10 +9120,15 @@ export class Hud {
       b.addEventListener('click', () => { audio.click(); onClick(); });
       list.appendChild(b);
     };
-    const goto = (view: 'keybinds' | 'graphics' | 'audio') => { this.optionsView = view; this.keybindNote = ''; this.renderOptions(); };
+    const goto = (view: 'keybinds' | 'graphics' | 'audio' | 'interface' | 'performance' | 'controller' | 'bugreport') => { this.optionsView = view; this.keybindNote = ''; this.renderOptions(); };
     add(t('hud.options.keyBindings'), () => goto('keybinds'));
+    add(t('hudChrome.controller.title'), () => goto('controller'));
     add(t('hud.options.graphics'), () => goto('graphics'));
+    add(t('hud.options.interface'), () => goto('interface'));
     add(t('hud.options.audio'), () => goto('audio'));
+    add(t('hudChrome.perf.title'), () => goto('performance'));
+    // Online-only: capturing realm/character/position needs an authoritative server.
+    if (this.bugReportHooks) add(t('hudChrome.bugReport.menuButton'), () => goto('bugreport'));
     add(t('hud.options.logout'), () => this.optionsHooks?.logout());
     add(t('hud.options.returnToGame'), () => this.closeOptions());
     el.appendChild(list);
@@ -5428,7 +9136,9 @@ export class Hud {
   }
 
   // A labelled slider bound to a numeric setting; live-applies via the hook.
-  private settingSlider(parent: HTMLElement, label: string, key: NumericSettingKey): void {
+  // opts.fmt renders the readout (default: a percentage); opts.step overrides the
+  // 0.05 increment for settings measured in whole units (e.g. FOV degrees).
+  private settingSlider(parent: HTMLElement, label: string, key: NumericSettingKey, opts?: { fmt?: (v: number) => string; step?: number }): void {
     const hooks = this.optionsHooks;
     if (!hooks) return;
     const r = SETTING_RANGES[key];
@@ -5442,22 +9152,33 @@ export class Hud {
     slider.className = 'set-slider';
     slider.min = String(r.min);
     slider.max = String(r.max);
-    slider.step = '0.05';
+    slider.step = String(opts?.step ?? 0.05);
     slider.value = String(hooks.settings.get(key));
     slider.setAttribute('aria-label', label);
     const val = document.createElement('span');
     val.className = 'set-val';
-    const pct = () => `${Math.round(hooks.settings.get(key) * 100)}%`;
-    val.textContent = pct();
+    const fmt = opts?.fmt ?? ((v: number) => formatNumber(v, { style: 'percent', maximumFractionDigits: 0 }));
+    const readout = () => fmt(hooks.settings.get(key));
+    val.textContent = readout();
+    // Paint a gold fill up to the current value on every engine (CSS alone can't
+    // read the value; --range-fill drives the webkit track gradient and Firefox's
+    // native progress is recolored to match). Set initially + on every input.
+    const paintFill = () => {
+      const min = Number(slider.min), max = Number(slider.max), v = Number(slider.value);
+      const pct = max > min ? ((v - min) / (max - min)) * 100 : 0;
+      slider.style.setProperty('--range-fill', `${Math.max(0, Math.min(100, pct))}%`);
+    };
+    paintFill();
     slider.addEventListener('input', () => {
       hooks.onSettingChange(key, Number(slider.value));
-      val.textContent = pct();
+      val.textContent = readout();
+      paintFill();
     });
     row.append(name, slider, val);
     parent.appendChild(row);
   }
 
-  private settingToggle(parent: HTMLElement, label: string, key: 'fullscreen' | 'showOverflowXp'): void {
+  private settingToggle(parent: HTMLElement, label: string, key: 'fullscreen' | 'showOverflowXp' | 'weather'): void {
     const hooks = this.optionsHooks;
     if (!hooks) return;
     const row = document.createElement('div');
@@ -5479,6 +9200,34 @@ export class Hud {
       audio.click();
       const next = hooks.settings.get(key) >= 0.5 ? 0 : 1;
       hooks.onSettingChange(key, next);
+      sync();
+    });
+    row.append(name, toggle);
+    parent.appendChild(row);
+  }
+
+  // Like settingToggle but for a true/false BOOL_SETTINGS key (Interface panel).
+  private settingBoolToggle(parent: HTMLElement, label: string, key: BoolSettingKey): void {
+    const hooks = this.optionsHooks;
+    if (!hooks) return;
+    const row = document.createElement('div');
+    row.className = 'set-row';
+    const name = document.createElement('span');
+    name.className = 'set-name';
+    name.textContent = label;
+    const toggle = document.createElement('button');
+    toggle.className = 'btn set-toggle';
+    const sync = () => {
+      const on = hooks.settings.get(key);
+      toggle.textContent = on ? t('hud.options.on') : t('hud.options.off');
+      toggle.classList.toggle('off', !on);
+      toggle.setAttribute('aria-pressed', String(on));
+      toggle.setAttribute('aria-label', label);
+    };
+    sync();
+    toggle.addEventListener('click', () => {
+      audio.click();
+      hooks.onSettingChange(key, hooks.settings.set(key, !hooks.settings.get(key)));
       sync();
     });
     row.append(name, toggle);
@@ -5553,10 +9302,133 @@ export class Hud {
     el.querySelector('[data-close]')?.addEventListener('click', () => this.closeOptions());
   }
 
+  private renderBugReport(): void {
+    const hooks = this.bugReportHooks;
+    if (!hooks) { this.optionsView = 'main'; this.renderOptions(); return; }
+    const body = this.settingsViewShell(t('hudChrome.bugReport.menuButton'));
+    const p = this.sim.player;
+    const realm = this.sim.realm || t('hudChrome.bugReport.unknown');
+    const coords = `${formatNumber(p.pos.x, { maximumFractionDigits: 0, useGrouping: false })}, ` +
+      `${formatNumber(p.pos.y, { maximumFractionDigits: 0, useGrouping: false })}, ` +
+      `${formatNumber(p.pos.z, { maximumFractionDigits: 0, useGrouping: false })}`;
+
+    const info = document.createElement('div');
+    info.className = 'bug-info';
+    const row = (label: string, value: string): string =>
+      `<div class="bug-info-row"><span class="bug-info-label">${esc(label)}</span><span class="bug-info-val">${esc(value)}</span></div>`;
+    info.innerHTML =
+      row(t('hudChrome.bugReport.realm'), realm) +
+      row(t('hudChrome.bugReport.character'), p.name) +
+      row(t('hudChrome.bugReport.position'), coords);
+    body.appendChild(info);
+
+    // Capture once when the form opens so the screenshot reflects what the player
+    // saw, not a later frame. null when capture is unavailable/failed.
+    const shot = hooks.capture();
+
+    const descLabel = document.createElement('label');
+    descLabel.className = 'bug-label';
+    descLabel.setAttribute('for', 'bug-desc');
+    descLabel.textContent = t('hudChrome.bugReport.description');
+    const desc = document.createElement('textarea');
+    desc.id = 'bug-desc';
+    desc.className = 'bug-desc';
+    desc.maxLength = 2000;
+    desc.setAttribute('placeholder', t('hudChrome.bugReport.descriptionPlaceholder'));
+    desc.setAttribute('aria-describedby', 'bug-error');
+    body.append(descLabel, desc);
+
+    let includeShot = shot !== null;
+    if (shot) {
+      const shotWrap = document.createElement('div');
+      shotWrap.className = 'bug-shot';
+      const img = document.createElement('img');
+      img.className = 'bug-shot-img';
+      img.src = shot;
+      img.alt = t('hudChrome.bugReport.screenshotAlt');
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'btn set-toggle';
+      const syncToggle = () => {
+        toggle.textContent = includeShot ? t('hud.options.on') : t('hud.options.off');
+        toggle.classList.toggle('off', !includeShot);
+        toggle.setAttribute('aria-pressed', String(includeShot));
+        toggle.setAttribute('aria-label', t('hudChrome.bugReport.includeScreenshot'));
+        img.style.display = includeShot ? '' : 'none';
+      };
+      toggle.addEventListener('click', () => { audio.click(); includeShot = !includeShot; syncToggle(); });
+      syncToggle();
+      const toggleRow = document.createElement('div');
+      toggleRow.className = 'set-row';
+      const name = document.createElement('span');
+      name.className = 'set-name';
+      name.textContent = t('hudChrome.bugReport.includeScreenshot');
+      toggleRow.append(name, toggle);
+      shotWrap.append(toggleRow, img);
+      body.appendChild(shotWrap);
+    }
+
+    const error = document.createElement('div');
+    error.className = 'report-error';
+    error.id = 'bug-error';
+    // role="alert" already implies an assertive live region; a second aria-live
+    // would conflict, so it is the only announcement hook on this node.
+    error.setAttribute('role', 'alert');
+    body.appendChild(error);
+
+    const actions = document.createElement('div');
+    actions.className = 'report-actions';
+    const submit = document.createElement('button');
+    submit.className = 'btn';
+    submit.type = 'button';
+    submit.textContent = t('hudChrome.bugReport.submit');
+    const back = document.createElement('button');
+    back.className = 'btn';
+    back.type = 'button';
+    back.textContent = t('hud.options.back');
+    back.addEventListener('click', () => { audio.click(); this.optionsView = 'main'; this.renderOptions(); });
+    actions.append(submit, back);
+    body.appendChild(actions);
+
+    submit.addEventListener('click', () => {
+      const description = desc.value.trim();
+      if (!description) { error.textContent = t('hudChrome.bugReport.describeFirst'); return; }
+      submit.disabled = true;
+      error.textContent = '';
+      const sentShot = includeShot && shot !== null;
+      hooks.submit({ description, screenshot: includeShot ? shot : null, meta: hooks.collectMeta() })
+        .then(({ screenshotStored }) => {
+          // Be honest when the server dropped a screenshot the player asked to send.
+          const droppedShot = sentShot && !screenshotStored;
+          this.log(t(droppedShot ? 'hudChrome.bugReport.submittedNoShot' : 'hudChrome.bugReport.submitted'), '#ffd100');
+          this.optionsView = 'main';
+          this.renderOptions();
+        })
+        .catch((err: unknown) => {
+          submit.disabled = false;
+          error.textContent = this.localizeBugReportError(err);
+        });
+    });
+
+    $('#options-menu').querySelector('[data-close]')?.addEventListener('click', () => this.closeOptions());
+    // Focus the description so a keyboard/screen-reader user lands in the field.
+    window.setTimeout(() => desc.focus(), 0);
+  }
+
+  private localizeBugReportError(err: unknown): string {
+    const text = err instanceof Error ? err.message : '';
+    const keyByMessage: Record<string, TranslationKey> = {
+      'describe the bug': 'hudChrome.bugReport.describeFirst',
+      'bug report too large': 'hudChrome.bugReport.tooLarge',
+      'too many bug reports, try again later': 'hudChrome.bugReport.rateLimited',
+    };
+    const key = keyByMessage[text.toLowerCase()];
+    return key ? t(key) : t('hudChrome.bugReport.failed');
+  }
+
   private renderGraphics(): void {
     const body = this.settingsViewShell(t('hud.options.graphics'));
     this.settingChoice(body, t('hud.options.graphicsQuality'), 'graphicsPreset', [
-      { value: 0, label: t('hud.options.graphicsPresetAuto') },
       { value: 1, label: t('hud.options.graphicsPresetLow') },
       { value: 2, label: t('hud.options.graphicsPresetMedium') },
       { value: 3, label: t('hud.options.graphicsPresetHigh') },
@@ -5581,16 +9453,54 @@ export class Hud {
         { value: 1, label: t('hud.options.terrainHigh') },
       ]);
     }
+    // Adaptive CSS-effects tier (DOM layer, separate from the WebGL preset above).
+    // Auto detects the browser engine/version + device; manual values pin it.
+    this.settingChoice(body, t('hudChrome.options.browserEffects'), 'browserEffects', [
+      { value: 0, label: t('hudChrome.options.browserEffectsAuto') },
+      { value: 1, label: t('hudChrome.options.browserEffectsFull') },
+      { value: 2, label: t('hudChrome.options.browserEffectsReduced') },
+      { value: 3, label: t('hudChrome.options.browserEffectsMinimal') },
+    ]);
+    const fxNote = document.createElement('div');
+    fxNote.className = 'set-note';
+    fxNote.textContent = t('hudChrome.options.browserEffectsNote');
+    body.appendChild(fxNote);
+    // Desktop keyboard/mouse vs the on-screen touch controls. Auto detects the
+    // device; Desktop/Touch force one (e.g. a tablet with a keyboard picks
+    // Desktop). Re-render so the touch-only sliders below show/hide to match.
+    // Hidden in the native app shell, which forces the touch UI regardless.
+    if (!isNativeAppShell()) {
+      this.settingChoice(body, t('hudChrome.options.interfaceMode'), 'interfaceMode', [
+        { value: 0, label: t('hudChrome.options.interfaceModeAuto') },
+        { value: 1, label: t('hudChrome.options.interfaceModeDesktop') },
+        { value: 2, label: t('hudChrome.options.interfaceModeTouch') },
+      ], () => this.renderGraphics());
+      const interfaceNote = document.createElement('div');
+      interfaceNote.className = 'set-note';
+      interfaceNote.textContent = t('hudChrome.options.interfaceModeNote');
+      body.appendChild(interfaceNote);
+    }
     this.settingSlider(body, t('hud.options.cameraSpeed'), 'cameraSpeed');
     // Camera Speed only scales mouselook; on touch the camera joystick has its
     // own rate, so phones get a dedicated sensitivity slider here.
-    if (isPhoneTouchDevice()) this.settingSlider(body, t('hud.options.touchLookSpeed'), 'touchLookSpeed');
+    if (useTouchInterface()) this.settingSlider(body, t('hud.options.touchLookSpeed'), 'touchLookSpeed');
     this.settingSlider(body, t('hud.options.brightness'), 'brightness');
+    this.settingSlider(body, t('hud.options.fieldOfView'), 'cameraFov', { fmt: (v) => `${formatNumber(Math.round(v), { maximumFractionDigits: 0 })}°`, step: 1 });
     this.settingSlider(body, t('hud.options.renderQuality'), 'renderScale');
     this.settingToggle(body, t('hud.options.fullscreen'), 'fullscreen');
     this.settingToggle(body, t('game.settings.showOverflowXp'), 'showOverflowXp');
     // Touch-only: lets phone players dim the on-screen joysticks + buttons.
-    if (isPhoneTouchDevice()) this.settingSlider(body, t('hud.options.touchOpacity'), 'touchOpacity');
+    if (useTouchInterface()) this.settingSlider(body, t('hud.options.touchOpacity'), 'touchOpacity');
+    this.settingToggle(body, t('game.settings.weather'), 'weather');
+    // Touch-only: lets phone players size the on-screen joysticks to their hands.
+    if (useTouchInterface()) this.settingSlider(body, t('hud.options.joystickSize'), 'joystickScale');
+    // Touch-only: lets phone players size the on-screen action buttons to taste.
+    if (useTouchInterface()) this.settingSlider(body, t('hud.options.buttonSize'), 'actionButtonScale');
+    // Touch-only: a larger deadzone resists accidental drift from a resting
+    // thumb on the move stick; only meaningful with on-screen controls.
+    if (useTouchInterface()) this.settingSlider(body, t('hud.options.joystickDeadzone'), 'joystickDeadzone');
+    // Touch-only: flips the vertical axis of the on-screen camera joystick + swipe-look.
+    if (useTouchInterface()) this.settingBoolToggle(body, t('hud.options.invertLook'), 'touchInvertLook');
     const note = document.createElement('div');
     note.className = 'set-note';
     note.textContent = t('hud.options.graphicsNote');
@@ -5611,6 +9521,7 @@ export class Hud {
     const body = this.settingsViewShell(t('hud.options.audio'));
     this.settingSlider(body, t('hud.options.soundEffects'), 'sfxVolume');
     this.settingSlider(body, t('hud.options.musicVolume'), 'musicVolume');
+    this.settingSlider(body, t('hud.options.voiceVolume'), 'voiceVolume');
     const row = document.createElement('div');
     row.className = 'set-row';
     const name = document.createElement('span');
@@ -5628,7 +9539,210 @@ export class Hud {
     toggle.addEventListener('click', () => { audio.click(); music.setEnabled(!music.enabled); sync(); });
     row.append(name, toggle);
     body.appendChild(row);
+    this.settingBoolToggle(body, t('hud.options.npcVoices'), 'voiceEnabled');
+    this.settingBoolToggle(body, t('hudChrome.options.footstepSounds'), 'footstepSfx');
+    this.settingBoolToggle(body, t('hudChrome.options.clickFeedback'), 'clickFeedback');
     this.settingsViewFooter();
+  }
+
+  // Interface & Comfort panel: presentational HUD tuning + accessibility toggles
+  // (sliders/toggles persisted to the GameSettings store, applied via CSS in
+  // main.ts) plus the classic client-side "Show Timestamps" chat option. None of
+  // it touches the simulation.
+  // In-game language picker (Options > Interface). Mirrors the homepage footer picker so a
+  // player can switch locales without leaving the world. Switching is delegated to the
+  // OptionsHooks.changeLanguage seam (main.ts owns the locale load + page relocalization);
+  // the HUD itself relocalizes its dynamic UI off the woc:languagechange event (see ctor).
+  private languageSelect(parent: HTMLElement): void {
+    const hooks = this.optionsHooks;
+    if (!hooks) return;
+    const row = document.createElement('div');
+    row.className = 'set-row';
+    const name = document.createElement('span');
+    name.className = 'set-name';
+    name.textContent = t('hud.options.language');
+    // Custom gold-themed dropdown (.ui-dd) rather than a native <select>, so the
+    // open option list matches the MMO theme; buildDropdown carries the listbox
+    // ARIA + keyboard semantics a native <select> would have.
+    const options = supportedLanguages.map((lang) => ({ value: lang, label: LANGUAGE_ENDONYMS[lang] }));
+    // aria-live status for the async locale load (loading / load-failed).
+    const status = document.createElement('span');
+    status.className = 'visually-hidden';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    let busy = false;
+    const dropdown = this.buildDropdown(options, getLanguage(), (selected) => {
+      if (busy || !isSupportedLanguage(selected) || selected === getLanguage()) return;
+      audio.click();
+      busy = true;
+      void hooks.changeLanguage(selected, (msg) => { status.textContent = msg; })
+        .then((ok) => {
+          if (ok) {
+            // Success: rebuild the panel in the new language (re-creates this picker
+            // at the now-active locale).
+            if (this.optionsOpen && this.optionsView === 'interface') {
+              this.renderInterface();
+              // Return keyboard focus to the fresh picker trigger so it isn't lost to <body>.
+              this.focusFirstInteractive($('#options-menu'), '.set-lang-select .ui-dd-btn');
+            }
+          } else {
+            // Graceful failure (the locale chunk failed to load): the active locale
+            // is unchanged. Revert the trigger IN PLACE — don't renderInterface(),
+            // which would rebuild and wipe the aria-live `status` node that
+            // changeLanguage just wrote the failure message into.
+            this.setDropdownValue(dropdown, getLanguage());
+          }
+        })
+        .catch(() => {
+          // Defensive: changeLanguage swallows load errors and resolves false, so
+          // this is unreachable today — but if it ever throws, keep the same
+          // in-place revert + intact live region rather than rebuilding.
+          status.textContent = t('settings.languageLoadFailed');
+          this.setDropdownValue(dropdown, getLanguage());
+        })
+        .finally(() => { busy = false; });
+    }, undefined, { ariaLabel: t('hud.options.language') });
+    dropdown.classList.add('set-lang-select');
+    row.append(name, dropdown);
+    parent.append(row, status);
+  }
+
+  private renderInterface(): void {
+    const body = this.settingsViewShell(t('hud.options.interface'));
+    this.languageSelect(body);
+    this.settingSlider(body, t('hudChrome.options.uiScale'), 'uiScale');
+    this.settingSlider(body, t('hud.options.hudOpacity'), 'hudOpacity');
+    this.settingSlider(body, t('hud.options.tooltipScale'), 'tooltipScale');
+    this.settingSlider(body, t('hud.options.fctScale'), 'fctScale');
+    this.settingSlider(body, t('hud.options.chatFontScale'), 'chatFontScale');
+    this.settingSlider(body, t('hud.options.chatOpacity'), 'chatOpacity');
+    this.settingBoolToggle(body, t('hud.options.compactChat'), 'compactChat');
+    this.settingBoolToggle(body, t('hud.options.frostedPanels'), 'frostedPanels');
+    this.settingBoolToggle(body, t('hud.options.highContrastText'), 'highContrastText');
+    this.settingBoolToggle(body, t('hud.options.reduceMotion'), 'reduceMotion');
+    this.settingBoolToggle(body, t('hudChrome.options.showWalletOnCharacterScreen'), 'showWalletOnCharacterScreen');
+    this.settingBoolToggle(body, t('hudChrome.options.showWalletOnPlayerCard'), 'showWalletOnPlayerCard');
+    this.settingBoolToggle(body, t('hudChrome.options.highContrastBackground'), 'landingHighContrast');
+    this.settingBoolToggle(body, t('hud.options.invertLookY'), 'invertLookY');
+
+    // On/off toggle for chat timestamps.
+    const tsRow = document.createElement('div');
+    tsRow.className = 'set-row';
+    const tsName = document.createElement('span');
+    tsName.className = 'set-name';
+    tsName.textContent = t('hudChrome.chatTimestamps.show');
+    const tsToggle = document.createElement('button');
+    tsToggle.className = 'btn set-toggle';
+
+    // 12/24-hour format selector — two segmented buttons, dimmed when off.
+    const fmtRow = document.createElement('div');
+    fmtRow.className = 'set-row';
+    const fmtName = document.createElement('span');
+    fmtName.className = 'set-name';
+    fmtName.textContent = t('hudChrome.chatTimestamps.format');
+    const seg = document.createElement('div');
+    seg.className = 'set-seg';
+    const btn12 = document.createElement('button');
+    btn12.className = 'btn set-seg-btn';
+    btn12.textContent = t('hudChrome.chatTimestamps.clock12h');
+    const btn24 = document.createElement('button');
+    btn24.className = 'btn set-seg-btn';
+    btn24.textContent = t('hudChrome.chatTimestamps.clock24h');
+    seg.append(btn12, btn24);
+    fmtRow.append(fmtName, seg);
+
+    const sync = () => {
+      tsToggle.textContent = this.chatTimestamps ? t('hud.options.on') : t('hud.options.off');
+      tsToggle.classList.toggle('off', !this.chatTimestamps);
+      tsToggle.setAttribute('aria-pressed', String(this.chatTimestamps));
+      btn12.classList.toggle('active', this.chatClock === '12h');
+      btn24.classList.toggle('active', this.chatClock === '24h');
+      fmtRow.classList.toggle('disabled', !this.chatTimestamps);
+      btn12.disabled = !this.chatTimestamps;
+      btn24.disabled = !this.chatTimestamps;
+    };
+    sync();
+
+    tsToggle.addEventListener('click', () => {
+      audio.click();
+      this.chatTimestamps = !this.chatTimestamps;
+      localStorage.setItem('chatTimestamps', this.chatTimestamps ? '1' : '0');
+      sync();
+    });
+    const setClock = (clock: ChatClock) => {
+      if (!this.chatTimestamps) return;
+      audio.click();
+      this.chatClock = clock;
+      localStorage.setItem('chatClock', clock);
+      sync();
+    };
+    btn12.addEventListener('click', () => setClock('12h'));
+    btn24.addEventListener('click', () => setClock('24h'));
+
+    tsRow.append(tsName, tsToggle);
+    body.append(tsRow, fmtRow);
+
+    // Reset the movable/resizable chat window back to its default placement.
+    const resetRow = document.createElement('div');
+    resetRow.className = 'set-row';
+    const resetName = document.createElement('span');
+    resetName.className = 'set-name';
+    resetName.textContent = t('hudChrome.chatWindow.reset');
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'btn set-toggle';
+    resetBtn.textContent = t('hudChrome.chatWindow.resetAction');
+    resetBtn.addEventListener('click', () => { audio.click(); this.resetChatWindow(); });
+    resetRow.append(resetName, resetBtn);
+    body.append(resetRow);
+
+    const note = document.createElement('div');
+    note.className = 'set-note';
+    note.textContent = t('hudChrome.chatTimestamps.note');
+    $('#options-menu').appendChild(note);
+
+    const chatWinNote = document.createElement('div');
+    chatWinNote.className = 'set-note';
+    chatWinNote.textContent = t('hudChrome.chatWindow.note');
+    $('#options-menu').appendChild(chatWinNote);
+
+    const back = document.createElement('button');
+    back.className = 'btn';
+    back.textContent = t('hud.options.back');
+    back.addEventListener('click', () => { audio.click(); this.optionsView = 'main'; this.renderOptions(); });
+    $('#options-menu').appendChild(back);
+    $('#options-menu').querySelector('[data-close]')?.addEventListener('click', () => this.closeOptions());
+  }
+
+  // ---- Performance overlay panel -----------------------------------------
+  // Customizable in-game stats overlay (FPS, frame time, ping, draw calls, …).
+  // The wide, categorized panel lives in perf_overlay_settings.ts (the pure
+  // consumer of the overlay's config store); the HUD only owns this thin delegate
+  // + the master on/off wiring (showFps rides on GameSettings).
+
+  private renderPerformance(): void {
+    const hooks = this.optionsHooks;
+    if (!hooks) return;
+    this.perfSettings ??= new PerfOverlaySettingsPanel(this.perfSettingsHost(hooks));
+    this.perfSettings.render($('#options-menu'));
+  }
+
+  private perfSettingsHost(hooks: OptionsHooks): PerfSettingsHost {
+    return {
+      perf: hooks.perfOverlay,
+      getShowFps: () => hooks.settings.get('showFps'),
+      setShowFps: (on) => hooks.onSettingChange('showFps', on),
+      click: () => audio.click(),
+      onClose: () => this.closeOptions(),
+      onBack: () => { this.optionsView = 'main'; this.renderOptions(); },
+      closeIconHtml: svgIcon('close'),
+    };
+  }
+
+  /** Called by main.ts when a drag settles on the live overlay: push the dropped
+   *  normalized position into the open panel's Horizontal/Vertical sliders so they
+   *  do not lag behind the drag. No-op when the panel is not on screen. */
+  onPerfOverlayMoved(x: number, y: number): void {
+    this.perfSettings?.syncPosition(x, y);
   }
 
   // Display name for an action row. Action-bar slots show the shortcut that
@@ -5673,6 +9787,8 @@ export class Hud {
       if (key === 'clickToMove') hooks.onSettingChange(key, next ? 1 : 0);
       else hooks.onSettingChange(key, hooks.settings.set(key, next));
       sync();
+      // Attack Move reveals/hides its rebindable key row, so redraw the panel.
+      if (key === 'attackMove') this.renderKeybinds();
     });
     row.append(name, toggle);
     parent.appendChild(row);
@@ -5690,7 +9806,7 @@ export class Hud {
     toggle.type = 'button';
     toggle.className = 'btn kb-key kb-toggle kb-mouse-toggle';
     const sync = () => {
-      toggle.textContent = clickMoveButtonLabel(hooks.settings.get('clickToMoveButton'));
+      toggle.textContent = t(normalizeClickMoveButton(hooks.settings.get('clickToMoveButton')) === 2 ? 'hudChrome.options.clickMoveRight' : 'hudChrome.options.clickMoveLeft');
       toggle.setAttribute('aria-label', `${t('hud.options.clickMoveButton')}: ${toggle.textContent}`);
     };
     sync();
@@ -5704,26 +9820,102 @@ export class Hud {
     parent.appendChild(row);
   }
 
+  // Action ids a gamepad button may be bound to: explicit unbind, the game menu,
+  // plus every one-shot (edge) keybind action and Jump. Movement-axis actions
+  // (forward/strafe/turn) are excluded, they live on the analog stick.
+  private gamepadActionOptions(): { value: string; label: string }[] {
+    const opts: { value: string; label: string }[] = [
+      { value: GAMEPAD_NONE, label: t('hud.options.unbound') },
+      { value: 'escape', label: t('hudChrome.controller.menuAction') },
+    ];
+    for (const a of BIND_ACTIONS) {
+      if (a.id === 'attackMove') continue; // mode-gated; not a useful pad default
+      if (a.kind !== 'edge' && a.id !== 'jump') continue;
+      opts.push({ value: a.id, label: this.actionDisplayName(a.id, a.label) });
+    }
+    return opts;
+  }
+
+  // Controller panel: enable/invert toggles, deadzone/camera/vibration sliders,
+  // and a remap row per bindable button (dropdown of actions). Mirrors the
+  // separate woc_gamepad profile; keyboard Key Bindings are untouched.
+  private renderController(): void {
+    const hooks = this.optionsHooks;
+    const body = this.settingsViewShell(t('hudChrome.controller.title'));
+    this.settingBoolToggle(body, t('hudChrome.controller.enable'), 'gamepadEnabled');
+    this.settingBoolToggle(body, t('hudChrome.controller.invertY'), 'gamepadInvertY');
+    this.settingSlider(body, t('hudChrome.controller.deadzone'), 'gamepadStickDeadzone');
+    this.settingSlider(body, t('hudChrome.controller.cameraSpeed'), 'gamepadCameraSpeed',
+      { fmt: (v) => formatNumber(v, { maximumFractionDigits: 1 }) });
+    this.settingSlider(body, t('hudChrome.controller.vibration'), 'gamepadVibration');
+
+    const note = document.createElement('div');
+    note.className = 'set-note';
+    note.textContent = t('hudChrome.controller.help');
+    body.appendChild(note);
+
+    const head = document.createElement('div');
+    head.className = 'kb-cat';
+    head.textContent = t('hudChrome.controller.buttons');
+    body.appendChild(head);
+
+    if (hooks) {
+      const opts = this.gamepadActionOptions();
+      for (const { button, action } of hooks.gamepad.entries()) {
+        const row = document.createElement('div');
+        row.className = 'set-row';
+        const name = document.createElement('span');
+        name.className = 'set-name';
+        name.textContent = GAMEPAD_BUTTON_LABELS[button] ?? `#${button}`;
+        const dd = this.buildDropdown(opts, action, (v) => hooks.gamepad.bind(button, v));
+        row.append(name, dd);
+        body.appendChild(row);
+      }
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'btn';
+      reset.textContent = t('hudChrome.controller.resetButtons');
+      reset.addEventListener('click', () => { audio.click(); hooks.gamepad.reset(); this.renderController(); });
+      body.appendChild(reset);
+    }
+    this.settingsViewFooter();
+  }
+
   private renderKeybinds(): void {
     const el = $('#options-menu');
+    // Wide, multi-column layout for the key-binding view only; other options
+    // sub-views (graphics/audio/interface) keep the default 420px width.
+    el.classList.add('kb-wide');
     el.innerHTML = `<div class="panel-title"><span>${esc(t('hud.options.keyBindings'))}</span><button type="button" class="x-btn" data-close aria-label="${esc(t('hud.options.returnToGame'))}">${svgIcon('close')}</button></div>`;
     this.settingToggleKeybind(el, t('hud.options.mouseCamera'), 'mouseCamera');
     this.settingToggleKeybind(el, t('hud.options.clickToMove'), 'clickToMove');
     this.clickMoveMouseButtonRow(el);
+    this.settingToggleKeybind(el, t('hud.keybinds.actions.attackMove'), 'attackMove');
     this.settingToggleKeybind(el, t('hud.options.leftHandedTouch'), 'leftHandedTouch');
     this.settingToggleKeybind(el, t('hud.options.filterProfanity'), 'filterProfanity');
     const note = document.createElement('div');
     note.className = 'kb-note';
     note.textContent = this.keybindNote || t('hud.options.keybindHelpMouseCamera');
     el.appendChild(note);
-    const rows = document.createElement('div');
-    rows.className = 'kb-rows';
+    const cols = document.createElement('div');
+    cols.className = 'kb-cols';
+    // The Attack Move key is only meaningful (and only rebindable) while its mode
+    // is on; otherwise hide its row so it can't shadow Turn Left's A in the list.
+    const attackMoveOn = !!this.optionsHooks?.settings.get('attackMove');
     for (const category of BIND_CATEGORIES) {
+      const visible = BIND_ACTIONS.filter((a) => a.category === category && (a.id !== 'attackMove' || attackMoveOn));
+      if (visible.length === 0) continue;
+      // Each category is its own column block (header + its rows) so the wide
+      // grid can flow categories side by side; on mobile they stack to one column.
+      const col = document.createElement('div');
+      col.className = 'kb-col';
       const header = document.createElement('div');
       header.className = 'kb-cat';
       header.textContent = BIND_CATEGORY_LABEL_KEYS[category] ? t(BIND_CATEGORY_LABEL_KEYS[category]) : category;
-      rows.appendChild(header);
-      for (const action of BIND_ACTIONS.filter((a) => a.category === category)) {
+      col.appendChild(header);
+      const rows = document.createElement('div');
+      rows.className = 'kb-rows';
+      for (const action of visible) {
         const row = document.createElement('div');
         row.className = 'kb-row';
         const name = document.createElement('span');
@@ -5749,8 +9941,10 @@ export class Hud {
         }
         rows.appendChild(row);
       }
+      col.appendChild(rows);
+      cols.appendChild(col);
     }
-    el.appendChild(rows);
+    el.appendChild(cols);
     const reset = document.createElement('button');
     reset.className = 'btn';
     reset.textContent = t('hud.options.resetToDefaults');
@@ -5780,11 +9974,11 @@ export class Hud {
       this.capturingKey = null;
       if (code === null) {
         this.keybindNote = t('hud.options.keybindCancelled');
-      } else if (isReservedCode(code)) {
-        this.keybindNote = t('hud.options.keybindReserved', { key: keyLabel(code) });
       } else if (this.keybinds.bind(actionId, index, code)) {
         this.keybindNote = t('hud.options.keybindBound', { action: name, key: keyLabel(code) });
         this.refreshKeybindLabels();
+      } else if (isReservedCode(code)) {
+        this.keybindNote = t('hud.options.keybindReserved', { key: keyLabel(code) });
       }
       // re-render only if the menu is still open (player may have closed it)
       if (this.optionsOpen) this.renderKeybinds();
@@ -5802,6 +9996,7 @@ export class Hud {
 
   // Closes the topmost UI. Returns true if something was closed.
   closeAll(): boolean {
+    if (this.cardModalEl) { this.closePlayerCardModal(); return true; }
     const ctx = $('#ctx-menu');
     if (ctx.style.display !== 'none' && ctx.style.display !== '') { this.closeContextMenu(); return true; }
     if (this.emoteWheelOpen) { this.hideEmoteWheel(); return true; }
@@ -5922,7 +10117,10 @@ function entityDisplayName(entity: Entity): string {
 
 function abilityDisplayNameFromSource(name: string): string {
   const ability = Object.values(ABILITIES).find((candidate) => candidate.name === name);
-  return ability ? abilityDisplayName(ability) : name;
+  if (ability) return abilityDisplayName(ability);
+  // Boss/mob mechanic names (War Stomp, etc.) surface as a damage-log ability label but
+  // are not in ABILITIES; route them through the shared sim aura/mechanic localizer.
+  return localizeSimAuraName(name) ?? name;
 }
 
 // Localize an aura/buff name that surfaces by its raw English name (buff frame tooltip,

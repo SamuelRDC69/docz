@@ -12,9 +12,29 @@ on:
 permissions:
   contents: read
 
+# Two-tier i18n gate, split by git ref in this one file:
+#
+#   pr-gate       cheap, English-only-legal tier. Runs on pull requests, on pushes
+#                 to non-release branches (main, dev-*), and on manual dispatch.
+#                 It runs `npm test` WITHOUT I18N_RELEASE_TIER, so the release-only
+#                 checks (s3_localized, copied-English rendered content, 14-locale
+#                 key parity, empty-`pending`) are skipped. What it still enforces:
+#                 tsc against the dense generated artifact, registry-in-sync,
+#                 s3_registered (every emit maps to a registered key/RULE), and
+#                 placeholder parity for the translations that actually exist. An
+#                 English-only PR (sparse overlay) passes here.
+#
+#   release-gate  full 14-locale tier. Runs on pushes to release/** only, with
+#                 I18N_RELEASE_TIER=1 so the release-only checks RUN. A merely
+#                 `pending` (untranslated) key cannot survive this gate.
+#
+# Both tiers also typecheck and build env/server/client; the release tier is a
+# superset (its `npm test` runs every PR-tier check plus the release-only ones).
+
 jobs:
-  build:
-    name: Test and build
+  pr-gate:
+    name: PR gate (English-only legal)
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/heads/release/')) || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:
@@ -30,7 +50,79 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
+      - name: Generate i18n artifacts
+        run: npm run i18n:gen
+
+      # Fast, legible fail BEFORE the long test/build run if a committed generated
+      # artifact drifted from source (someone changed an overlay but forgot to
+      # regenerate). status.json is gitignored, so only the committed artifacts are
+      # diffed; the test suite also enforces this, this just surfaces it sooner.
+      - name: Verify committed i18n artifacts are fresh
+        run: git diff --exit-code -- src/ui/i18n.resolved.generated src/admin/i18n.resolved.generated src/ui/i18n.status.summary.json
+
+      # Release-gate malicious-code scan. The flagger is high-recall (most hits are
+      # expected dev-tooling false positives), so this uses --gate: it fails only on
+      # a HIGH-severity signature that survives the path-aware priors (a wallet
+      # drainer, a hardcoded-credential auth bypass, an exfil channel, a planted
+      # instruction-file injection). tests/malware_scan.test.ts asserts the same
+      # inside `npm test`; this just surfaces it sooner and more legibly.
+      - name: Malicious-code gate
+        run: npm run security:gate
+
+      - name: Run tests (PR tier)
+        run: npm test
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build headless environment
+        run: npm run build:env
+
+      - name: Build server
+        run: npm run build:server
+
+      - name: Build client
+        run: npm run build
+
+  release-gate:
+    name: Release gate (full 14-locale)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-latest
+
+    # The release tier; this single flag turns on every release-only check.
+    env:
+      I18N_RELEASE_TIER: '1'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate i18n artifacts
+        run: npm run i18n:gen
+
+      # Fast, legible fail BEFORE the long test/build run if a committed generated
+      # artifact drifted from source (someone changed an overlay but forgot to
+      # regenerate). status.json is gitignored, so only the committed artifacts are
+      # diffed; the test suite also enforces this, this just surfaces it sooner.
+      - name: Verify committed i18n artifacts are fresh
+        run: git diff --exit-code -- src/ui/i18n.resolved.generated src/admin/i18n.resolved.generated src/ui/i18n.status.summary.json
+
+      # Release-gate malicious-code scan (see the PR-gate job for the rationale).
+      # --gate fails only on a HIGH-severity signature surviving the path-aware
+      # priors; the full agent-judged pass is the `release-malware-audit` skill.
+      - name: Malicious-code gate
+        run: npm run security:gate
+
+      - name: Run tests (release tier - 14-locale + empty-pending)
         run: npm test
 
       - name: Typecheck

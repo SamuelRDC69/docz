@@ -4,8 +4,9 @@
 // action (primary + secondary, e.g. W and ArrowUp both Move Forward). Input
 // dispatches edge actions and polls held (movement) actions through this map;
 // the HUD renders the rebind menu and action-bar keycaps from it. Bindings
-// persist globally in localStorage. Pure (no DOM) so the conflict/persistence
-// logic is unit-testable.
+// persist per character in localStorage (a fresh character seeds once from the
+// legacy account-wide blob; see KEY_PREFIX below). Pure (no DOM) so the
+// conflict/persistence logic is unit-testable.
 //
 // Escape is deliberately NOT a bindable action: it always opens/closes the
 // game menu, so it stays out of the registry and is refused by bind().
@@ -18,6 +19,12 @@ export interface BindAction {
   category: string;
   kind: BindKind;
   defaults: string[]; // 1 or 2 codes; index 0 = primary, 1 = secondary
+  // When true this action is exempt from the WoW-style "one code per action"
+  // uniqueness sweep: its code may deliberately overlap another action's. Used
+  // by Attack Move, whose default (A) intentionally shadows Turn Left while the
+  // setting is on, so they can share a key without either stealing it from the
+  // other on save/load.
+  allowShared?: boolean;
 }
 
 export const ACTION_BAR_SLOTS = 12; // slot 0 is Attack, 1..11 the ability bar
@@ -40,6 +47,9 @@ export const BIND_ACTIONS: BindAction[] = [
   { id: 'targetFriendly', label: 'Target Nearest Friendly', category: 'Targeting', kind: 'edge', defaults: ['KeyH'] },
   { id: 'targetFriendlyNext', label: 'Cycle Friendly Target', category: 'Targeting', kind: 'edge', defaults: ['KeyJ'] },
   { id: 'interact', label: 'Interact / Loot', category: 'Targeting', kind: 'edge', defaults: ['KeyF'] },
+  // Only acts while the Attack Move setting is on; shares its default key with
+  // Turn Left intentionally, and only that key is reserved while active.
+  { id: 'attackMove', label: 'Attack Move', category: 'Targeting', kind: 'edge', defaults: ['KeyA'], allowShared: true },
   // Interface windows
   { id: 'char', label: 'Character', category: 'Interface', kind: 'edge', defaults: ['KeyC'] },
   { id: 'spellbook', label: 'Spellbook', category: 'Interface', kind: 'edge', defaults: ['KeyP'] },
@@ -66,11 +76,21 @@ export const BIND_ACTIONS: BindAction[] = [
 
 const ACTION_BY_ID = new Map(BIND_ACTIONS.map((a) => [a.id, a]));
 export const BIND_CATEGORIES = [...new Set(BIND_ACTIONS.map((a) => a.category))];
-const STORE_KEY = 'woc_keybinds';
+// Bindings persist per character. The legacy account-wide blob lives under the
+// bare prefix; a per-character profile lives under `${KEY_PREFIX}:${scope}` (the
+// online characterId, or `offline:<class>:<name>` offline). A fresh character
+// with no stored profile seeds from the legacy blob once, then diverges on its
+// first rebind. The legacy blob is read-only here and never overwritten.
+const KEY_PREFIX = 'woc_keybinds';
 const SLOTS_PER_ACTION = 2; // primary + secondary
 
 export function actionKind(id: string): BindKind | null {
   return ACTION_BY_ID.get(id)?.kind ?? null;
+}
+
+// Actions exempt from the one-code-per-action uniqueness sweep (see BindAction).
+export function actionAllowsShared(id: string): boolean {
+  return ACTION_BY_ID.get(id)?.allowShared === true;
 }
 
 export function isReservedCode(code: string): boolean {
@@ -97,11 +117,25 @@ export function keyLabel(code: string | null): string {
   return named[code] ?? code;
 }
 
+// Read a stored bindings blob, returning a plain object map or null. A missing,
+// corrupt (unparseable), or non-object value (including a JSON array) counts as
+// "no profile"; the caller then falls back to the legacy seed or to defaults.
+function readBindingsBlob(key: string): Record<string, unknown> | null {
+  let parsed: unknown = null;
+  try { parsed = JSON.parse(localStorage.getItem(key) ?? 'null'); } catch { /* corrupt */ }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
+}
+
 export class Keybinds {
   // actionId -> [primary, secondary] codes (either may be null)
   private map = new Map<string, (string | null)[]>();
+  // localStorage key this profile reads/writes. A non-empty scope namespaces it
+  // per character; an empty scope keeps the bare legacy/global key.
+  private readonly storeKey: string;
 
-  constructor() {
+  constructor(scope = '') {
+    this.storeKey = scope ? `${KEY_PREFIX}:${scope}` : KEY_PREFIX;
     this.load();
   }
 
@@ -115,10 +149,15 @@ export class Keybinds {
 
   private load(): void {
     this.map = this.defaults();
-    let stored: unknown = null;
-    try { stored = JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null'); } catch { /* corrupt */ }
-    if (!stored || typeof stored !== 'object') return;
-    const obj = stored as Record<string, unknown>;
+    // This character's own profile, or the legacy account-wide blob as a
+    // one-time seed when it has none yet, so existing players keep their layout.
+    // Saving writes the scoped key, so the character diverges from here on. A
+    // missing, corrupt, or malformed scoped value counts as "no profile" and
+    // still seeds rather than dropping to bare defaults; the legacy blob is only
+    // ever read here, never overwritten.
+    let obj = readBindingsBlob(this.storeKey);
+    if (!obj && this.storeKey !== KEY_PREFIX) obj = readBindingsBlob(KEY_PREFIX);
+    if (!obj) return;
     // Apply stored codes over the defaults, but only for known actions and
     // never letting one code land on two actions (first writer keeps it).
     // Actions absent from the stored blob (e.g. ones added in a later release
@@ -129,11 +168,14 @@ export class Keybinds {
       const entry = obj[a.id];
       if (!Array.isArray(entry)) continue; // missing action: keep its default
       const slots: (string | null)[] = [null, null];
+      const shared = actionAllowsShared(a.id);
       for (let i = 0; i < SLOTS_PER_ACTION; i++) {
         const v = entry[i];
-        if (typeof v === 'string' && !claimed.has(v) && !isReservedCode(v)) {
+        // Shared actions keep their code even if another action already claimed
+        // it, and never claim it themselves, so the overlap survives a round-trip.
+        if (typeof v === 'string' && !isReservedCode(v) && (shared || !claimed.has(v))) {
           slots[i] = v;
-          claimed.add(v);
+          if (!shared) claimed.add(v);
         }
       }
       this.map.set(a.id, slots);
@@ -143,6 +185,7 @@ export class Keybinds {
     // actions (preserving the WoW-style uniqueness invariant).
     for (const a of BIND_ACTIONS) {
       if (Array.isArray(obj[a.id])) continue;
+      if (actionAllowsShared(a.id)) continue; // keep its (intentionally shared) default
       const slots = this.map.get(a.id)!;
       for (let i = 0; i < slots.length; i++) {
         const c = slots[i];
@@ -156,7 +199,7 @@ export class Keybinds {
   private save(): void {
     const obj: Record<string, (string | null)[]> = {};
     for (const [id, codes] of this.map) obj[id] = codes;
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(obj)); } catch { /* storage unavailable */ }
+    try { localStorage.setItem(this.storeKey, JSON.stringify(obj)); } catch { /* storage unavailable */ }
   }
 
   /** The action a keypress should trigger, or null if the code is unbound. */
@@ -195,9 +238,14 @@ export class Keybinds {
     const codes = this.map.get(id);
     if (!codes || index < 0 || index >= SLOTS_PER_ACTION) return false;
     if (isReservedCode(code)) return false;
-    for (const [otherId, otherCodes] of this.map) {
-      for (let i = 0; i < otherCodes.length; i++) {
-        if (otherCodes[i] === code && !(otherId === id && i === index)) otherCodes[i] = null;
+    // A shared action (or rebinding one) is allowed to overlap, so skip the
+    // mutual-eviction sweep whenever either side opts into sharing.
+    if (!actionAllowsShared(id)) {
+      for (const [otherId, otherCodes] of this.map) {
+        if (actionAllowsShared(otherId)) continue;
+        for (let i = 0; i < otherCodes.length; i++) {
+          if (otherCodes[i] === code && !(otherId === id && i === index)) otherCodes[i] = null;
+        }
       }
     }
     codes[index] = code;

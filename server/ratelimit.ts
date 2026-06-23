@@ -1,4 +1,5 @@
 import * as http from 'node:http';
+import * as net from 'node:net';
 
 // Simple in-memory rate limiter (per client IP, sliding minute window).
 //
@@ -29,9 +30,17 @@ function backstopTargetSize(): number {
   return Math.max(0, MAX_TRACKED_IPS - BACKSTOP_EVICT_BATCH);
 }
 
-function normalizeIp(ip: string): string {
-  if (ip.startsWith('::ffff:')) return ip.slice('::ffff:'.length);
-  return ip;
+// Canonicalize so the connect side (requestIp) and the stored side (cleanIp)
+// agree by construction: lowercase, drop the IPv4-mapped prefix, and compress
+// IPv6 via the WHATWG serializer (gated on net.isIP so only a valid literal
+// reaches new URL). Anything net.isIP rejects passes through unchanged.
+export function normalizeIp(ip: string): string {
+  let s = ip.toLowerCase();
+  if (s.startsWith('::ffff:')) s = s.slice('::ffff:'.length);
+  if (net.isIP(s) === 6) {
+    try { return new URL(`http://[${s}]`).hostname.slice(1, -1); } catch { return s; }
+  }
+  return s;
 }
 
 // loopback, RFC1918, link-local, IPv6 ULA — the only sources our reverse
@@ -140,6 +149,94 @@ export function trackedIpCount(): number {
 /** Reset all tracked IPs. Test-only — keeps the shared map isolated per test. */
 export function resetRateLimits(): void {
   attempts.clear();
+}
+
+export const CARD_UPLOAD_MAX_PER_MINUTE = 10;
+export const WALLET_LINK_MAX_PER_MINUTE = 10;
+
+const cardUploadIpAttempts = new Map<string, number[]>();
+const cardUploadAccountAttempts = new Map<number, number[]>();
+const walletLinkIpAttempts = new Map<string, number[]>();
+const walletLinkAccountAttempts = new Map<number, number[]>();
+
+function recordSlidingWindowAttempt<K>(
+  attemptsByKey: Map<K, number[]>,
+  key: K,
+  maxPerMinute: number,
+): boolean {
+  const now = Date.now();
+  const windowStart = now - WINDOW_MS;
+  const list = (attemptsByKey.get(key) ?? []).filter((t) => t > windowStart);
+  const updated = [...list, now];
+  attemptsByKey.set(key, updated);
+
+  if (attemptsByKey.size > MAX_TRACKED_IPS) {
+    for (const [k, times] of attemptsByKey) {
+      if (k === key) continue;
+      if (times.length === 0 || times[times.length - 1] <= windowStart) {
+        attemptsByKey.delete(k);
+      }
+      if (attemptsByKey.size <= MAX_TRACKED_IPS) break;
+    }
+
+    const targetSize = backstopTargetSize();
+    while (attemptsByKey.size > targetSize) {
+      let oldest: { key: K; seen: number } | null = null;
+      for (const [k, times] of attemptsByKey) {
+        if (k === key) continue;
+        if (atOrOverLimit(times, windowStart, maxPerMinute + 1)) continue;
+        const last = times.length === 0 ? 0 : times[times.length - 1];
+        if (!oldest || last < oldest.seen) oldest = { key: k, seen: last };
+      }
+      if (!oldest) break;
+      attemptsByKey.delete(oldest.key);
+    }
+  }
+
+  return updated.length > maxPerMinute;
+}
+
+export function cardUploadRateLimited(req: http.IncomingMessage, accountId: number): boolean {
+  const ipLimited = recordSlidingWindowAttempt(cardUploadIpAttempts, requestIp(req), CARD_UPLOAD_MAX_PER_MINUTE);
+  const accountLimited = recordSlidingWindowAttempt(cardUploadAccountAttempts, accountId, CARD_UPLOAD_MAX_PER_MINUTE);
+  return ipLimited || accountLimited;
+}
+
+/** Reset player-card upload throttles. Test-only: keeps scoped buckets isolated. */
+export function resetCardUploadRateLimits(): void {
+  cardUploadIpAttempts.clear();
+  cardUploadAccountAttempts.clear();
+}
+
+export function walletLinkRateLimited(req: http.IncomingMessage, accountId: number): boolean {
+  const ipLimited = recordSlidingWindowAttempt(walletLinkIpAttempts, requestIp(req), WALLET_LINK_MAX_PER_MINUTE);
+  const accountLimited = recordSlidingWindowAttempt(walletLinkAccountAttempts, accountId, WALLET_LINK_MAX_PER_MINUTE);
+  return ipLimited || accountLimited;
+}
+
+/** Reset wallet-link verification throttles. Test-only: keeps scoped buckets isolated. */
+export function resetWalletLinkRateLimits(): void {
+  walletLinkIpAttempts.clear();
+  walletLinkAccountAttempts.clear();
+}
+
+export const WOC_BALANCE_MAX_PER_MINUTE = 20;
+const wocBalanceIpAttempts = new Map<string, number[]>();
+
+/**
+ * Throttle the public /api/woc/balance proxy per IP on its OWN bucket. The proxy
+ * is unauthenticated (on-chain balances are public), so it keys on IP only — but
+ * NOT the shared register/login `attempts` map, so a player opening their card/bag
+ * (each a fresh RPC read) can't burn their login budget, and a balance flood can't
+ * lock them out of logging in (or vice-versa).
+ */
+export function wocBalanceRateLimited(req: http.IncomingMessage): boolean {
+  return recordSlidingWindowAttempt(wocBalanceIpAttempts, requestIp(req), WOC_BALANCE_MAX_PER_MINUTE);
+}
+
+/** Reset the balance-proxy throttle. Test-only: keeps scoped buckets isolated. */
+export function resetWocBalanceRateLimits(): void {
+  wocBalanceIpAttempts.clear();
 }
 
 // ---------------------------------------------------------------------------

@@ -1,35 +1,50 @@
 import {
   ABILITIES, ARENA_SLOT_COUNT, CAMPS, CLASSES, DUNGEONS, DUNGEON_LIST, DungeonDef, arenaOrigin, dungeonAt,
   DUNGEON_X_THRESHOLD, GROUND_OBJECTS, GROUP_XP_BONUS, INSTANCE_SLOT_COUNT, isArenaPos,
-  ITEMS, MOBS, NPCS, PLAYER_START, QUESTS, questRewardItemId, abilitiesKnownAt, instanceOrigin,
-  zoneAt, ZONES,
+  ITEMS, MOBS, NPCS, PLAYER_START, PROPS, QUESTS, questRewardItemId, abilitiesKnownAt, instanceOrigin,
+  DEEPFEN_SHALLOWS_LAKE,
+  zoneAt, ZONES, FISHING_TABLES, FISHING_RARE_ID,
 } from './data';
-import { ARENA_SPAWN_A, ARENA_SPAWN_B } from './dungeon_layout';
-import { lineOfSightClear, resolvePosition } from './colliders';
-import { findPath } from './pathfind';
+import { ARENA_SPAWN_A, ARENA_SPAWN_B, ARENA_SPAWNS_A_2v2, ARENA_SPAWNS_B_2v2 } from './dungeon_layout';
+import { lineOfSightClear, resolveMovement, resolvePosition } from './colliders';
+import { PLAYER_BODY_RADIUS, PLAYER_MAX_CLIMB_SLOPE, PLAYER_SWIM_DEPTH, findPlayerPath } from './pathfind';
+import { combatProfileForMob, effectiveMobMeleeRange, type MobCombatProfile } from './mob_combat';
 import { createGroundObject, createMob, createNpc, createPlayer, recalcPlayerStats, PlayerEquipment } from './entity';
+import { canEquipItem } from './equipment_rules';
 import {
   computeTalentModifiers, emptyAllocation, emptyModifiers, talentsFor, talentPointsAtLevel,
-  validateAllocation, cloneAllocation, pointsSpent, FIRST_TALENT_LEVEL, MAX_LOADOUTS,
+  validateAllocation, cloneAllocation, pointsSpent, defaultBuild, FIRST_TALENT_LEVEL, MAX_LOADOUTS,
   type TalentAllocation, type TalentModifiers, type SavedLoadout, type Role,
 } from './content/talents';
+import {
+  AUGMENTS_BY_ID, eligibleAugments, tierForWave, POWERUPS, POWERUPS_BY_ID,
+  type AugmentDef, type AugmentTier, type AugmentSpecial, type PowerupDef,
+} from './content/augments';
 import { Rng } from './rng';
 import { SpatialGrid } from './spatial';
+import { orderTabTargets } from './tab_target';
+import { questFallbackGrants } from './quest_fallback';
 import {
   HEAL_THREAT_FACTOR, MELEE_SWITCH_MULT, RANGED_SWITCH_MULT,
   TAUNT_FORCE_SECONDS, addThreat, clearThreat, stealthDetectionRadius, threatEntries, threatModifier, topThreatValue,
 } from './threat';
 import { groundHeight, WATER_LEVEL } from './world';
-import type { LeaderboardEntry } from '../world_api';
+import type { AccountCosmetics, LeaderboardEntry } from '../world_api';
 import {
-  AbilityDef, AbilityEffect, Aura, AuraKind, CAST_PUSHBACK_SEC, CHANNEL_PUSHBACK_FRACTION, CONSUME_DURATION,
+  AbilityDef, AbilityEffect, Aura, AuraKind, CAST_PUSHBACK_SEC, CHANNEL_PUSHBACK_FRACTION, CONSUME_DURATION, ItemDef,
+  DEFAULT_PARTY_LOOT_STRATEGIES,
   CONSUME_TICKS, CrowdControlDrCategory, DT, Entity, EquipSlot, FISHING_CAST_ID, FISHING_CAST_TIME, GCD,
-  INTERACT_RANGE, InvSlot, LootEntry, LootSlot, MELEE_RANGE, MAX_LEVEL, MobFamily, MobTemplate,
+  CurrencyLootStrategy, INTERACT_RANGE, InvSlot, ItemLootStrategy, LootEntry, LootRollChoice, LootSlot, LootStrategies, MELEE_RANGE, MAX_LEVEL, MobFamily, MobTemplate,
   MoveInput, OverheadEmoteId, PetMode, PlayerClass, QuestProgress, QuestState, RUN_SPEED, SimConfig, SimEvent, TURN_SPEED, Vec3,
   angleTo, armorReduction, dist2d, emptyMoveInput, isConsuming, meleeMissChance, mobXpValue, normAngle,
-  rageFromDealing, rageFromTaking, spellHitChance, xpForLevel,
+  rageFromDealing, rageFromTaking, spellHitChance, xpForLevel, isQuestTurnInNpc, questTurnInNpcIds,
   MILESTONES, virtualLevel, xpToReachLevel, canPrestige,
+  ArenaFormat, ArenaStanding, ArenaCombatant, SkinCatalog, SkinRank, ErrorReason
 } from './types';
+import {
+  EVENT_SKIN_TOKEN_ID, MECH_CHROMAS, classHasSkin, mechChromaItemId, mechChromaSkinIndex,
+  rankAllowsMechChroma, rankAllowsSkin, rollSkinRank,
+} from './content/skins';
 
 const LEASH_DISTANCE = 45;
 const DUNGEON_LEASH_DISTANCE = 70;
@@ -56,17 +71,80 @@ const BACKPEDAL_MULT = 0.65;
 const FLEE_HP_THRESHOLD = 0.2;
 const FLEE_DURATION = 5;
 const FLEE_SPEED_MULT = 1.4;
+const FLEE_MAX_SPEED = RUN_SPEED;
+const FLEE_RETURN_GRACE = 8;
 const FLEE_HELP_RADIUS = 8;
 // Only sentient, cowardly families flee; beasts/undead/elementals/dragonkin fight
 // to the death. Elites, rares, and bosses never flee regardless of family.
 const FLEEING_FAMILIES: ReadonlySet<MobFamily> = new Set(['humanoid', 'kobold', 'murloc', 'troll']);
 const GRAVITY = 16;
-const JUMP_VELOCITY = 6;
+const JUMP_VELOCITY = 6; // apex = v^2/2g ≈ 1.125 yd
 const MELEE_ARC = 2.2; // radians half-arc within which melee swings connect
 const FALL_SAFE_DISTANCE = 12; // yards of free fall before damage
 const OBJECT_RESPAWN = 30;
+const NYTHRAXIS_RELIC_SUMMONS: Record<string, string> = {
+  captains_crest: 'fallen_captain_aldren',
+  priests_sigil: 'corrupted_priest_malric',
+  royal_seal: 'deathstalker_voss',
+};
+const NYTHRAXIS_CRYPT_QUESTS = new Set([
+  'q_nythraxis_sealed_crypt',
+  'q_nythraxis_bound_guardian',
+]);
+const NYTHRAXIS_BOSS_ID = 'nythraxis_scourge_of_thornpeak';
+const NYTHRAXIS_ADD_ID = 'nythraxis_skeleton_warrior';
+const NYTHRAXIS_ALDRIC_ID = 'brother_aldric_raid';
+const NYTHRAXIS_FINAL_QUEST_ID = 'q_nythraxis_scourges_end';
+const NYTHRAXIS_WARDSTONE_ITEM_ID = 'bastion_ward_stone';
+// How far a wardstone may sit from the boss spawn and still belong to this
+// encounter. The three arena wards form a wide forward triangle (~54yd out), so
+// this must comfortably exceed that; far above any cross-instance false match.
+const NYTHRAXIS_WARDSTONE_RANGE = 100;
+const NYTHRAXIS_GRAVEBREAKER_EVERY = 12;
+const NYTHRAXIS_GRAVEBREAKER_RANGE = 11;
+const NYTHRAXIS_GRAVEBREAKER_HALF_ARC = Math.PI / 3;
+const NYTHRAXIS_OPENER_SECOND_YELL_DELAY = 4;
+const NYTHRAXIS_DIALOGUE_LINE_SECONDS = 2.6;
+const NYTHRAXIS_RAISE_FALLEN_EVERY = 45;
+const NYTHRAXIS_PHASE_TWO_HP = 0.7;
+const NYTHRAXIS_SOUL_REND_EVERY = 30;
+const NYTHRAXIS_SOUL_REND_DURATION = 8;
+const NYTHRAXIS_SOUL_REND_STACK_RANGE = 5;
+const NYTHRAXIS_DEATHLESS_EVERY = 45;
+const NYTHRAXIS_DEATHLESS_CAST = 10;
+const NYTHRAXIS_DEATHLESS_CHANNEL = 5;
+const NYTHRAXIS_DEATHLESS_STUN = 5;
+const NYTHRAXIS_DEATHLESS_SOUL_REND_LOCKOUT = 15;
+const NYTHRAXIS_PHASE_TWO_SETTLE_DELAY = 5;
+const NYTHRAXIS_LOCKOUT_MS = 24 * 60 * 60 * 1000;
+const NYTHRAXIS_TRANSITION_DURATION = 21;
+const NYTHRAXIS_TRANSITION_STUN = 21.5;
+const NYTHRAXIS_FINAL_STAND_HP = 0.05;
+const NYTHRAXIS_ROOM_RADIUS = 260;
+// Brother Aldric enters on the door side of the arena (the raid's side, lower z
+// than the boss spawn) and walks toward the boss. Distances are yards in front
+// of the boss spawn: appears 50yd out, walks up to 30yd out (between door + boss).
+const NYTHRAXIS_ALDRIC_SPAWN_DIST = 50;
+const NYTHRAXIS_ALDRIC_WALK_DIST = 30;
 const PARTY_MAX = 5;
+const RAID_MIN = 5;
+const RAID_MAX = 10;
+const RAID_GROUP_MAX = 5;
+const DAMAGE_IDLE_DESPAWN_SECONDS = 60;
+const DAMAGE_IDLE_DESPAWN_MOB_IDS = new Set(['varkas_boneguard', 'bound_guardian']);
+const RAID_ALLOWED_DUNGEON_IDS = new Set(['nythraxis_crypt', 'nythraxis_boss_arena']);
+const RAID_REQUIRED_DUNGEON_IDS = new Set(['nythraxis_boss_arena']);
 const PARTY_XP_RANGE = 80; // yards: members this close share kill xp/credit
+// Rested XP (classic inn-rested bonus). Resting inside an inn footprint accrues a
+// pool that doubles KILL xp (200%) until spent — vanilla's signature casual-pacing
+// lever. Vanilla rate is 5% of a level per 8 in-game hours, capped at 1.5 levels.
+// The sim has no day/night clock, so "in-game hours" map to a fixed sim-seconds
+// constant (determinism: accrual is keyed off sim time via DT, never wall-clock).
+const RESTED_SECONDS_PER_GAME_HOUR = 60; // 1 in-game hour = 60 sim seconds
+const RESTED_FILL_FRACTION = 0.05; // a full "bubble" = 5% of the level's XP-to-level
+const RESTED_FILL_HOURS = 8; // accrued per this many in-game hours of resting
+const RESTED_CAP_LEVELS = 1.5; // pool clamps to 1.5 levels of XP, as in vanilla
+const RESTED_INN_PADDING = 2; // yards of slack around the inn footprint that still counts as resting
 const DUEL_COUNTDOWN = 3;
 // Ashen Coliseum 1v1 arena
 const ARENA_COUNTDOWN = 5; // gates pre-fight: heal up, no swings land yet
@@ -76,6 +154,32 @@ const ARENA_BASE_RATING = 1500; // every character starts here, unranked
 const ARENA_MIN_RATING = 100; // a rating floor so a losing streak can't go absurd
 const ARENA_K_FACTOR = 32; // Elo sensitivity per match
 const ARENA_LADDER_SIZE = 10; // live online standings shipped to clients
+// 2v2 Fiesta — the dopamine-maxxed party mode. Score-based: down a foe to score,
+// they respawn (timers grow as the bout drags on), augments drop in three
+// escalating waves, and a hazard ring squeezes everyone toward the middle.
+const FIESTA_COUNTDOWN = 5;
+const FIESTA_SCORE_LIMIT = 15; // first team to this many takedowns wins
+const FIESTA_MAX_DURATION = 360; // hard cap (s); highest score wins, ties = draw
+const FIESTA_TOTAL_WAVES = 3; // augment waves
+const FIESTA_WAVE_INTERVAL = 50; // s of active play between augment waves
+const FIESTA_FIRST_WAVE_AT = 8; // s into the fight the first wave opens
+const FIESTA_RESPAWN_BASE = 3; // s for a first death
+const FIESTA_RESPAWN_PER_DEATH = 1.2; // each prior death lengthens your next wait
+const FIESTA_RESPAWN_PER_MINUTE = 1.5; // and the bout dragging on lengthens it too
+const FIESTA_RESPAWN_MAX = 14; // cap so it never feels hopeless
+const FIESTA_RING_CX = 0; // ring centre (instance-local) — the arena dais
+const FIESTA_RING_CZ = 2;
+const FIESTA_RING_START = 22; // radius covering both teams' spawns
+const FIESTA_RING_MIN = 6; // fully-closed radius
+const FIESTA_RING_DPS_PCT = 0.06; // max-hp fraction per second taken outside the ring
+const FIESTA_RING_SHRINK_RATE = 0.6; // yards/s the radius eases toward its target
+const FIESTA_POWERUP_FIRST = 12; // s into the bout before the first power-up
+const FIESTA_POWERUP_INTERVAL = 16; // s between power-up spawn attempts
+const FIESTA_POWERUP_TELEGRAPH = 5; // s of "spawning" warning before it's grabbable
+const FIESTA_POWERUP_TTL = 18; // s a ready power-up waits to be grabbed
+const FIESTA_POWERUP_RADIUS = 2; // grab radius
+const FIESTA_POWERUP_MAX = 3; // concurrent power-ups on the field
+const FIESTA_STANDARD_LEVEL = 20; // everyone fights at this level, balanced
 const PVP_ROOT_DR_RESET = 18; // seconds before a repeated PvP root is fresh again
 const PVP_POLYMORPH_DR_RESET = 60;
 const PVP_FEAR_DR_RESET = 60;
@@ -122,11 +226,20 @@ const EMOTE_ALIASES: Record<string, string> = {
 // (buff_*, hot, absorb, imbue, stances, forms, stealth, thorns, attackspeed
 // haste) is treated as helpful/neutral. Used by /targetbuffs to tag each aura.
 const HARMFUL_AURA_KINDS: ReadonlySet<AuraKind> = new Set<AuraKind>([
-  'dot', 'slow', 'stun', 'root', 'incapacitate', 'polymorph', 'sunder',
+  'dot', 'slow', 'stun', 'root', 'incapacitate', 'polymorph', 'sunder', 'spellvuln', 'vulnerability', 'tongues', 'cost_tax', 'critvuln',
 ]);
 
 function isHarmfulAura(kind: AuraKind): boolean {
   return HARMFUL_AURA_KINDS.has(kind);
+}
+// A "Devour Magic"-strippable beneficial enhancement: a positive buff_* stat
+// buff, a heal-over-time, an absorb shield, or a weapon imbue. Stances, forms,
+// stealth, righteous fury, thorns and every debuff (incl. negative buff_* drains
+// like enfeeble/wither) are deliberately left alone — only an active "magic"
+// enhancement is eaten. Mirrors the inverse of the HUD's debuff test.
+function isDevourableAura(a: Aura): boolean {
+  return (a.kind.startsWith('buff_') && a.value > 0)
+    || a.kind === 'hot' || a.kind === 'absorb' || a.kind === 'imbue';
 }
 const NEARBY_RANGE = 40; // /nearby scan radius — wider than say, tighter than yell
 const NEARBY_MAX = 10; // cap the /nearby list so a crowded camp can't spam chat
@@ -144,7 +257,7 @@ const MARKET_LISTING_DURATION = 48 * 3600; // sim-seconds an unsold listing ling
 const MARKET_WIRE_LIMIT = 120; // most listings shipped to one client at a time
 const VENDOR_BUYBACK_LIMIT = 12;
 const INSTANCE_EMPTY_TIMEOUT = 300; // seconds before an empty instance resets
-const MAX_CLIMB_SLOPE = 1.5; // rise/run above which a ground move is blocked (cliffs, world rim)
+const MAX_CLIMB_SLOPE = PLAYER_MAX_CLIMB_SLOPE; // rise/run above which a ground move is blocked (cliffs, world rim)
 
 // How far a mob pulls same-family neighbours into a fight ("social aggro").
 // Murlocs (the clustered water mobs players call "frogs") used to pull too much,
@@ -156,12 +269,18 @@ const SOCIAL_PULL_RADIUS: Partial<Record<MobFamily, number>> = {
   murloc: 8,
 };
 const PACK_FRENZY_AURA_ID = 'pack_frenzy'; // attack-speed buff granted to surviving packmates
+const BLOOD_FRENZY_AURA_ID = 'blood_frenzy'; // self attack-speed buff a wounded frenzyOnHit mob gains
 const SWIM_SURFACE_Y = WATER_LEVEL - 0.75; // body bobs just below the water line
-const SWIM_DEPTH = 0.8; // ground this far under the water line = deep water
+const SWIM_DEPTH = PLAYER_SWIM_DEPTH; // ground this far under the water line = deep water
 const SWIM_SPEED_MULT = 0.65;
 const FISHING_SAMPLE_DISTANCES = [4, 8, 12, 16, 20, 24];
+const DEEPFEN_FISHING_SHORE_MARGIN = 10;
+const THE_CODFATHER_ITEM_ID = 'the_codfather';
+const THE_CODFATHER_QUEST_ID = 'q_the_codfather';
 const DOOR_TRIGGER_RADIUS = 2.0; // walking this close to a dungeon door teleports you
-const BODY_RADIUS = 0.5;
+const NYTHRAXIS_PARTY_INTERACT_RANGE = 30;
+const NYTHRAXIS_VISION_LINE_DELAY = 5;
+const BODY_RADIUS = PLAYER_BODY_RADIUS;
 const CHARGE_SPEED_MULT = 3; // warrior charge runs at 3x normal speed
 const CHARGE_MAX_DURATION = 3; // seconds before a blocked charge gives up
 const CHARGE_ARRIVE_RANGE = MELEE_RANGE - 1; // stop inside melee range
@@ -169,9 +288,24 @@ const FOLLOW_STOP_DIST = 3; // /follow trails this close behind the leader (yard
 const FOLLOW_MAX_RANGE = 60; // give up follow once the leader is this far away
 const PET_LEASH = 40; // yards from the owner before a pet gives up its target
 const PET_FOLLOW_DISTANCE = 3.5;
-const PET_TELEPORT_DISTANCE = 60; // owner this far away: pet warps to heel
+const PET_TELEPORT_DISTANCE = 60; // owner this far AND no route exists: pet warps to heel (last resort)
+const PET_PATH_RECALC = 0.5; // seconds between heel-path A* recomputes per pet (throttle)
+const PET_PATH_SPAN = 96; // A* search half-window in cells; covers the teleport distance + slack
+const PET_PATH_STALE_DISTANCE = 4; // path end this far from the (now-moved) owner: recompute the heel route
+const PET_WAYPOINT_REACHED = 1; // pet within this of the next waypoint: pop it and home on the next leg
 const PET_ASSIST_RANGE = 50; // how far the pet scans for enemies engaging the pair
 const PET_AGGRESSIVE_RANGE = 18; // aggressive pets look for idle enemies this close
+// Anti-AFK: an aggressive pet only proactively pulls fresh targets while its
+// owner has acted (moved, cast, or commanded the pet) within this many ticks.
+// 1200 ticks = 60s at 20Hz. Stops hunters/warlocks parking an aggressive pet to
+// farm XP/loot while AFK; the pet still DEFENDS an idle owner. Tunable.
+const PET_OWNER_IDLE_TICKS = 1200;
+// A pet only keeps its OWNER flagged in combat while it is actively trading blows
+// (its combatTimer resets to 0 on every hit dealt/taken). A pet that merely holds a
+// target it is chasing or can't reach stops dragging the owner into perpetual combat
+// past this window, so the owner's out-of-combat health regen resumes. Matches the
+// 5s combat-linger used for the owner's own inCombat flag.
+const PET_COMBAT_LINGER = 5;
 const PET_TAUNT_RANGE = 5;
 const PET_GROWL_INTERVAL = 10; // controlled pets can tank by forcing attention
 const PET_FEED_DURATION = 5;
@@ -180,8 +314,9 @@ const DEMON_HEAL_MANA_COST = 55;
 const DEMON_HEAL_DURATION = 5;
 const DEMON_HEAL_TICK = 1;
 const TAMED_TARGET_RESPAWN_SECONDS = 60;
+const LOOT_ROLL_TIMEOUT = 30;
 const FRIENDLY_NPC_REJECTED_AURA_KINDS: ReadonlySet<AuraKind> = new Set([
-  'dot', 'slow', 'stun', 'root', 'incapacitate', 'polymorph', 'attackspeed', 'sunder',
+  'dot', 'slow', 'stun', 'root', 'incapacitate', 'polymorph', 'attackspeed', 'sunder', 'spellvuln', 'vulnerability', 'tongues', 'cost_tax', 'critvuln',
 ]);
 
 function isRejectedFriendlyNpcAura(aura: Aura): boolean {
@@ -192,6 +327,20 @@ export interface Party {
   id: number;
   leader: number; // pid
   members: number[]; // pids
+  raid: boolean;
+  raidGroups: Map<number, 1 | 2>; // pid -> raid subgroup
+  lootStrategies: LootStrategies;
+}
+
+interface PendingLootRoll {
+  id: number;
+  mobId: number;
+  itemId: string;
+  itemName: string;
+  quality: ItemDef['quality'];
+  candidates: number[];
+  choices: Map<number, { choice: LootRollChoice; roll: number | null }>;
+  expiresAt: number;
 }
 
 export interface TradeSession {
@@ -210,21 +359,83 @@ export interface DuelState {
   timer: number; // countdown remaining / elapsed
 }
 
-// A live 1v1 arena bout. Both combatants are teleported into a private arena
-// instance slot; `return*` remembers where each was standing so the match can
-// put them back when it ends. Ratings are snapshotted at the start purely for
-// the result message — the authoritative values live on each PlayerMeta.
+type GroundAoE = {
+  sourceId: number;
+  pos: Vec3;
+  radius: number;
+  min: number;
+  max: number;
+  remaining: number;
+  interval: number;
+  tickTimer: number;
+  school: string;
+  ability: string;
+};
+
+export type { ArenaFormat } from './types';
+
+export interface ArenaQueueUnit {
+  pids: number[]; // length 1 (solo) or 2 (premade)
+  rating: number; // avg member rating for this queue's bracket
+}
+
+// A live arena bout. Combatants are teleported into a private arena instance
+// slot; `returns` remembers where each was standing so the match can put them
+// back when it ends. Ratings are snapshotted at the start purely for the
+// result message — the authoritative values live on each PlayerMeta.
 export interface ArenaMatch {
   id: number;
-  a: number; // pid
-  b: number; // pid
+  format: ArenaFormat;
+  teamA: number[];
+  teamB: number[];
   slot: number; // arena instance slot
   state: 'countdown' | 'active' | 'over';
   timer: number; // countdown remaining, then elapsed once active, then return countdown
-  returnA: { x: number; z: number; facing: number };
-  returnB: { x: number; z: number; facing: number };
-  ratingA: number;
+  returns: Map<number, { x: number; z: number; facing: number }>;
+  ratingA: number; // team avg at start
   ratingB: number;
+  defeated: Set<number>;
+  fiesta?: FiestaState; // present only for format === 'fiesta'
+}
+
+// Everything that makes a Fiesta bout a fiesta. Lives on the ArenaMatch so it is
+// torn down with the match. Deterministic throughout: augment offers draw from
+// `rng` (seeded from the sim stream at match start) so a replay re-offers the
+// same cards.
+export interface FiestaState {
+  scoreA: number;
+  scoreB: number;
+  scoreLimit: number;
+  wave: number; // 0 before the first wave opens, then 1..FIESTA_TOTAL_WAVES
+  nextWaveAt: number; // active-timer value (s) at which the next wave opens
+  // Pending augment offers, by pid — the three cards a fighter has yet to pick.
+  offers: Map<number, { tier: AugmentTier; wave: number; choices: string[] }>;
+  ringRadius: number; // current hazard-ring radius (instance-local)
+  ringTarget: number; // radius it is easing toward
+  respawn: Map<number, number>; // pid -> seconds until revive (absent = alive)
+  deaths: Map<number, number>; // pid -> times downed (drives respawn growth)
+  kills: Map<number, number>; // pid -> takedowns this bout (scoreboard)
+  streak: Map<number, number>; // pid -> takedowns since last death (word pops)
+  lastKill: Map<number, number>; // pid -> active-timer of last takedown (double-kill window)
+  // Augment offers wait here until the player's NEXT death so a pick never
+  // interrupts a live fight (pid -> queued offers, oldest first).
+  pending: Map<number, { tier: AugmentTier; wave: number; choices: string[] }[]>;
+  powerups: FiestaPowerup[];
+  nextPowerupId: number;
+  powerupTimer: number; // s until the next power-up spawn attempt
+  firstBlood: boolean;
+  rng: Rng;
+}
+
+// A ring power-up: telegraphs for FIESTA_POWERUP_TELEGRAPH seconds ('spawning'),
+// then becomes grabbable ('ready') until it times out.
+export interface FiestaPowerup {
+  id: number;
+  defId: string;
+  x: number;
+  z: number;
+  state: 'spawning' | 'ready';
+  timer: number; // spawning: countdown to ready; ready: countdown to despawn
 }
 
 // Standard Elo. Returns the points the winner gains (and the loser loses) for
@@ -239,6 +450,7 @@ export interface InstanceSlot {
   slot: number;
   partyKey: string | null; // party id or 'solo:<pid>'
   mobIds: number[];
+  objectIds: number[];
   exitId: number | null;
   emptyFor: number;
 }
@@ -272,6 +484,17 @@ export interface SentChat {
   target?: string;
 }
 
+export interface SkinClaimResult {
+  catalog: SkinCatalog;
+  skin: number;
+  chromaId?: string;
+}
+
+export interface ItemUseResult {
+  type: 'mechChroma';
+  chromaId: string;
+}
+
 // Opt-in global chat channels a player can /join and /leave. `general` is
 // always-on (everyone hears /general), so it is intentionally not joinable here.
 export const JOINABLE_CHANNELS = ['world', 'lfg'] as const;
@@ -284,6 +507,13 @@ export interface PlayerMeta {
   cls: PlayerClass;
   name: string;
   skin: number; // appearance index into the render SKINS[player_<cls>]; persisted, synced
+  skinCatalog: SkinCatalog;
+  // Cosmetic skin-select event: the rank rolled when the event token was used,
+  // pending a lock-in. Set on use, cleared on claim. Persisted so the reward
+  // survives reconnect; re-using the token re-shows the same rank (no reroll).
+  pendingSkinRank: SkinRank | null;
+  pendingSkinCatalog: SkinCatalog | null;
+  pendingSkinItemId: string | null;
   moveInput: MoveInput;
   inventory: InvSlot[];
   vendorBuyback: InvSlot[];
@@ -297,6 +527,9 @@ export interface PlayerMeta {
   lifetimeXp: number;
   prestigeRank: number;
   unlockedMilestones: Set<string>;
+  // Classic Rested XP pool (copper-less XP units). Accrues while resting in an
+  // inn, spent to double kill XP. Persisted in CharacterState.
+  restedXp: number;
   known: ResolvedAbility[];
   questLog: Map<string, QuestProgress>;
   questsDone: Set<string>;
@@ -305,23 +538,50 @@ export interface PlayerMeta {
   // sim.time when this character entered the world; powers /played. Session-only
   // (sim.time resets to 0 each server boot), so it reports time this session.
   joinedAt: number;
-  // Ashen Coliseum standing — persisted in CharacterState
+  // Tick of the player's last deliberate action (movement, ability cast, or pet
+  // command). Session-only, never persisted. Powers the anti-AFK gate on
+  // aggressive pet auto-pull (see PET_OWNER_IDLE_TICKS) so an idle owner's pet
+  // cannot farm the area alone.
+  lastActiveTick: number;
+  // Ashen Coliseum standings. Legacy arenaRating/Wins/Losses are the 1v1
+  // bracket; 2v2 is fully independent and persisted alongside them.
   arenaRating: number;
   arenaWins: number;
   arenaLosses: number;
+  arena2v2Rating: number;
+  arena2v2Wins: number;
+  arena2v2Losses: number;
   // Talents & Specializations. `talents` is the active allocation; `talentMods`
   // is its precomputed flat struct — resolved only on allocation/respec/loadout
   // change (recomputeTalents), never walked on the combat or stat hot path.
   talents: TalentAllocation;
   talentMods: TalentModifiers;
+  // 2v2 Fiesta (session-only, never persisted). `fiestaAugments` is the ordered
+  // list of augment ids picked this bout; `fiestaMods` is talentMods with those
+  // augments folded in (the effective modifier the stat/ability hot paths use
+  // while in a Fiesta match); `fiestaSpecial` aggregates the non-modifier augment
+  // effects (lifesteal, move speed). All cleared when the bout ends.
+  fiestaAugments: string[];
+  fiestaMods: TalentModifiers | null;
+  fiestaSpecial: AugmentSpecial;
+  // Pre-Fiesta character snapshot while standardized to level 20 (see
+  // fiestaStandardize); restored on bout exit and used by serializeCharacter so
+  // the temporary level-20 build is never persisted.
+  fiestaRestore: { level: number; xp: number; talents: TalentAllocation } | null;
   loadouts: SavedLoadout[];
   activeLoadout: number; // index into loadouts, or -1 for none
+  raidLockouts: Map<string, number>; // dungeon id -> epoch ms expiry
   // Transient presence status. Set by /afk and /dnd, cleared when the player
   // chats again. Session-only — never persisted, so it resets on login.
   away: AwayStatus | null;
   // Session-only: name of the last player who whispered us, for "/r" replies.
   // Never persisted — a fresh login starts with no reply target.
   lastWhisperFrom?: string;
+  // Session-only World Market browse filter. The market is capped at
+  // MARKET_WIRE_LIMIT listings per snapshot to bound wire cost, so this
+  // server-side substring filter (matched against item names) is how a player
+  // reaches goods past the cap. Never persisted — resets on login.
+  marketFilter: string;
 }
 
 // Away-from-keyboard / do-not-disturb presence. `afk` still delivers whispers
@@ -377,6 +637,8 @@ export interface CharacterState {
   lifetimeXp?: number;
   prestigeRank?: number;
   unlockedMilestones?: string[];
+  // Rested XP pool. Optional so pre-rested-XP saves load cleanly (defaults to 0).
+  restedXp?: number;
   copper: number;
   hp: number;
   resource: number;
@@ -387,16 +649,30 @@ export interface CharacterState {
   vendorBuyback?: InvSlot[];
   questLog: { questId: string; counts: number[]; state: 'active' | 'ready' | 'done' }[];
   questsDone: string[];
+  // Legacy arenaRating/Wins/Losses are treated as 1v1 data. The explicit
+  // 1v1 fields are written by new saves, while old saves fall back cleanly.
   arenaRating?: number;
   arenaWins?: number;
   arenaLosses?: number;
+  arena1v1Rating?: number;
+  arena1v1Wins?: number;
+  arena1v1Losses?: number;
+  arena2v2Rating?: number;
+  arena2v2Wins?: number;
+  arena2v2Losses?: number;
   // Talents & Specializations (JSONB; no schema migration). All optional so
   // characters saved before talents existed load cleanly (default: no points spent).
   talents?: TalentAllocation;
   loadouts?: SavedLoadout[];
   activeLoadout?: number;
+  raidLockouts?: Record<string, number>;
   pet?: PetState | null;
   skin?: number; // appearance index (JSONB; optional so pre-skin saves load as 0)
+  skinCatalog?: SkinCatalog;
+  // Pending skin-select event rank (JSONB; optional so older saves load as null).
+  pendingSkinRank?: SkinRank | null;
+  pendingSkinCatalog?: SkinCatalog | null;
+  pendingSkinItemId?: string | null;
 }
 
 export interface PetState {
@@ -433,6 +709,7 @@ export function computeQuestState(
   if (!quest) return 'unavailable';
   if (quest.requiresQuest && !questsDone.has(quest.requiresQuest)) return 'unavailable';
   if (quest.minLevel && playerLevel < quest.minLevel) return 'unavailable';
+  if (quest.retired) return 'unavailable';
   return 'available';
 }
 
@@ -451,7 +728,8 @@ function freshCounters(): RewardCounters {
 
 // Shapeshifts stay castable while shapeshifted (that's how you shift out).
 function isFormToggle(ability: AbilityDef): boolean {
-  return ability.effects.some((e) => e.type === 'selfBuff' && (e.kind === 'form_bear' || e.kind === 'form_cat'));
+  return ability.effects.some((e) => e.type === 'selfBuff'
+    && (e.kind === 'form_bear' || e.kind === 'form_cat' || e.kind === 'form_travel'));
 }
 
 // Forms, stances and stealth are toggles: re-casting cancels the aura, and
@@ -459,7 +737,7 @@ function isFormToggle(ability: AbilityDef): boolean {
 function isToggleBuff(ability: AbilityDef): boolean {
   if (ability.id === 'ghost_wolf') return true;
   return ability.effects.some((e) => e.type === 'selfBuff'
-    && (e.kind === 'form_bear' || e.kind === 'form_cat' || e.kind === 'defensive_stance' || e.kind === 'stealth'));
+    && (e.kind === 'form_bear' || e.kind === 'form_cat' || e.kind === 'form_travel' || e.kind === 'defensive_stance' || e.kind === 'stealth'));
 }
 
 function isStealthToggle(ability: AbilityDef): boolean {
@@ -472,6 +750,10 @@ function preservesStealth(ability: AbilityDef): boolean {
 
 function isShamanShock(abilityId: string): boolean {
   return (SHAMAN_SHOCK_COOLDOWN_IDS as readonly string[]).includes(abilityId) || abilityId === 'lightning_shock';
+}
+
+function ignoresDamagePushback(abilityId: string): boolean {
+  return abilityId === 'ghost_wolf';
 }
 
 function isPetClass(cls: PlayerClass): boolean {
@@ -493,11 +775,15 @@ export class Sim {
   primaryId = -1; // the local/RL player in single-player contexts
   nextId = 1;
   events: SimEvent[] = [];
+  private delayedEvents: { at: number; event: SimEvent; guard?: () => boolean }[] = [];
   // social systems
   parties = new Map<number, Party>();
+  accountCosmetics: AccountCosmetics = { completedQuestIds: [], mechChromaIds: [] };
   partyByPid = new Map<number, number>(); // pid -> party id
   partyInvites = new Map<number, { fromPid: number; expires: number }>(); // invitee pid -> invite
   nextPartyId = 1;
+  private nextLootRollId = 1;
+  private pendingLootRolls = new Map<number, PendingLootRoll>();
   // raid/target markers: partyId -> (enemy entityId -> markerId 0..7). A
   // cosmetic, party-scoped overlay — never read by tick()/obs/persistence.
   partyMarkers = new Map<number, Map<number, number>>();
@@ -505,9 +791,11 @@ export class Sim {
   tradeInvites = new Map<number, { fromPid: number; expires: number }>();
   duels = new Map<number, DuelState>(); // pid -> shared duel (both pids)
   duelInvites = new Map<number, { fromPid: number; expires: number }>();
-  // arena: a matchmaking queue (pids, oldest first), live bouts keyed by both
-  // pids, and the set of busy instance slots
-  arenaQueue: number[] = [];
+  // arena: format-specific queues, live bouts keyed by every participant pid,
+  // and the set of busy instance slots
+  arenaQueue1v1: number[] = [];
+  arenaQueue2v2: ArenaQueueUnit[] = [];
+  arenaQueueFiesta: ArenaQueueUnit[] = []; // 2v2 Fiesta (party mode) queue
   arenaMatches = new Map<number, ArenaMatch>(); // pid -> shared match (both pids)
   private arenaBusySlots = new Set<number>();
   private nextArenaMatchId = 1;
@@ -526,6 +814,7 @@ export class Sim {
   /** When true, /dev level|tp|give chat commands are accepted (local dev only). */
   readonly devCommands: boolean;
   private pendingMobRespawns: PendingMobRespawn[] = [];
+  private groundAoEs: GroundAoE[] = [];
 
   constructor(cfg: SimConfig) {
     this.devCommands = cfg.devCommands ?? false;
@@ -536,11 +825,13 @@ export class Sim {
       autoEquip: cfg.autoEquip ?? false,
       playerName: cfg.playerName ?? 'Adventurer',
       devCommands: this.devCommands,
+      lockoutNowMs: cfg.lockoutNowMs ?? (() => Math.floor(this.time * 1000)),
     };
     this.rng = new Rng(cfg.seed);
 
     // NPCs — nudged out of buildings and deep water if their data position is bad
     for (const npcDef of Object.values(NPCS)) {
+      if (npcDef.dynamic) continue; // spawned on demand by its owning system, not surface-placed
       const safe = this.findSafePos(npcDef.pos.x, npcDef.pos.z, WATER_LEVEL + 0.6);
       const npc = createNpc(this.nextId++, npcDef, this.groundPos(safe.x, safe.z));
       this.addEntity(npc);
@@ -578,20 +869,31 @@ export class Sim {
 
     // Dungeon entrances + their private instance slots
     for (const dungeon of DUNGEON_LIST) {
-      const door = createGroundObject(this.nextId++, '', dungeon.name, this.groundPos(dungeon.doorPos.x, dungeon.doorPos.z));
+      if (dungeon.overworldDoor === false) {
+        for (let i = 0; i < INSTANCE_SLOT_COUNT; i++) {
+          this.instances.push({ dungeonId: dungeon.id, slot: i, partyKey: null, mobIds: [], objectIds: [], exitId: null, emptyFor: 0 });
+        }
+        continue;
+      }
+      const doorName = dungeon.id === 'nythraxis_crypt' ? 'Abandoned Crypt' : dungeon.name;
+      const door = createGroundObject(this.nextId++, '', doorName, this.groundPos(dungeon.doorPos.x, dungeon.doorPos.z));
       door.templateId = 'dungeon_door';
       door.dungeonId = dungeon.id;
       door.objectItemId = null;
       door.lootable = true; // interactable
       this.addEntity(door);
       for (let i = 0; i < INSTANCE_SLOT_COUNT; i++) {
-        this.instances.push({ dungeonId: dungeon.id, slot: i, partyKey: null, mobIds: [], exitId: null, emptyFor: 0 });
+        this.instances.push({ dungeonId: dungeon.id, slot: i, partyKey: null, mobIds: [], objectIds: [], exitId: null, emptyFor: 0 });
       }
     }
 
     if (!cfg.noPlayer) {
       this.addPlayer(this.cfg.playerClass, this.cfg.playerName, { autoEquip: this.cfg.autoEquip });
     }
+  }
+
+  private lockoutNowMs(): number {
+    return this.cfg.lockoutNowMs?.() ?? Math.floor(this.time * 1000);
   }
 
   // -------------------------------------------------------------------------
@@ -603,6 +905,7 @@ export class Sim {
     this.entities.set(e.id, e);
     this.grid.insert(e);
     if (e.kind === 'player') this.playerGrid.insert(e);
+    if (e.templateId === 'dungeon_door' && this.dungeonDoorIds) this.dungeonDoorIds.push(e.id);
   }
 
   private dropEntity(id: number): void {
@@ -652,6 +955,16 @@ export class Sim {
     const startPos = savedPos
       ? this.groundPos(savedPos.x, savedPos.z)
       : this.groundPos(PLAYER_START.x, PLAYER_START.z);
+    const savedArena1v1: ArenaStanding = {
+      rating: opts?.state?.arena1v1Rating ?? opts?.state?.arenaRating ?? ARENA_BASE_RATING,
+      wins: opts?.state?.arena1v1Wins ?? opts?.state?.arenaWins ?? 0,
+      losses: opts?.state?.arena1v1Losses ?? opts?.state?.arenaLosses ?? 0,
+    };
+    const savedArena2v2: ArenaStanding = {
+      rating: opts?.state?.arena2v2Rating ?? ARENA_BASE_RATING,
+      wins: opts?.state?.arena2v2Wins ?? 0,
+      losses: opts?.state?.arena2v2Losses ?? 0,
+    };
     const player = createPlayer(this.nextId++, cls, startPos, name);
     this.addEntity(player);
     const classDef = CLASSES[cls];
@@ -660,6 +973,10 @@ export class Sim {
       cls,
       name,
       skin: opts?.state?.skin ?? 0,
+      skinCatalog: opts?.state?.skinCatalog === 'mech' ? 'mech' : 'class',
+      pendingSkinRank: opts?.state?.pendingSkinRank ?? null,
+      pendingSkinCatalog: opts?.state?.pendingSkinCatalog ?? null,
+      pendingSkinItemId: opts?.state?.pendingSkinItemId ?? null,
       moveInput: emptyMoveInput(),
       inventory: [],
       vendorBuyback: [],
@@ -669,22 +986,34 @@ export class Sim {
       lifetimeXp: 0,
       prestigeRank: 0,
       unlockedMilestones: new Set(),
+      restedXp: 0,
       known: [],
       questLog: new Map(),
       questsDone: new Set(),
       counters: freshCounters(),
       autoEquip: opts?.autoEquip ?? false,
       joinedAt: this.time,
-      arenaRating: opts?.state?.arenaRating ?? ARENA_BASE_RATING,
-      arenaWins: opts?.state?.arenaWins ?? 0,
-      arenaLosses: opts?.state?.arenaLosses ?? 0,
+      lastActiveTick: this.tickCount,
+      arenaRating: savedArena1v1.rating,
+      arenaWins: savedArena1v1.wins,
+      arenaLosses: savedArena1v1.losses,
+      arena2v2Rating: savedArena2v2.rating,
+      arena2v2Wins: savedArena2v2.wins,
+      arena2v2Losses: savedArena2v2.losses,
       talents: emptyAllocation(),
       talentMods: emptyModifiers(),
+      fiestaAugments: [],
+      fiestaMods: null,
+      fiestaSpecial: {},
+      fiestaRestore: null,
       loadouts: [],
       activeLoadout: -1,
+      raidLockouts: new Map(),
       away: null,
+      marketFilter: '',
     };
     this.players.set(player.id, meta);
+    player.skinCatalog = meta.skinCatalog;
     player.skin = meta.skin; // mirror onto the entity so the renderer + wire can read it
     if (this.primaryId === -1) this.primaryId = player.id;
 
@@ -699,6 +1028,7 @@ export class Sim {
       // existing characters from day one.
       meta.lifetimeXp = s.lifetimeXp ?? (xpToReachLevel(player.level) + Math.max(0, s.xp));
       meta.prestigeRank = s.prestigeRank ?? 0;
+      meta.restedXp = Math.max(0, s.restedXp ?? 0);
       if (s.unlockedMilestones) for (const id of s.unlockedMilestones) meta.unlockedMilestones.add(id);
       meta.copper = s.copper;
       meta.equipment = { ...s.equipment };
@@ -711,6 +1041,12 @@ export class Sim {
       if (s.talents) meta.talents = { spec: s.talents.spec ?? null, ranks: { ...s.talents.ranks }, choices: { ...s.talents.choices } };
       if (s.loadouts) meta.loadouts = s.loadouts.map((l) => ({ name: l.name, alloc: cloneAllocation(l.alloc), bar: [...(l.bar ?? [])] }));
       if (typeof s.activeLoadout === 'number') meta.activeLoadout = s.activeLoadout;
+      if (s.raidLockouts) {
+        const now = this.lockoutNowMs();
+        for (const [dungeonId, until] of Object.entries(s.raidLockouts)) {
+          if (Number.isFinite(until) && until > now) meta.raidLockouts.set(dungeonId, until);
+        }
+      }
     }
 
     // Resolve the flat talent struct once, before the stat pass + ability
@@ -745,7 +1081,10 @@ export class Sim {
     // arena: leaving the queue is free; disconnecting mid-bout forfeits it
     this.arenaDequeue(pid);
     const match = this.arenaMatches.get(pid);
-    if (match) this.endArenaMatch(match, match.a === pid ? match.b : match.a, 'forfeit');
+    if (match) {
+      const team = this.arenaTeamOf(match, pid);
+      this.endArenaMatch(match, team === 'A' ? 'B' : team === 'B' ? 'A' : null, 'forfeit');
+    }
     this.partyInvites.delete(pid);
     this.tradeInvites.delete(pid);
     this.duelInvites.delete(pid);
@@ -781,12 +1120,17 @@ export class Sim {
     const meta = this.players.get(pid);
     const e = this.entities.get(pid);
     if (!meta || !e) return null;
+    // While a Fiesta bout has standardized this character to level 20 with a
+    // throwaway build, persist the PRE-fiesta snapshot so an autosave or
+    // mid-match disconnect never writes the temporary state to the database.
+    const restore = meta.fiestaRestore;
     return {
-      level: e.level,
-      xp: meta.xp,
+      level: restore ? restore.level : e.level,
+      xp: restore ? restore.xp : meta.xp,
       lifetimeXp: meta.lifetimeXp,
       prestigeRank: meta.prestigeRank,
       unlockedMilestones: [...meta.unlockedMilestones],
+      restedXp: meta.restedXp,
       copper: meta.copper,
       hp: e.hp,
       resource: e.resource,
@@ -800,29 +1144,144 @@ export class Sim {
       arenaRating: meta.arenaRating,
       arenaWins: meta.arenaWins,
       arenaLosses: meta.arenaLosses,
-      talents: cloneAllocation(meta.talents),
+      arena1v1Rating: meta.arenaRating,
+      arena1v1Wins: meta.arenaWins,
+      arena1v1Losses: meta.arenaLosses,
+      arena2v2Rating: meta.arena2v2Rating,
+      arena2v2Wins: meta.arena2v2Wins,
+      arena2v2Losses: meta.arena2v2Losses,
+      talents: cloneAllocation(restore ? restore.talents : meta.talents),
       loadouts: meta.loadouts.map((l) => ({ name: l.name, alloc: cloneAllocation(l.alloc), bar: [...l.bar] })),
       activeLoadout: meta.activeLoadout,
+      raidLockouts: Object.fromEntries([...meta.raidLockouts].filter(([, until]) => until > this.lockoutNowMs())),
       pet: this.serializePet(pid),
       skin: meta.skin,
+      skinCatalog: meta.skinCatalog,
+      pendingSkinRank: meta.pendingSkinRank,
+      pendingSkinCatalog: meta.pendingSkinCatalog,
+      pendingSkinItemId: meta.pendingSkinItemId,
     };
   }
 
   /** Set a player's appearance skin (meta + entity). Bounded; the renderer
    *  falls back to the default for an unknown index. Used by creation, the
    *  in-game changer, and the server's changeSkin command. */
-  setPlayerSkin(pid: number, skin: number): boolean {
+  setPlayerSkin(pid: number, skin: number, catalog: SkinCatalog = 'class'): boolean {
     const meta = this.players.get(pid);
     const e = this.entities.get(pid);
     if (!meta || !e) return false;
-    const idx = Math.max(0, Math.min(7, Math.floor(skin)));
+    const maxSkin = catalog === 'mech' ? MECH_CHROMAS.length - 1 : 7;
+    const idx = Math.max(0, Math.min(maxSkin, Math.floor(skin)));
     meta.skin = idx;
+    meta.skinCatalog = catalog;
     e.skin = idx;
+    e.skinCatalog = catalog;
     return true;
   }
 
-  changeSkin(skin: number): void {
-    this.setPlayerSkin(this.primaryId, skin);
+  changeSkin(skin: number, catalog: SkinCatalog = 'class'): void {
+    this.setPlayerSkin(this.primaryId, skin, catalog);
+  }
+
+  /** Set a player's guild name (online only) so it rides the entity wire and
+   *  shows under their nameplate. Guilds live in the server social DB, not the
+   *  Sim, so this is a passive display field. Offline/headless leave it ''. */
+  setPlayerGuild(pid: number, guild: string): void {
+    const e = this.entities.get(pid);
+    if (e) e.guild = guild;
+  }
+
+  /** Cosmetic skin-select event: rolls a rarity rank (once) and emits the
+   *  personal `skinEvent` cue that opens the client overlay. Re-using the token
+   *  re-shows the already-rolled rank — no reroll — so a player can't spam-roll.
+   *  The token is consumed on claim (claimEventSkin), not here. */
+  private openSkinSelect(meta: PlayerMeta, catalog: SkinCatalog, itemId: string): void {
+    if (meta.pendingSkinRank === null) {
+      meta.pendingSkinRank = rollSkinRank(this.rng.next());
+      meta.pendingSkinCatalog = catalog;
+      meta.pendingSkinItemId = itemId;
+    } else {
+      meta.pendingSkinCatalog = meta.pendingSkinCatalog ?? catalog;
+      meta.pendingSkinItemId = meta.pendingSkinItemId ?? itemId;
+    }
+    const eventCatalog = meta.pendingSkinCatalog ?? 'class';
+    this.emit({
+      type: 'skinEvent',
+      rank: meta.pendingSkinRank,
+      catalog: eventCatalog === 'mech' ? 'mech' : undefined,
+      pid: meta.entityId,
+    });
+  }
+
+  /** Lock in a chosen skin from the skin-select event. Server-authoritative:
+   *  rejects (no-op) unless there's a pending rank, the skin's tier is within
+   *  that rank, and the player still holds the token. Consumes one token and
+   *  clears the pending rank on success. Satisfies IWorld.claimEventSkin. */
+  claimEventSkin(skin: number, pid?: number): SkinClaimResult | null {
+    const r = this.resolve(pid);
+    if (!r) return null;
+    const { meta } = r;
+    const granted = meta.pendingSkinRank;
+    if (granted === null) return null; // no active event
+    const catalog = meta.pendingSkinCatalog ?? 'class';
+    const tokenItemId = meta.pendingSkinItemId ?? EVENT_SKIN_TOKEN_ID;
+    if (this.countItem(tokenItemId, meta.entityId) <= 0) return null; // token gone
+    if (catalog === 'mech') {
+      if (!rankAllowsMechChroma(granted, skin)) return null; // chroma tier above rolled rank
+      const chroma = MECH_CHROMAS[skin];
+      if (!chroma) return null;
+      this.removeItem(tokenItemId, 1, meta.entityId);
+      meta.pendingSkinRank = null;
+      meta.pendingSkinCatalog = null;
+      meta.pendingSkinItemId = null;
+      const mechChromaIds = this.accountCosmetics.mechChromaIds.includes(chroma.id)
+        ? this.accountCosmetics.mechChromaIds
+        : [...this.accountCosmetics.mechChromaIds, chroma.id];
+      this.accountCosmetics = { ...this.accountCosmetics, mechChromaIds };
+      this.setPlayerSkin(meta.entityId, skin, 'mech');
+      return { catalog: 'mech', skin, chromaId: chroma.id };
+    }
+    if (!rankAllowsSkin(granted, skin)) return null; // tier above the rolled rank
+    if (!classHasSkin(meta.cls, skin)) return null; // skin doesn't exist for this class
+    this.removeItem(tokenItemId, 1, meta.entityId);
+    this.setPlayerSkin(meta.entityId, skin);
+    meta.pendingSkinRank = null;
+    meta.pendingSkinCatalog = null;
+    meta.pendingSkinItemId = null;
+    return { catalog: 'class', skin };
+  }
+
+  private unlockMechChromaFromItem(meta: PlayerMeta, itemId: string, chromaId: string): ItemUseResult | undefined {
+    const skin = mechChromaSkinIndex(chromaId);
+    if (skin < 0) return undefined;
+    if (this.countItem(itemId, meta.entityId) <= 0) return undefined;
+    this.removeItem(itemId, 1, meta.entityId);
+    const mechChromaIds = this.accountCosmetics.mechChromaIds.includes(chromaId)
+      ? this.accountCosmetics.mechChromaIds
+      : [...this.accountCosmetics.mechChromaIds, chromaId];
+    this.accountCosmetics = { ...this.accountCosmetics, mechChromaIds };
+    this.setPlayerSkin(meta.entityId, skin, 'mech');
+    return { type: 'mechChroma', chromaId };
+  }
+
+  unequipMechChroma(chromaId: string, pid?: number): boolean {
+    const r = this.resolve(pid);
+    if (!r) return false;
+    const skin = mechChromaSkinIndex(chromaId);
+    const itemId = mechChromaItemId(chromaId);
+    if (skin < 0 || !itemId) return false;
+    if (!this.accountCosmetics.mechChromaIds.includes(chromaId)) return false;
+    this.accountCosmetics = {
+      ...this.accountCosmetics,
+      mechChromaIds: this.accountCosmetics.mechChromaIds.filter((id) => id !== chromaId),
+    };
+    for (const meta of this.players.values()) {
+      if (meta.skinCatalog === 'mech' && meta.skin === skin) {
+        this.setPlayerSkin(meta.entityId, 0, 'class');
+      }
+    }
+    this.addItem(itemId, 1, r.meta.entityId);
+    return true;
   }
 
   // -------------------------------------------------------------------------
@@ -865,6 +1324,9 @@ export class Sim {
   }
   get lifetimeXp(): number {
     return this.primary.lifetimeXp;
+  }
+  get restedXp(): number {
+    return this.primary.restedXp;
   }
   get prestigeRank(): number {
     return this.primary.prestigeRank;
@@ -1008,7 +1470,7 @@ export class Sim {
     // from a sane baseline (virtualLevel never falls below the real level). Only
     // ever raises it — lifetimeXp is monotonic.
     r.meta.lifetimeXp = Math.max(r.meta.lifetimeXp, xpToReachLevel(r.e.level));
-    recalcPlayerStats(r.e, r.meta.cls, r.meta.equipment, r.meta.talentMods);
+    recalcPlayerStats(r.e, r.meta.cls, r.meta.equipment, this.playerMods(r.meta));
     r.e.hp = r.e.maxHp;
     if (r.e.resourceType === 'mana') r.e.resource = r.e.maxResource;
     this.refreshKnownAbilities(r.meta, false);
@@ -1027,7 +1489,7 @@ export class Sim {
   private recomputeTalents(meta: PlayerMeta): void {
     meta.talentMods = computeTalentModifiers(meta.cls, meta.talents);
     const e = this.entities.get(meta.entityId);
-    if (e) recalcPlayerStats(e, meta.cls, meta.equipment, meta.talentMods);
+    if (e) recalcPlayerStats(e, meta.cls, meta.equipment, this.playerMods(meta));
     this.refreshKnownAbilities(meta, false);
   }
 
@@ -1184,7 +1646,7 @@ export class Sim {
     let m = threatModifier(source, school);
     if (source.kind === 'player') {
       const meta = this.players.get(source.id);
-      if (meta) m *= 1 + meta.talentMods.global.threatPct;
+      if (meta) m *= 1 + this.playerMods(meta).global.threatPct;
     }
     return m;
   }
@@ -1192,7 +1654,23 @@ export class Sim {
   resolvedAbility(abilityId: string, pid?: number): ResolvedAbility | null {
     const r = this.resolve(pid);
     if (!r) return null;
-    return r.meta.known.find((k) => k.def.id === abilityId) ?? null;
+    const found = r.meta.known.find((k) => k.def.id === abilityId) ?? null;
+    if (!found) return null;
+    // A "draining curse" (cost_tax aura) inflates the resource cost of every
+    // ability the victim uses. Resolve it here, the single choke point all cost
+    // checks/spends read, so the affordability check and the spend stay in
+    // lockstep. Return a shallow copy so the cached known-list entry is never
+    // mutated.
+    const tax = this.costTaxMult(r.e);
+    if (tax > 1 && found.cost > 0) return { ...found, cost: Math.ceil(found.cost * tax) };
+    return found;
+  }
+
+  // Highest active cost_tax aura, expressed as a cost multiplier (1 = no tax).
+  private costTaxMult(e: Entity): number {
+    let pct = 0;
+    for (const a of e.auras) if (a.kind === 'cost_tax' && a.value > pct) pct = a.value;
+    return 1 + pct;
   }
 
   // -------------------------------------------------------------------------
@@ -1203,15 +1681,26 @@ export class Sim {
     this.time += DT;
     this.tickCount++;
     this.updatePendingMobRespawns();
+    this.updateGroundAoEs();
 
+    const despawnIds: number[] = [];
     for (const e of this.entities.values()) {
       copyPos(e.prevPos, e.pos);
       e.prevFacing = e.facing;
+      if (e.despawnTimer !== undefined) {
+        e.despawnTimer -= DT;
+        if (e.despawnTimer <= 0) despawnIds.push(e.id);
+      }
+      if (e.kind === 'mob' && DAMAGE_IDLE_DESPAWN_MOB_IDS.has(e.templateId) && !e.dead && !e.inCombat) {
+        e.damageIdleDespawnTimer = (e.damageIdleDespawnTimer ?? DAMAGE_IDLE_DESPAWN_SECONDS) - DT;
+        if (e.damageIdleDespawnTimer <= 0) despawnIds.push(e.id);
+      }
       if (e.overheadEmoteId && this.time >= e.overheadEmoteUntil) {
         e.overheadEmoteId = null;
         e.overheadEmoteUntil = 0;
       }
     }
+    for (const id of despawnIds) this.dropEntity(id);
 
     for (const meta of this.players.values()) {
       const p = this.entities.get(meta.entityId);
@@ -1222,6 +1711,7 @@ export class Sim {
         this.updateCasting(p, meta);
         this.updatePlayerAutoAttack(p, meta);
         this.updateRegen(p, meta);
+        this.updateRested(p, meta);
       }
       this.updateTimers(p);
       this.updateAuras(p);
@@ -1255,8 +1745,10 @@ export class Sim {
         const tgt = this.entities.get(e.aggroTargetId);
         if (tgt && tgt.ownerId !== null) this.engagedPids.add(tgt.ownerId);
       }
-      // a player's pet that is engaging an enemy keeps its owner in combat
-      if (e.ownerId !== null && e.aggroTargetId !== null) this.engagedPids.add(e.ownerId);
+      // a player's pet that is actively fighting an enemy keeps its owner in
+      // combat. A pet merely holding a target it is not trading blows with (out of
+      // reach, stale) must not freeze the owner's health regen indefinitely (#regen)
+      if (e.ownerId !== null && e.aggroTargetId !== null && e.combatTimer < PET_COMBAT_LINGER) this.engagedPids.add(e.ownerId);
     }
     for (const meta of this.players.values()) {
       const p = this.entities.get(meta.entityId);
@@ -1266,8 +1758,10 @@ export class Sim {
     this.updateDuels();
     this.updateArena();
     this.updateTradesAndInvites();
+    this.updateLootRolls();
     this.updateInstances();
     this.updateMarket();
+    this.emitDueDelayedEvents();
 
     // movement re-bucketing: queries during the next tick and the server's
     // snapshot broadcast right after this one see fresh cells
@@ -1277,6 +1771,24 @@ export class Sim {
     const out = this.events;
     this.events = [];
     return out;
+  }
+
+  private emitDueDelayedEvents(): void {
+    if (this.delayedEvents.length === 0) return;
+    const pending: { at: number; event: SimEvent; guard?: () => boolean }[] = [];
+    for (const delayed of this.delayedEvents) {
+      if (delayed.at <= this.time) {
+        if (!delayed.guard || delayed.guard()) this.emit(delayed.event);
+      }
+      else pending.push(delayed);
+    }
+    this.delayedEvents = pending;
+  }
+
+  private updateLootRolls(): void {
+    for (const roll of [...this.pendingLootRolls.values()]) {
+      if (roll.expiresAt <= this.time) this.resolveLootRoll(roll);
+    }
   }
 
   private *playerEntities(): Iterable<Entity> {
@@ -1304,8 +1816,42 @@ export class Sim {
     if (!aura || e.auras.some((a) => a.kind === 'root')) return false;
     const angle = Number.isFinite(aura.value) ? aura.value : e.facing;
     const dest = this.groundPos(e.pos.x + Math.sin(angle) * 10, e.pos.z + Math.cos(angle) * 10);
-    this.moveToward(e, dest, e.moveSpeed * FLEE_SPEED_MULT * this.moveSpeedMult(e));
+    this.moveToward(e, dest, this.fleeMoveSpeed(e));
     return true;
+  }
+  // Silence locks out spell (non-physical) casts but leaves physical abilities,
+  // movement and melee untouched — unlike a stun, which freezes everything.
+  private isSilenced(e: Entity): boolean {
+    return e.auras.some((a) => a.kind === 'silence');
+  }
+
+  // Extra chance for the entity's own weapon swings to whiff while blinded.
+  // Returns the strongest active blind aura's value (0 when not blinded).
+  private blindMissBonus(e: Entity): number {
+    let bonus = 0;
+    for (const a of e.auras) if (a.kind === 'blind' && a.value > bonus) bonus = a.value;
+    return bonus;
+  }
+
+  // Disarm suppresses weapon swings (auto-attack, melee and ranged) but leaves
+  // movement, spells and instant abilities untouched — the inverse of silence.
+  private isDisarmed(e: Entity): boolean {
+    return e.auras.some((a) => a.kind === 'disarm');
+  }
+
+  // A school lockout denies casts of one specific school only (a counterspell),
+  // leaving every other school — and physical abilities — untouched.
+  private isLockedOut(e: Entity, school: Aura['school']): boolean {
+    return e.auras.some((a) => a.kind === 'lockout' && a.school === school);
+  }
+
+  // Curse of Tongues: returns the spell cast-time multiplier (>=1) imposed by any
+  // active `tongues` aura, or 1 when unafflicted. Non-stacking across sources — the
+  // strongest curse wins (refresh-by-id keeps a single source from compounding).
+  private tonguesMult(e: Entity): number {
+    let m = 1;
+    for (const a of e.auras) if (a.kind === 'tongues') m = Math.max(m, a.value);
+    return m;
   }
   private mobCanSwim(template: { family?: string; canSwim?: boolean } | undefined): boolean {
     return !!template;
@@ -1316,17 +1862,73 @@ export class Sim {
   private isControlAura(kind: AuraKind): boolean {
     return kind === 'stun' || kind === 'root' || kind === 'incapacitate' || kind === 'polymorph';
   }
-  private itemRequiresGroupRoll(itemId: string): boolean {
+  private isNythraxisControlAura(kind: AuraKind): boolean {
+    return kind === 'slow' || this.isControlAura(kind);
+  }
+  private isNythraxisRaidEnemy(target: Entity): boolean {
+    return target.kind === 'mob'
+      && (target.templateId === NYTHRAXIS_BOSS_ID || target.templateId === NYTHRAXIS_ADD_ID);
+  }
+  private isNythraxisScriptedControl(target: Entity, aura: Aura): boolean {
+    return target.kind === 'mob'
+      && (target.templateId === NYTHRAXIS_ADD_ID || target.ownerId !== null)
+      && aura.id === 'nythraxis_transition_stun';
+  }
+  private partyLootStrategiesForMob(mob: Entity): LootStrategies | null {
+    if (mob.tappedById === null) return null;
+    return this.partyOf(mob.tappedById)?.lootStrategies ?? null;
+  }
+  private partyLootCandidatesForMob(mob: Entity): PlayerMeta[] {
+    if (mob.tappedById === null) return [];
+    const party = this.partyOf(mob.tappedById);
+    if (!party || party.members.length <= 1) return [];
+    const candidates: PlayerMeta[] = [];
+    for (const pid of party.members) {
+      const candidate = this.players.get(pid);
+      const e = this.entities.get(pid);
+      if (candidate && e && !e.dead && dist2d(e.pos, mob.pos) <= PARTY_XP_RANGE) candidates.push(candidate);
+    }
+    return candidates;
+  }
+  private effectiveCurrencyLootStrategy(mob: Entity): CurrencyLootStrategy {
+    return this.partyLootStrategiesForMob(mob)?.currency ?? 'looter-takes-all';
+  }
+  private effectiveItemLootStrategy(itemId: string, mob: Entity): ItemLootStrategy {
     const q = ITEMS[itemId]?.quality ?? 'common';
-    return q === 'uncommon' || q === 'rare' || q === 'epic';
+    const strategies = this.partyLootStrategiesForMob(mob);
+    if (!strategies) return 'looter-takes-all';
+    return q === 'poor' || q === 'common' ? strategies.commonItems : strategies.premiumItems;
   }
   private moveSpeedMult(e: Entity): number {
     let slow = 1, speed = 1;
     for (const a of e.auras) {
       if (a.kind === 'slow' || a.kind === 'stealth') slow = Math.min(slow, a.value);
-      if (a.kind === 'buff_speed') speed = Math.max(speed, a.value);
+      // buff_speed and form_travel both carry a 1+fraction multiplier (1.4 = +40%).
+      if (a.kind === 'buff_speed' || a.kind === 'form_travel') speed = Math.max(speed, a.value);
+    }
+    // Fiesta move-speed augments (only ever non-zero inside a Fiesta bout).
+    if (e.kind === 'player') {
+      const ms = this.players.get(e.id)?.fiestaSpecial.moveSpeedPct;
+      if (ms) speed += ms;
     }
     return slow * speed;
+  }
+
+  private fleeMoveSpeed(e: Entity): number {
+    return Math.min(e.moveSpeed * FLEE_SPEED_MULT, FLEE_MAX_SPEED) * this.moveSpeedMult(e);
+  }
+
+  private recoverFromFlee(mob: Entity, target: Entity, leash: number, leashAnchor: Vec3): void {
+    mob.aiState = dist2d(mob.pos, target.pos) > MELEE_RANGE ? 'chase' : 'attack';
+    mob.fleeTimer = 0;
+    if (dist2d(mob.pos, leashAnchor) >= leash - 1) mob.fleeReturnTimer = FLEE_RETURN_GRACE;
+  }
+
+  // Fiesta "Moon Boots" power-up: a buff_jump aura multiplies jump height.
+  private jumpMult(e: Entity): number {
+    let m = 1;
+    for (const a of e.auras) if (a.kind === 'buff_jump') m = Math.max(m, a.value);
+    return m;
   }
 
   // Sunder Armor stacks shave flat armor off the defender for physical hits.
@@ -1415,12 +2017,7 @@ export class Sim {
   }
 
   private findChargePath(p: Entity, target: Entity): Vec3[] {
-    return findPath(p.pos, target.pos, {
-      seed: this.cfg.seed,
-      bodyRadius: BODY_RADIUS,
-      maxClimbSlope: MAX_CLIMB_SLOPE,
-      minGround: WATER_LEVEL - SWIM_DEPTH,
-    }).map((w) => ({ x: w.x, y: 0, z: w.z }));
+    return findPlayerPath(this.cfg.seed, p.pos, target.pos, 64).map((w) => ({ x: w.x, y: 0, z: w.z }));
   }
 
   // Charge in flight: forced movement toward the target along the pathfound
@@ -1454,7 +2051,7 @@ export class Sim {
     const h1 = groundHeight(nx, nz, this.cfg.seed);
     if (h1 < WATER_LEVEL - SWIM_DEPTH) return done(false);
     if (h1 > h0 && (h1 - h0) / step > MAX_CLIMB_SLOPE) return done(false);
-    const resolved = resolvePosition(this.cfg.seed, nx, nz, BODY_RADIUS);
+    const resolved = resolveMovement(this.cfg.seed, p.pos.x, p.pos.z, nx, nz, BODY_RADIUS);
     p.pos.x = resolved.x;
     p.pos.z = resolved.z;
     p.pos.y = groundHeight(resolved.x, resolved.z, this.cfg.seed);
@@ -1488,7 +2085,7 @@ export class Sim {
       this.stopFollow(p, 'There is no one to follow.');
       return false;
     }
-    if (p.inCombat) { this.stopFollow(p, 'You stop following — you are in combat.'); return false; }
+    if (p.inCombat) { this.stopFollow(p, 'You stop following - you are in combat.'); return false; }
     const d = dist2d(p.pos, t.pos);
     if (d > FOLLOW_MAX_RANGE) { this.stopFollow(p, `${t.name} is too far away to follow.`); return false; }
     // always turn to face the leader, even while held in place
@@ -1503,7 +2100,7 @@ export class Sim {
     const h1 = groundHeight(nx, nz, this.cfg.seed);
     if (h1 < WATER_LEVEL - SWIM_DEPTH) return true; // don't trail into deep water
     if (h1 > h0 && step > 1e-5 && (h1 - h0) / step > MAX_CLIMB_SLOPE) return true; // wall/cliff
-    const resolved = resolvePosition(this.cfg.seed, nx, nz, BODY_RADIUS);
+    const resolved = resolveMovement(this.cfg.seed, p.pos.x, p.pos.z, nx, nz, BODY_RADIUS);
     p.pos.x = resolved.x;
     p.pos.z = resolved.z;
     p.pos.y = groundHeight(resolved.x, resolved.z, this.cfg.seed);
@@ -1514,6 +2111,11 @@ export class Sim {
   }
 
   private updatePlayerMovement(p: Entity, meta: PlayerMeta): void {
+    // Any locomotion key counts as a deliberate action for the anti-AFK pet gate.
+    const mv = meta.moveInput;
+    if (mv.forward || mv.back || mv.strafeLeft || mv.strafeRight || mv.turnLeft || mv.turnRight || mv.jump) {
+      meta.lastActiveTick = this.tickCount;
+    }
     if (this.updateChargeMovement(p)) return;
     if (this.updateFollowMovement(p, meta)) return;
     if (this.updateFearMovement(p)) return;
@@ -1572,8 +2174,12 @@ export class Sim {
           if (!p.onGround) { p.vx = 0; p.vz = 0; }
         }
       }
-      // slide along buildings, trees, crypt walls
-      const resolved = resolvePosition(this.cfg.seed, nx, nz, BODY_RADIUS);
+      // Slide along buildings, trees, crypt walls — but while airborne from a
+      // jump, pass through fences for the whole arc. Keying off the jump itself
+      // (not a height threshold) makes this independent of slope: an uphill
+      // approach no longer flickers the clearance off right at the rail.
+      const clearFences = !p.onGround && p.jumping;
+      const resolved = resolveMovement(this.cfg.seed, p.pos.x, p.pos.z, nx, nz, BODY_RADIUS, clearFences);
       p.pos.x = resolved.x;
       p.pos.z = resolved.z;
       if (!p.onGround && (resolved.x !== nx || resolved.z !== nz)) {
@@ -1592,21 +2198,24 @@ export class Sim {
       p.vx = 0;
       p.vz = 0;
       p.onGround = true;
+      p.jumping = false;
       p.fallStartY = p.pos.y;
       if (inp.jump && !this.isRooted(p)) {
         // small hop to climb onto shores and docks
-        p.vy = JUMP_VELOCITY * 0.7;
+        p.vy = JUMP_VELOCITY * 0.7 * this.jumpMult(p);
         p.vx = wishX * wishSpeed;
         p.vz = wishZ * wishSpeed;
         p.onGround = false;
+        p.jumping = true;
       }
       return;
     }
     if (inp.jump && p.onGround && !this.isRooted(p)) {
-      p.vy = JUMP_VELOCITY;
+      p.vy = JUMP_VELOCITY * this.jumpMult(p);
       p.vx = wishX * wishSpeed;
       p.vz = wishZ * wishSpeed;
       p.onGround = false;
+      p.jumping = true;
       p.fallStartY = p.pos.y;
     }
     if (!p.onGround) {
@@ -1620,6 +2229,7 @@ export class Sim {
         p.vx = 0;
         p.vz = 0;
         p.onGround = true;
+        p.jumping = false;
         p.fallStartY = p.pos.y;
         return;
       }
@@ -1629,6 +2239,7 @@ export class Sim {
         p.vx = 0;
         p.vz = 0;
         p.onGround = true;
+        p.jumping = false;
         const drop = p.fallStartY - ground;
         if (drop > FALL_SAFE_DISTANCE) {
           const dmg = Math.round(p.maxHp * (drop - FALL_SAFE_DISTANCE) * 0.07);
@@ -1637,8 +2248,18 @@ export class Sim {
         p.fallStartY = ground;
       }
     } else {
-      if (ground < p.pos.y - 0.4) {
+      // Distinguish a walkable downhill slope from a genuine cliff/ledge. The
+      // drop the ground can take in one tick scales with how far we moved: a
+      // slope no steeper than MAX_CLIMB_SLOPE (the same gate that blocks uphill
+      // climbs) is walkable, so we snap down to follow it instead of falling.
+      // Only a steeper-than-walkable drop counts as walking off a ledge. The
+      // 0.4 base keeps a near-stationary player snapped over tiny terrain noise.
+      const run = Math.hypot(p.pos.x - p.prevPos.x, p.pos.z - p.prevPos.z);
+      const maxStepDown = 0.4 + run * MAX_CLIMB_SLOPE;
+      if (ground < p.pos.y - maxStepDown) {
+        // walked off a ledge — not a jump, so fences still block
         p.onGround = false;
+        p.jumping = false;
         p.vx = 0;
         p.vz = 0;
         p.vy = 0;
@@ -1727,7 +2348,7 @@ export class Sim {
       a.remaining -= DT;
       if (a.tickInterval) {
         a.tickTimer = (a.tickTimer ?? a.tickInterval) - DT;
-        if (a.tickTimer <= 0) {
+        if (a.tickTimer <= CAST_COMPLETE_EPS) {
           a.tickTimer += a.tickInterval;
           if (a.kind === 'dot') {
             this.emit({ type: 'spellfx', sourceId: a.sourceId, targetId: e.id, school: a.school, fx: 'tick' });
@@ -1747,7 +2368,7 @@ export class Sim {
           }
         }
       }
-      if (a.remaining <= 0) {
+      if (a.remaining <= CAST_COMPLETE_EPS) {
         e.auras.splice(i, 1);
         this.applyNonPlayerStatAura(e, a, -1);
         this.emit({ type: 'aura', targetId: e.id, name: a.name, gained: false });
@@ -1756,7 +2377,31 @@ export class Sim {
     }
     if (statsDirty && e.kind === 'player') {
       const meta = this.players.get(e.id);
-      if (meta) recalcPlayerStats(e, meta.cls, meta.equipment, meta.talentMods);
+      if (meta) recalcPlayerStats(e, meta.cls, meta.equipment, this.playerMods(meta));
+    }
+  }
+
+  private updateGroundAoEs(): void {
+    for (let i = this.groundAoEs.length - 1; i >= 0; i--) {
+      const effect = this.groundAoEs[i];
+      effect.remaining -= DT;
+      effect.tickTimer -= DT;
+      while (effect.tickTimer <= CAST_COMPLETE_EPS && effect.remaining > CAST_COMPLETE_EPS) {
+        effect.tickTimer += effect.interval;
+        this.pulseGroundAoE(effect);
+      }
+      if (effect.remaining <= CAST_COMPLETE_EPS) this.groundAoEs.splice(i, 1);
+    }
+  }
+
+  private pulseGroundAoE(effect: GroundAoE, threatOpts?: { flat?: number; mult?: number }): void {
+    const source = this.entities.get(effect.sourceId);
+    if (!source || source.dead) return;
+    this.emit({ type: 'spellfx', sourceId: source.id, targetId: source.id, school: effect.school, fx: 'tick' });
+    for (const target of this.hostilesInRadius(source, effect.pos, effect.radius)) {
+      if (!this.hasLineOfSight(source, target)) continue;
+      const dmg = Math.round(this.rng.range(effect.min, effect.max));
+      this.dealDamage(source, target, dmg, false, effect.school, effect.ability, 'hit', false, threatOpts);
     }
   }
 
@@ -1767,6 +2412,17 @@ export class Sim {
   private updateCasting(p: Entity, meta: PlayerMeta): void {
     if (!p.castingAbility) return;
     if (this.isStunned(p)) { this.cancelCast(p); return; }
+    // a silence breaks an in-progress spell, but never the fishing cast or a
+    // physical channel (e.g. an aimed-shot kind) — those aren't spells.
+    if (this.isSilenced(p) && p.castingAbility !== FISHING_CAST_ID) {
+      const cast = this.resolvedAbility(p.castingAbility, p.id);
+      if (cast && cast.def.school !== 'physical') { this.cancelCast(p); return; }
+    }
+    // a school lockout breaks an in-progress spell only when it matches the locked school.
+    if (p.castingAbility !== FISHING_CAST_ID) {
+      const cast = this.resolvedAbility(p.castingAbility, p.id);
+      if (cast && cast.def.school !== 'physical' && this.isLockedOut(p, cast.def.school)) { this.cancelCast(p); return; }
+    }
     p.castRemaining -= DT;
 
     if (p.channeling) {
@@ -1844,8 +2500,11 @@ export class Sim {
     const { meta, e: p } = r;
     const res = this.resolvedAbility(abilityId, p.id);
     if (!res || p.dead) return;
+    meta.lastActiveTick = this.tickCount; // a cast attempt is a deliberate action
     const ability = res.def;
     if (this.isStunned(p)) { this.error(p.id, 'You are stunned!'); return; }
+    if (ability.school !== 'physical' && this.isSilenced(p)) { this.error(p.id, 'You are silenced!'); return; }
+    if (ability.school !== 'physical' && this.isLockedOut(p, ability.school)) { this.error(p.id, 'You are silenced!'); return; }
     if (p.castingAbility) { this.error(p.id, 'You are busy.'); return; }
     if (!ability.offGcd && p.gcdRemaining > 0) return; // silent, classic spams this
     const togglingOff = isToggleBuff(ability) && p.auras.some((a) => a.id === ability.id);
@@ -1871,7 +2530,7 @@ export class Sim {
     }
     // druid forms gate their kit both ways: form abilities need the form, and
     // everything else (the caster kit) is locked while shapeshifted
-    const form = p.auras.find((a) => a.kind === 'form_bear' || a.kind === 'form_cat');
+    const form = p.auras.find((a) => a.kind === 'form_bear' || a.kind === 'form_cat' || a.kind === 'form_travel');
     if (ability.requiresForm) {
       const need = ability.requiresForm === 'bear' ? 'form_bear' : 'form_cat';
       if (!form || form.kind !== need) {
@@ -1901,7 +2560,10 @@ export class Sim {
       if (this.lineOfSightBlocked(p, target, ability)) { this.error(p.id, 'Line of sight.'); return; }
     } else if (ability.requiresTarget) {
       target = p.targetId !== null ? this.entities.get(p.targetId) ?? null : null;
-      if (!target || target.dead || !this.isHostileTo(p, target)) { this.error(p.id, 'You have no target.'); return; }
+      if (!target || target.dead || !this.isHostileTo(p, target)) {
+        this.error(p.id, 'You have no target.', target?.dead ? 'target_dead' : undefined);
+        return;
+      }
       const d = dist2d(p.pos, target.pos);
       const maxRange = ability.range > 0 ? ability.range : MELEE_RANGE;
       if (d > maxRange) { this.error(p.id, 'Out of range.'); return; }
@@ -1973,11 +2635,13 @@ export class Sim {
     }
 
     if (res.castTime > 0 && !togglingOff) {
+      // Curse of Tongues stretches the resolved (already haste-adjusted) cast time.
+      const castTime = res.castTime * this.tonguesMult(p);
       p.castingAbility = ability.id;
-      p.castTotal = res.castTime;
-      p.castRemaining = res.castTime;
+      p.castTotal = castTime;
+      p.castRemaining = castTime;
       p.gcdRemaining = Math.max(p.gcdRemaining, gcd);
-      this.emit({ type: 'castStart', entityId: p.id, ability: ability.id, time: res.castTime });
+      this.emit({ type: 'castStart', entityId: p.id, ability: ability.id, time: castTime });
       return;
     }
 
@@ -1995,7 +2659,7 @@ export class Sim {
   private formShiftKind(p: Entity, ability: AbilityDef): 'off' | 'cross' | null {
     if (!isFormToggle(ability)) return null;
     if (p.auras.some((a) => a.id === ability.id)) return 'off';
-    if (p.auras.some((a) => a.kind === 'form_bear' || a.kind === 'form_cat')) return 'cross';
+    if (p.auras.some((a) => a.kind === 'form_bear' || a.kind === 'form_cat' || a.kind === 'form_travel')) return 'cross';
     return null;
   }
 
@@ -2070,10 +2734,53 @@ export class Sim {
     return mult < 0 ? 0 : mult;
   }
 
+  // Weakening Hex: while a `hex` aura rides the source, the damage AND healing it
+  // deals are scaled by (1 - value). Read by dealDamage (outgoing damage) and
+  // applyHeal (outgoing healing) so a hexed player's whole output is throttled.
+  private hexOutputMult(source: Entity | null): number {
+    if (!source) return 1;
+    let mult = 1;
+    for (const a of source.auras) {
+      if (a.kind === 'hex') mult *= 1 - a.value;
+    }
+    return mult < 0 ? 0 : mult;
+  }
+
+  // Consume the victim's Heal-Absorb shields (classic necrotic blight): each such
+  // aura holds a remaining budget of healing it devours. Drains `healed` against
+  // every active shield, decrementing their stored budget and dropping any that
+  // run dry. Returns the healing that survives (>= 0). A no-op when none are set.
+  private consumeHealAbsorb(target: Entity, healed: number): number {
+    if (healed <= 0) return healed;
+    let remaining = healed;
+    let depleted = false;
+    for (const a of target.auras) {
+      if (a.kind !== 'heal_absorb' || a.value <= 0) continue;
+      const eaten = Math.min(remaining, a.value);
+      a.value -= eaten;
+      remaining -= eaten;
+      if (a.value <= 0) depleted = true;
+      if (remaining <= 0) break;
+    }
+    if (depleted) target.auras = target.auras.filter((a) => !(a.kind === 'heal_absorb' && a.value <= 0));
+    return remaining;
+  }
+
+  // "Find Weakness" vulnerability: the largest active critvuln aura adds its
+  // fraction to the damage of CRITICAL hits the target takes (read in dealDamage).
+  private critVulnBonus(target: Entity): number {
+    let bonus = 0;
+    for (const a of target.auras) {
+      if (a.kind === 'critvuln' && a.value > bonus) bonus = a.value;
+    }
+    return bonus;
+  }
+
   private applyHeal(source: Entity, target: Entity, amount: number, ability: string): void {
     if (target.dead) return;
     const crit = this.rng.chance(this.spellCrit(source));
-    let healed = Math.round(amount * (crit ? 1.5 : 1) * this.healingTakenMult(target));
+    let healed = Math.round(amount * (crit ? 1.5 : 1) * this.hexOutputMult(source) * this.healingTakenMult(target));
+    healed = this.consumeHealAbsorb(target, healed);
     healed = Math.min(healed, target.maxHp - target.hp);
     target.hp += healed;
     this.emit({ type: 'heal2', sourceId: source.id, targetId: target.id, amount: healed, crit, ability });
@@ -2117,6 +2824,13 @@ export class Sim {
       this.addItem(res.rank > 1 && ITEMS[tiered] ? tiered : 'conjured_water', 2, p.id);
       return;
     }
+    if (ability.id === 'conjure_food') {
+      this.spendResource(p, res.cost);
+      // higher ranks conjure heartier fare (falls back if the item isn't defined)
+      const tiered = `conjured_bread${res.rank}`;
+      this.addItem(res.rank > 1 && ITEMS[tiered] ? tiered : 'conjured_bread', 2, p.id);
+      return;
+    }
     if (ability.id === 'revive_pet') {
       const pet = this.petOf(p.id, true);
       if (!pet) { this.error(p.id, 'You have no pet.'); return; }
@@ -2135,7 +2849,7 @@ export class Sim {
       if (this.lineOfSightBlocked(p, target, ability)) { this.error(p.id, 'Line of sight.'); return; }
     } else if (ability.requiresTarget) {
       target = p.targetId !== null ? this.entities.get(p.targetId) ?? null : null;
-      if (!target || target.dead) { this.error(p.id, 'You have no target.'); return; }
+      if (!target || target.dead || !this.isHostileTo(p, target)) { this.error(p.id, 'You have no target.'); return; }
       const d = dist2d(p.pos, target.pos);
       const maxRange = ability.range > 0 ? ability.range : MELEE_RANGE;
       if (d > maxRange + 2) { this.error(p.id, 'Out of range.'); return; }
@@ -2265,6 +2979,13 @@ export class Sim {
           break;
         }
         case 'imbue': {
+          for (let i = p.auras.length - 1; i >= 0; i--) {
+            const a = p.auras[i];
+            if (a.kind === 'imbue' && a.id !== ability.id) {
+              p.auras.splice(i, 1);
+              this.emit({ type: 'aura', targetId: p.id, name: a.name, gained: false });
+            }
+          }
           this.applyAura(p, {
             id: ability.id, name: ability.name, kind: 'imbue',
             remaining: eff.duration, duration: eff.duration, value: eff.bonus,
@@ -2386,6 +3107,24 @@ export class Sim {
           }
           break;
         }
+        case 'groundAoE': {
+          const groundEffect: GroundAoE = {
+            sourceId: p.id,
+            pos: { ...p.pos },
+            radius: eff.radius,
+            min: eff.min,
+            max: eff.max,
+            remaining: eff.duration,
+            interval: eff.interval,
+            tickTimer: eff.interval,
+            school: ability.school,
+            ability: ability.name,
+          };
+          this.emit({ type: 'spellfx', sourceId: p.id, targetId: p.id, school: ability.school, fx: 'nova' });
+          this.pulseGroundAoE(groundEffect, threatOpts);
+          this.groundAoEs.push(groundEffect);
+          break;
+        }
         case 'aoeAttackSpeed': {
           for (const m of this.hostilesInRadius(p, p.pos, eff.radius)) {
             if (m.dead) continue;
@@ -2425,7 +3164,8 @@ export class Sim {
         }
         case 'selfBuff': {
           // forms, stances and stealth are toggles: casting again cancels
-          const isToggle = eff.kind === 'form_bear' || eff.kind === 'form_cat'
+          const isFormKind = eff.kind === 'form_bear' || eff.kind === 'form_cat' || eff.kind === 'form_travel';
+          const isToggle = isFormKind
             || eff.kind === 'defensive_stance' || eff.kind === 'stealth'
             || ability.id === 'ghost_wolf';
           if (isToggle) {
@@ -2433,15 +3173,15 @@ export class Sim {
             if (existing >= 0) {
               p.auras.splice(existing, 1);
               this.emit({ type: 'aura', targetId: p.id, name: ability.name, gained: false });
-              recalcPlayerStats(p, meta.cls, meta.equipment, meta.talentMods);
+              recalcPlayerStats(p, meta.cls, meta.equipment, this.playerMods(meta));
               break;
             }
           }
-          // shapeshifting out of one form into the other
-          if (eff.kind === 'form_bear' || eff.kind === 'form_cat') {
+          // shapeshifting out of one form into another (bear/cat/travel are exclusive)
+          if (isFormKind) {
             for (let i = p.auras.length - 1; i >= 0; i--) {
               const a = p.auras[i];
-              if ((a.kind === 'form_bear' || a.kind === 'form_cat') && a.kind !== eff.kind) {
+              if ((a.kind === 'form_bear' || a.kind === 'form_cat' || a.kind === 'form_travel') && a.kind !== eff.kind) {
                 p.auras.splice(i, 1);
                 this.emit({ type: 'aura', targetId: p.id, name: a.name, gained: false });
               }
@@ -2452,7 +3192,7 @@ export class Sim {
             remaining: eff.duration, duration: eff.duration, value: eff.value,
             sourceId: p.id, school: ability.school,
           });
-          recalcPlayerStats(p, meta.cls, meta.equipment, meta.talentMods);
+          recalcPlayerStats(p, meta.cls, meta.equipment, this.playerMods(meta));
           break;
         }
         case 'gainResource': {
@@ -2546,7 +3286,10 @@ export class Sim {
 
   private applyAura(target: Entity, aura: Aura): void {
     if (target.kind === 'npc' && isRejectedFriendlyNpcAura(aura)) return;
-    if (target.kind === 'mob' && MOBS[target.templateId]?.ccImmune && this.isControlAura(aura.kind)) return;
+    if (this.isNythraxisRaidEnemy(target) && this.isNythraxisControlAura(aura.kind) && aura.sourceId !== target.id
+      && !this.isNythraxisScriptedControl(target, aura)) return;
+    if (target.kind === 'mob' && MOBS[target.templateId]?.ccImmune && this.isControlAura(aura.kind) && aura.sourceId !== target.id
+      && !this.isNythraxisScriptedControl(target, aura)) return;
     const existing = target.auras.findIndex((a) => a.id === aura.id && a.sourceId === aura.sourceId);
     if (existing >= 0) {
       this.applyNonPlayerStatAura(target, target.auras[existing], -1);
@@ -2559,7 +3302,7 @@ export class Sim {
     this.refreshMobLeashFromAction(source ?? null, target);
     if (target.kind === 'player') {
       const meta = this.players.get(target.id);
-      if (meta) recalcPlayerStats(target, meta.cls, meta.equipment, meta.talentMods);
+      if (meta) recalcPlayerStats(target, meta.cls, meta.equipment, this.playerMods(meta));
     }
   }
 
@@ -2571,6 +3314,43 @@ export class Sim {
       remaining, duration: remaining, value: 0,
       sourceId: source.id, school,
     });
+  }
+
+  // On-hit knockback: hurl `target` up to `distance` yards straight away from
+  // `source`. Instantaneous displacement (no aura) walked in small steps so it can
+  // be terrain-clamped exactly like a warrior charge — the shove stops at the last
+  // safe footing before deep water or a cliff rather than stranding the victim off
+  // the world. Returns the yards actually moved (0 if blocked immediately).
+  private applyKnockback(source: Entity, target: Entity, distance: number): number {
+    let dx = target.pos.x - source.pos.x;
+    let dz = target.pos.z - source.pos.z;
+    let len = Math.hypot(dx, dz);
+    if (len < 1e-4) {
+      // exactly overlapping: shove along the mob's facing so the direction is stable
+      dx = Math.sin(source.facing); dz = Math.cos(source.facing); len = 1;
+    }
+    const ux = dx / len, uz = dz / len;
+    const STEP = 0.5;
+    let moved = 0;
+    let cx = target.pos.x, cz = target.pos.z;
+    while (moved < distance) {
+      const adv = Math.min(STEP, distance - moved);
+      const nx = cx + ux * adv, nz = cz + uz * adv;
+      const h0 = groundHeight(cx, cz, this.cfg.seed);
+      const h1 = groundHeight(nx, nz, this.cfg.seed);
+      if (h1 < WATER_LEVEL - SWIM_DEPTH) break;                // would land in deep water
+      if (h1 > h0 && (h1 - h0) / adv > MAX_CLIMB_SLOPE) break; // would slam into a cliff
+      cx = nx; cz = nz; moved += adv;
+    }
+    if (moved <= 0) return 0;
+    const resolved = resolvePosition(this.cfg.seed, cx, cz, BODY_RADIUS);
+    target.pos.x = resolved.x;
+    target.pos.z = resolved.z;
+    target.pos.y = groundHeight(resolved.x, resolved.z, this.cfg.seed);
+    target.vy = 0;
+    target.onGround = true;
+    target.fallStartY = target.pos.y;
+    return moved;
   }
 
   private diminishedCrowdControlDuration(
@@ -2640,11 +3420,15 @@ export class Sim {
     const top = topThreatValue(mob);
     const mine = mob.threat.get(p.id) ?? 0;
     mob.threat.set(p.id, Math.max(mine, top, 1));
+    if (p.ownerId !== null && MOBS[mob.templateId]?.boss) {
+      this.enterCombat(p, mob);
+      return;
+    }
     mob.forcedTargetId = p.id;
     mob.forcedTargetTimer = TAUNT_FORCE_SECONDS;
     if (mob.aiState === 'idle') this.aggroMob(mob, p, false);
     else if (mob.aiState === 'chase' || mob.aiState === 'attack') mob.aggroTargetId = p.id;
-    else if (mob.aiState === 'flee') { mob.aggroTargetId = p.id; mob.aiState = 'attack'; mob.fleeTimer = 0; }
+    else if (mob.aiState === 'flee') { mob.aggroTargetId = p.id; mob.aiState = 'attack'; mob.fleeTimer = 0; mob.fleeReturnTimer = 0; }
     this.enterCombat(p, mob);
   }
 
@@ -2881,6 +3665,7 @@ export class Sim {
     const r = this.resolve(pid);
     if (!r) return;
     if (!isPetClass(r.meta.cls)) { this.error(r.e.id, 'Only pet classes can command pets.'); return; }
+    r.meta.lastActiveTick = this.tickCount; // commanding the pet is a deliberate action
     const pet = this.petOf(r.e.id);
     if (!pet) { this.error(r.e.id, 'You have no living pet.'); return; }
     const target = r.e.targetId !== null ? this.entities.get(r.e.targetId) : null;
@@ -2897,6 +3682,7 @@ export class Sim {
     const r = this.resolve(pid);
     if (!r) return;
     if (!isPetClass(r.meta.cls)) { this.error(r.e.id, 'Only pet classes can command pets.'); return; }
+    r.meta.lastActiveTick = this.tickCount; // commanding the pet is a deliberate action
     const pet = this.petOf(r.e.id);
     if (!pet) { this.error(r.e.id, 'You have no living pet.'); return; }
     if (pet.petTauntTimer > 0) { this.error(r.e.id, 'Pet taunt is not ready.'); return; }
@@ -2983,6 +3769,7 @@ export class Sim {
     const r = this.resolve(pid);
     if (!r) return;
     if (!isPetClass(r.meta.cls)) { this.error(r.e.id, 'Only pet classes can command pets.'); return; }
+    r.meta.lastActiveTick = this.tickCount; // commanding the pet is a deliberate action
     const pet = this.petOf(r.e.id, true);
     if (!pet) { this.error(r.e.id, 'You have no pet.'); return; }
     pet.petMode = mode;
@@ -3023,8 +3810,20 @@ export class Sim {
   private summonDemon(owner: Entity, mobId: string): void {
     const template = MOBS[mobId];
     if (!template) return;
-    const existing = this.petOf(owner.id);
-    if (existing) this.removePet(existing);
+    const existing = this.petOf(owner.id, true);
+    if (existing) {
+      this.despawnPet(existing);
+      if (existing.templateId === mobId && !existing.dead) {
+        this.emit({ type: 'log', text: `${existing.name} fades back into the void.`, color: '#b894ff', pid: owner.id });
+        return;
+      }
+    }
+    if (this.createDemonPet(owner, mobId, true)) return;
+  }
+
+  private createDemonPet(owner: Entity, mobId: string, emit = false): Entity | null {
+    const template = MOBS[mobId];
+    if (!template) return null;
     // appear just behind the caster so the demon doesn't spawn inside the target
     const ang = owner.facing + Math.PI;
     const pos = this.groundPos(owner.pos.x + Math.sin(ang) * 2, owner.pos.z + Math.cos(ang) * 2);
@@ -3040,7 +3839,8 @@ export class Sim {
     pet.loot = null;
     pet.lootable = false;
     this.addEntity(pet);
-    this.emit({ type: 'log', text: `You summon ${template.name}.`, color: '#a78bfa', pid: owner.id });
+    if (emit) this.emit({ type: 'log', text: `You summon ${template.name}.`, color: '#a78bfa', pid: owner.id });
+    return pet;
   }
 
   /** Tear-down for any pet: summoned demons vanish from the world; tamed beasts
@@ -3080,6 +3880,19 @@ export class Sim {
     if (!t || t.dead || !this.isHostileTo(p, t)) { this.error(p.id, 'Invalid attack target.'); return; }
     if (p.sitting) this.standUp(p);
     p.autoAttack = true;
+    r.meta.lastActiveTick = this.tickCount; // starting auto-attack is a deliberate action
+    const d = dist2d(p.pos, t.pos);
+    const ranged = CLASSES[r.meta.cls].ranged;
+    const inAutoAttackRange = ranged
+      ? d <= ranged.maxRange && d >= (ranged.wand ? 0 : ranged.minRange) && this.hasLineOfSight(p, t)
+      : d <= MELEE_RANGE;
+    if (inAutoAttackRange && t.kind === 'mob' && t.hostile && t.ownerId === null && t.aiState !== 'evade') {
+      if (t.aiState === 'idle') this.aggroMob(t, p, true);
+      else if (t.aggroTargetId === null) t.aggroTargetId = p.id;
+      addThreat(t, p.id, 1);
+      p.combatTimer = 0;
+      p.inCombat = true;
+    }
   }
 
   stopAutoAttack(pid?: number): void {
@@ -3094,6 +3907,7 @@ export class Sim {
     if (!t || t.dead || !this.isHostileTo(p, t)) { p.autoAttack = false; return; }
     if (p.swingTimer > 0) return;
     if (this.isStunned(p)) return;
+    if (this.isDisarmed(p)) return; // weapon knocked away: no auto-attack swings
     const d = dist2d(p.pos, t.pos);
     const facingDiff = Math.abs(normAngle(angleTo(p.pos, t.pos) - p.facing));
     if (facingDiff > MELEE_ARC) return;
@@ -3103,11 +3917,13 @@ export class Sim {
     const ranged = CLASSES[meta.cls].ranged;
     if (ranged && d <= ranged.maxRange && d >= (ranged.wand ? 0 : ranged.minRange)) {
       if (!this.hasLineOfSight(p, t)) return;
+      this.breakGhostWolf(p);
       this.rangedSwing(p, t, ranged);
       p.swingTimer = ranged.speed * this.swingIntervalMult(p);
       return;
     }
     if (d > MELEE_RANGE) return;
+    this.breakGhostWolf(p);
 
     let bonus = 0;
     let abilityName: string | null = null;
@@ -3141,14 +3957,16 @@ export class Sim {
     const school = ranged.wand ? (ranged.school ?? 'arcane') : 'physical';
     const label = ranged.wand ? 'Wand' : 'Auto Shot';
     this.emit({ type: 'spellfx', sourceId: attacker.id, targetId: target.id, school, fx: 'projectile' });
-    const missChance = meleeMissChance(attacker.level, target.level);
+    const missChance = meleeMissChance(attacker.level, target.level) + this.blindMissBonus(attacker);
     if (this.rng.chance(missChance)) {
       this.emit({ type: 'damage', sourceId: attacker.id, targetId: target.id, amount: 0, crit: false, school, ability: label, kind: 'miss' });
       this.enterCombat(attacker, target);
       return;
     }
     let dmg = this.rng.range(ranged.min, ranged.max) + (attacker.rangedPower / 14) * ranged.speed;
-    const crit = this.rng.chance(attacker.critChance);
+    // ranged white hits suffer the same higher-level crit suppression as melee
+    const critChance = Math.max(0.005, attacker.critChance - Math.max(0, target.level - attacker.level) * 0.002);
+    const crit = this.rng.chance(critChance);
     if (crit) dmg *= 2;
     // wand bolts are magic — armor doesn't apply; physical auto shot is mitigated
     if (!ranged.wand) dmg *= 1 - armorReduction(this.effectiveArmor(target), attacker.level);
@@ -3160,7 +3978,7 @@ export class Sim {
     attacker: Entity, target: Entity, bonus: number, abilityName: string | null,
     opts: { cannotBeDodged?: boolean; weaponMult?: number; threatFlat?: number; threatMult?: number },
   ): boolean {
-    const missChance = meleeMissChance(attacker.level, target.level);
+    const missChance = meleeMissChance(attacker.level, target.level) + this.blindMissBonus(attacker);
     const dodgeChance = opts.cannotBeDodged ? 0
       : (target.kind === 'player' ? target.dodgeChance : 0.05 + Math.max(0, target.level - attacker.level) * 0.005);
     const roll = this.rng.next();
@@ -3193,6 +4011,11 @@ export class Sim {
           this.dealDamage(target, attacker, a.value, false, a.school, a.name, 'hit', true);
         }
       }
+      // innate "spiked hide" mobs (e.g. bristleback boars) reflect on every hit
+      const spikes = MOBS[target.templateId]?.thorns;
+      if (spikes && !attacker.dead) {
+        this.dealDamage(target, attacker, spikes.value, false, spikes.school ?? 'physical', spikes.name ?? 'Spiked Hide', 'hit', true);
+      }
     }
     return true;
   }
@@ -3201,7 +4024,17 @@ export class Sim {
   // Damage / death
   // -------------------------------------------------------------------------
 
-  private dealDamage(source: Entity | null, target: Entity, amount: number, crit: boolean, school: string, ability: string | null, kind: 'hit' | 'miss' | 'dodge', noRage = false, threatOpts?: { flat?: number; mult?: number }): void {
+  private dealDamage(
+    source: Entity | null,
+    target: Entity,
+    amount: number,
+    crit: boolean,
+    school: string,
+    ability: string | null,
+    kind: 'hit' | 'miss' | 'dodge',
+    noRage = false,
+    threatOpts?: { flat?: number; mult?: number },
+  ): void {
     if (target.dead) return;
     if (target.gm) return; // GM characters are invulnerable — every damage path funnels here
     // A mob that broke leash (or a pet freed to the wild) is in 'evade': it has
@@ -3217,6 +4050,51 @@ export class Sim {
     }
     if (source && source.id !== target.id && target.auras.some((a) => a.kind === 'defensive_stance')) {
       amount = Math.round(amount * 0.9);
+    }
+
+    // Expose: a cracked-guard debuff amplifies the physical damage the victim
+    // takes (from any attacker) until it expires. Armor is already applied at the
+    // swing site, so this rides on top of the post-mitigation amount.
+    if (school === 'physical' && amount > 0) {
+      let exposeMult = 1;
+      for (const a of target.auras) if (a.kind === 'expose') exposeMult += a.value;
+      if (exposeMult !== 1) amount = Math.round(amount * exposeMult);
+    }
+
+    // Spell Vulnerability: a `spellvuln` debuff amplifies all NON-physical (magic)
+    // damage the victim takes from every attacker. Holy is excluded so healing-
+    // school spells are untouched. Stacks additively across active debuffs and
+    // lands before absorb shields, so a soaked hit still soaks the amplified total.
+    if (amount > 0 && school !== 'physical' && school !== 'holy') {
+      let amp = 0;
+      for (const a of target.auras) {
+        if (a.kind === 'spellvuln') amp += a.value;
+      }
+      if (amp > 0) amount = Math.round(amount * (1 + amp));
+    }
+
+    // Curse of frailty: a cursed victim takes more damage from every source. The
+    // offensive mirror of Defensive Stance's cut above. Multiple curses stack
+    // additively (sum of amps) so layered curses can't multiply out of control.
+    if (amount > 0) {
+      let vuln = 0;
+      for (const a of target.auras) if (a.kind === 'vulnerability') vuln += a.value;
+      if (vuln > 0) amount = Math.round(amount * (1 + vuln));
+    }
+
+    // Weakening Hex: a hexed source deals less damage (mirrors the healing cut in
+    // applyHeal). Self-damage paths (source === target) are left untouched.
+    if (source && source.id !== target.id) {
+      const hexMult = this.hexOutputMult(source);
+      if (hexMult !== 1) amount = Math.round(amount * hexMult);
+    }
+
+    // "Find Weakness": a critvuln debuff makes the target's exposed flesh take
+    // extra damage from CRITICAL hits only (any attacker, any school). Applied
+    // after the defensive-stance reduction, before absorb shields soak it.
+    if (crit && amount > 0 && source && source.id !== target.id) {
+      const bonus = this.critVulnBonus(target);
+      if (bonus > 0) amount = Math.round(amount * (1 + bonus));
     }
 
     // absorb shields soak damage first
@@ -3248,14 +4126,43 @@ export class Sim {
       }
     }
 
-    // arena bouts also end at 1 hp — the loser yields, nobody actually dies
+    // Fiesta takedowns score a point and put the victim on a (growing) respawn
+    // timer instead of permanently eliminating them — the party never stops.
     const match = target.kind === 'player' ? this.arenaMatches.get(target.id) : undefined;
-    if (match && match.state === 'active' && sourcePlayer && (sourcePlayer.id === match.a || sourcePlayer.id === match.b)) {
-      if (target.hp - amount < 1) {
-        amount = Math.max(0, target.hp - 1);
-        target.hp = 1;
+    // Fiesta lifesteal augment: heal the attacker for a slice of damage dealt.
+    if (match && match.fiesta && match.state === 'active' && sourcePlayer && amount > 0
+      && this.isArenaCrossTeam(match, sourcePlayer.id, target.id)) {
+      const ls = this.players.get(sourcePlayer.id)?.fiestaSpecial.lifestealPct ?? 0;
+      if (ls > 0 && !sourcePlayer.dead && sourcePlayer.hp < sourcePlayer.maxHp) {
+        const heal = Math.max(1, Math.round(amount * ls));
+        sourcePlayer.hp = Math.min(sourcePlayer.maxHp, sourcePlayer.hp + heal);
+        this.emit({ type: 'heal', targetId: sourcePlayer.id, amount: heal });
+      }
+    }
+    if (match && match.fiesta && match.state === 'active' && sourcePlayer && this.isArenaCrossTeam(match, sourcePlayer.id, target.id)) {
+      if (target.hp - amount <= 0) {
+        amount = Math.max(0, target.hp);
+        target.hp = 0;
         this.emit({ type: 'damage', sourceId: source?.id ?? -1, targetId: target.id, amount, crit, school, ability, kind });
-        this.endArenaMatch(match, sourcePlayer.id, 'defeat');
+        this.fiestaTakedown(match, sourcePlayer.id, target);
+        return;
+      }
+    }
+
+    // Ranked arena eliminations use normal death state so clients and combat
+    // logic see a real 0 HP defeat. The return timer revives everyone after.
+    if (match && !match.fiesta && match.state === 'active' && sourcePlayer && this.isArenaCrossTeam(match, sourcePlayer.id, target.id)) {
+      if (match.defeated.has(target.id)) return;
+      if (target.hp - amount <= 0) {
+        amount = Math.max(0, target.hp);
+        target.hp = 0;
+        match.defeated.add(target.id);
+        this.emit({ type: 'damage', sourceId: source?.id ?? -1, targetId: target.id, amount, crit, school, ability, kind });
+        this.handleDeath(target, source);
+        const loserTeam = this.arenaTeamOf(match, target.id);
+        if (loserTeam && this.isArenaTeamWiped(match, loserTeam)) {
+          this.endArenaMatch(match, loserTeam === 'A' ? 'B' : 'A', 'defeat');
+        }
         return;
       }
     }
@@ -3264,6 +4171,9 @@ export class Sim {
     this.emit({ type: 'damage', sourceId: source?.id ?? -1, targetId: target.id, amount, crit, school, ability, kind });
 
     if (amount > 0) {
+      if (target.kind === 'mob' && DAMAGE_IDLE_DESPAWN_MOB_IDS.has(target.templateId)) {
+        target.damageIdleDespawnTimer = DAMAGE_IDLE_DESPAWN_SECONDS;
+      }
       for (let i = target.auras.length - 1; i >= 0; i--) {
         if (target.auras[i].breaksOnDamage) {
           this.emit({ type: 'aura', targetId: target.id, name: target.auras[i].name, gained: false });
@@ -3275,10 +4185,8 @@ export class Sim {
     // taking or dealing real damage breaks stealth
     if (amount > 0) {
       this.breakStealth(target);
-      this.breakGhostWolf(target);
       if (source && source.id !== target.id) {
         this.breakStealth(source);
-        this.breakGhostWolf(source);
       }
     }
 
@@ -3318,13 +4226,78 @@ export class Sim {
       // cancelling it (misses and fully absorbed hits don't push back)
       if (target.castingAbility && source && source.id !== target.id && amount > 0 && kind === 'hit') {
         if (target.castingAbility === FISHING_CAST_ID) this.cancelCast(target);
-        else this.pushbackCast(target);
+        else if (!ignoresDamagePushback(target.castingAbility)) this.pushbackCast(target);
       }
     }
 
-    if (target.hp <= 0) {
-      this.handleDeath(target, source);
+    // Reactive "Frenzy": a wounded mob carrying frenzyOnHit may lash out faster.
+    // Rolls only for mobs that actually carry the trait (the helper bails before
+    // touching rng otherwise), so existing fixed-seed combat stays byte-identical.
+    if (kind === 'hit' && amount > 0 && !target.dead && target.hp > 0) {
+      this.maybeFrenzyOnHit(target, source);
     }
+    this.reflectSpellWard(source, target, amount, kind, school);
+
+    if (target.hp <= 0) {
+      // A fiesta fighter who somehow bottoms out via a non-takedown path (a
+      // friendly DoT tail, self-damage) is benched, not killed — never let the
+      // party-mode hp hit a permanent death + graveyard flow.
+      const fmatch = target.kind === 'player' ? this.arenaMatches.get(target.id) : undefined;
+      if (fmatch && fmatch.fiesta && fmatch.state === 'active' && !this.arenaIsDown(fmatch, target.id)) {
+        this.fiestaDown(fmatch, target, null);
+      } else {
+        this.handleDeath(target, source);
+      }
+    }
+  }
+
+  // Reactive beast "Frenzy": when a mob with the frenzyOnHit trait is struck by a
+  // player (or their pet), it has a chance to fly into a blood frenzy and swing
+  // faster for a few seconds. Modelled as a refreshable buff_haste self-aura — the
+  // same primitive packFrenzy uses — so it rides the normal aura tick and snapshot
+  // wire with no new Entity field. The struck mob buffs ITSELF, so there is no
+  // recursion risk (the buff is not damage) and no player-facing debuff string.
+  private maybeFrenzyOnHit(target: Entity, source: Entity | null): void {
+    const fr = MOBS[target.templateId]?.frenzyOnHit;
+    if (!fr) return; // non-carriers never reach rng — keeps determinism neutral
+    if (target.kind !== 'mob' || !target.hostile || target.ownerId !== null) return;
+    if (!source || source.id === target.id) return;
+    const fromPlayer = source.kind === 'player' || source.ownerId !== null;
+    if (!fromPlayer) return;
+    if (!this.rng.chance(fr.chance)) return;
+    const name = fr.name ?? 'Blood Frenzy';
+    const existing = target.auras.find((a) => a.id === BLOOD_FRENZY_AURA_ID);
+    if (existing) {
+      existing.remaining = fr.duration; // refresh on each further wound; don't stack
+      return;
+    }
+    target.auras.push({
+      id: BLOOD_FRENZY_AURA_ID,
+      name,
+      kind: 'buff_haste',
+      remaining: fr.duration,
+      duration: fr.duration,
+      value: fr.hasteMult,
+      sourceId: target.id,
+      school: 'physical',
+    });
+    this.emit({ type: 'aura', targetId: target.id, name, gained: true });
+    this.emit({ type: 'log', text: `${target.name} flies into a frenzy!`, color: '#ff8c00', entityId: target.id });
+    this.emit({ type: 'spellfx', sourceId: target.id, targetId: target.id, school: 'physical', fx: 'nova' });
+  }
+
+  /**
+   * Innate "warded" mobs reflect flat damage onto a caster whose SPELL connects
+   * — the magic-school twin of melee thorns (which only punishes melee swings).
+   * Fires for any non-physical hit the mob survives; the reflected blow is
+   * mob-sourced, so it can never re-trigger a reflect (players carry no template).
+   */
+  private reflectSpellWard(source: Entity | null, target: Entity, amount: number, kind: 'hit' | 'miss' | 'dodge', school: string): void {
+    if (!source || source.kind !== 'player' || source.id === target.id) return;
+    if (target.kind !== 'mob' || target.hp <= 0 || kind !== 'hit' || amount <= 0 || school === 'physical') return;
+    const ward = MOBS[target.templateId]?.spellReflect;
+    if (!ward) return;
+    this.dealDamage(target, source, ward.value, false, ward.school ?? 'shadow', ward.name ?? 'Spell Reflection', 'hit', true);
   }
 
   private enterCombat(a: Entity, b: Entity): void {
@@ -3390,6 +4363,7 @@ export class Sim {
 
     if (e.kind === 'mob') {
       const template = MOBS[e.templateId];
+      if (e.templateId === NYTHRAXIS_BOSS_ID) this.grantNythraxisLockout(e);
       e.aiState = 'dead';
       e.corpseTimer = CORPSE_DURATION;
       e.respawnTimer = this.cfg.respawnSeconds * (template?.respawnMult ?? (template?.rare ? 4 : 1));
@@ -3406,6 +4380,7 @@ export class Sim {
         return; // owned pets drop no loot/credit; demons unravel, hunters revive or abandon
       }
       this.frenzyPackmates(e); // wild packmates fly into a frenzy when one falls
+      this.armDeathThroes(e); // volatile corpses begin to destabilize, then burst
 
       // credit goes to the tapping player (fall back to the killer)
       const creditId = e.tappedById ?? (killer?.kind === 'player' ? killer.id : null);
@@ -3441,7 +4416,7 @@ export class Sim {
           // routes the award to lifetimeXp even at the cap, so the party gate no
           // longer blocks max-level members — it just forwards every positive award.
           const xpGain = Math.round((mobXpValue(e.level, mE.level) * eliteMult * bonus) / eligible.length);
-          if (xpGain > 0) this.grantXp(xpGain, member);
+          if (xpGain > 0) this.grantXp(xpGain, member, { fromKill: true });
           this.onMobKilledForQuests(e, member);
         }
         this.rollLoot(e, meta, eligible);
@@ -3449,9 +4424,52 @@ export class Sim {
     }
   }
 
-  grantXp(amount: number, meta: PlayerMeta = this.primary): void {
+  // True while the player is standing in (or just beside) an inn footprint and
+  // out of combat — the classic "resting" state that accrues rested XP.
+  private isResting(p: Entity): boolean {
+    if (p.inCombat) return false;
+    for (const b of PROPS.buildings) {
+      if (b.kind !== 'inn') continue;
+      // Point-in-rotated-rect: bring the player into the inn's local frame.
+      const dx = p.pos.x - b.x;
+      const dz = p.pos.z - b.z;
+      const cos = Math.cos(-b.rot);
+      const sin = Math.sin(-b.rot);
+      const lx = dx * cos - dz * sin;
+      const lz = dx * sin + dz * cos;
+      if (Math.abs(lx) <= b.w / 2 + RESTED_INN_PADDING && Math.abs(lz) <= b.d / 2 + RESTED_INN_PADDING) return true;
+    }
+    return false;
+  }
+
+  // Accrue rested XP while resting in an inn. Vanilla: 5% of the level's
+  // XP-to-level per 8 in-game hours, clamped to 1.5 levels. Deterministic —
+  // paced off DT, never wall-clock. No accrual at the cap (no level bar).
+  private updateRested(p: Entity, meta: PlayerMeta): void {
+    if (p.level >= MAX_LEVEL) return;
+    const cap = RESTED_CAP_LEVELS * xpForLevel(p.level);
+    if (meta.restedXp >= cap) {
+      meta.restedXp = cap;
+      return;
+    }
+    if (!this.isResting(p)) return;
+    const fillSeconds = RESTED_FILL_HOURS * RESTED_SECONDS_PER_GAME_HOUR;
+    const perSecond = (RESTED_FILL_FRACTION * xpForLevel(p.level)) / fillSeconds;
+    meta.restedXp = Math.min(cap, meta.restedXp + perSecond * DT);
+  }
+
+  grantXp(amount: number, meta: PlayerMeta = this.primary, opts?: { fromKill?: boolean }): void {
     const p = this.entities.get(meta.entityId);
     if (!p || amount <= 0) return;
+    // Rested XP bonus: classic vanilla only doubles KILL xp (not quests), and
+    // never past the cap (no level bar to advance). The bonus equals the rested
+    // amount drawn down, so the effective award is up to 2x while the pool lasts.
+    let restedBonus = 0;
+    if (opts?.fromKill && p.level < MAX_LEVEL && meta.restedXp > 0) {
+      restedBonus = Math.min(Math.floor(meta.restedXp), amount);
+      meta.restedXp -= restedBonus;
+      amount += restedBonus;
+    }
     // Lifetime XP accrues for EVERY award, including at the cap — this is what
     // makes post-cap progression work. It feeds the virtual level, the
     // leaderboard, and cosmetic milestones. The level bar below only advances
@@ -3459,7 +4477,7 @@ export class Sim {
     // rather than being discarded to gold/zero (FR-1.4).
     this.accrueLifetimeXp(amount, meta, p);
     meta.counters.xpGained += amount;
-    this.emit({ type: 'xp', amount, pid: p.id });
+    this.emit({ type: 'xp', amount, pid: p.id, ...(restedBonus > 0 ? { rested: restedBonus } : {}) });
 
     if (p.level >= MAX_LEVEL) return; // bar frozen at cap; lifetimeXp already credited
 
@@ -3468,7 +4486,7 @@ export class Sim {
       meta.xp -= xpForLevel(p.level);
       p.level++;
       meta.counters.levelUps++;
-      recalcPlayerStats(p, meta.cls, meta.equipment, meta.talentMods);
+      recalcPlayerStats(p, meta.cls, meta.equipment, this.playerMods(meta));
       p.hp = p.maxHp;
       if (p.resourceType === 'mana') p.resource = p.maxResource;
       this.emit({ type: 'levelup', level: p.level, pid: p.id });
@@ -3512,7 +4530,7 @@ export class Sim {
     }
   }
 
-  // Opt-in cosmetic prestige (Phase 4): only at the cap. Resets the level XP
+  // Opt-in cosmetic prestige: only at the cap. Resets the level XP
   // bar, bumps the prestige rank for a badge by the name + on the leaderboard,
   // and deliberately leaves lifetimeXp, level, gear, talents, and learned
   // abilities untouched — strictly cosmetic, zero power change (FR-6.1/6.3).
@@ -3585,42 +4603,135 @@ export class Sim {
     }
   }
 
-  private rollGroupLoot(itemId: string, mob: Entity, looter: PlayerMeta): boolean {
-    if (!this.itemRequiresGroupRoll(itemId) || mob.tappedById === null) return false;
-    const party = this.partyOf(mob.tappedById);
-    if (!party || party.members.length <= 1) return false;
-    const candidates: PlayerMeta[] = [];
-    for (const pid of party.members) {
-      const candidate = this.players.get(pid);
-      const e = this.entities.get(pid);
-      if (candidate && e && !e.dead && dist2d(e.pos, mob.pos) <= PARTY_XP_RANGE) candidates.push(candidate);
-    }
+  private grantLootCopper(meta: PlayerMeta, amount: number): void {
+    meta.copper += amount;
+    meta.counters.lootCopper += amount;
+    this.emit({ type: 'loot', text: `You loot ${formatMoney(amount)}.`, pid: meta.entityId });
+  }
+
+  private awardAllCopperToLooter(looter: PlayerMeta, copper: number): void {
+    this.grantLootCopper(looter, copper);
+  }
+
+  private tryAwardCopperByFairSplit(mob: Entity, copper: number): boolean {
+    if (this.effectiveCurrencyLootStrategy(mob) !== 'fair-split') return false;
+    const candidates = this.partyLootCandidatesForMob(mob);
     if (candidates.length <= 1) return false;
-    let winner = candidates[0];
-    let bestRoll = -1;
-    for (const candidate of candidates) {
-      const roll = this.rng.int(1, 100);
-      if (roll > bestRoll) {
-        bestRoll = roll;
-        winner = candidate;
-      }
+    const base = Math.floor(copper / candidates.length);
+    const remainder = copper % candidates.length;
+    const shares = new Map<PlayerMeta, number>(candidates.map((candidate) => [candidate, base]));
+    const order = [...candidates];
+    for (let i = 0; i < remainder; i++) {
+      const idx = this.rng.int(i, order.length - 1);
+      [order[i], order[idx]] = [order[idx], order[i]];
+      shares.set(order[i], (shares.get(order[i]) ?? 0) + 1);
     }
-    const itemName = ITEMS[itemId]?.name ?? itemId;
     for (const candidate of candidates) {
-      this.emit({ type: 'loot', text: `${winner.name} wins ${itemName} (${bestRoll})`, pid: candidate.entityId });
+      const amount = shares.get(candidate) ?? 0;
+      if (amount > 0) this.grantLootCopper(candidate, amount);
     }
-    this.addItem(itemId, 1, winner.entityId);
     return true;
   }
 
+  private distributeLootCopper(mob: Entity, looter: PlayerMeta): void {
+    if (!mob.loot || mob.loot.copper <= 0) return;
+    const copper = mob.loot.copper;
+    if (!this.tryAwardCopperByFairSplit(mob, copper)) this.awardAllCopperToLooter(looter, copper);
+    mob.loot.copper = 0;
+  }
+
+  private startNeedGreedRoll(itemId: string, mob: Entity): boolean {
+    if (this.effectiveItemLootStrategy(itemId, mob) !== 'need-greed') return false;
+    const candidates = this.partyLootCandidatesForMob(mob);
+    if (candidates.length <= 1) return false;
+    const def = ITEMS[itemId];
+    const itemName = def?.name ?? itemId;
+    const roll: PendingLootRoll = {
+      id: this.nextLootRollId++,
+      mobId: mob.id,
+      itemId,
+      itemName,
+      quality: def?.quality,
+      candidates: candidates.map((candidate) => candidate.entityId),
+      choices: new Map(),
+      expiresAt: this.time + LOOT_ROLL_TIMEOUT,
+    };
+    this.pendingLootRolls.set(roll.id, roll);
+    mob.corpseTimer = Math.max(mob.corpseTimer, LOOT_ROLL_TIMEOUT + 2);
+    for (const candidate of candidates) {
+      this.emit({ type: 'lootRoll', rollId: roll.id, itemId, itemName, quality: roll.quality, expiresAt: roll.expiresAt, pid: candidate.entityId });
+    }
+    return true;
+  }
+
+  private awardSharedLootItem(itemId: string, mob: Entity, looter: PlayerMeta): void {
+    if (!this.startNeedGreedRoll(itemId, mob)) this.addItem(itemId, 1, looter.entityId);
+  }
+
+  submitLootRoll(rollId: number, choice: LootRollChoice, pid?: number): void {
+    const r = this.resolve(pid);
+    if (!r) return;
+    const roll = this.pendingLootRolls.get(rollId);
+    if (!roll || !roll.candidates.includes(r.meta.entityId) || roll.choices.has(r.meta.entityId)) return;
+    roll.choices.set(r.meta.entityId, {
+      choice,
+      roll: choice === 'need' || choice === 'greed' ? this.rng.int(1, 100) : null,
+    });
+    if (roll.choices.size >= roll.candidates.length) this.resolveLootRoll(roll);
+  }
+
+  private resolveLootRoll(roll: PendingLootRoll): void {
+    if (!this.pendingLootRolls.delete(roll.id)) return;
+    const entries = roll.candidates
+      .map((pid) => ({ pid, result: roll.choices.get(pid) ?? { choice: 'pass' as const, roll: null } }))
+      .filter((entry) => entry.result.choice !== 'pass');
+    const needers = entries.filter((entry) => entry.result.choice === 'need');
+    const contenders = needers.length > 0 ? needers : entries.filter((entry) => entry.result.choice === 'greed');
+    if (contenders.length === 0) {
+      this.returnLootRollItemToCorpse(roll);
+      for (const pid of roll.candidates) this.emit({ type: 'loot', text: `Everyone passed on ${roll.itemName}.`, pid });
+      return;
+    }
+    let winner = contenders[0];
+    for (const contender of contenders.slice(1)) {
+      if ((contender.result.roll ?? 0) > (winner.result.roll ?? 0)) winner = contender;
+    }
+    const winnerMeta = this.players.get(winner.pid);
+    const winnerName = winnerMeta?.name ?? 'Unknown';
+    for (const pid of roll.candidates) {
+      this.emit({ type: 'loot', text: `${winnerName} wins ${roll.itemName} (${winner.result.roll ?? 0})`, pid });
+    }
+    this.addItem(roll.itemId, 1, winner.pid);
+  }
+
+  private returnLootRollItemToCorpse(roll: PendingLootRoll): void {
+    const mob = this.entities.get(roll.mobId);
+    if (!mob || !mob.dead) return;
+    if (!mob.loot) mob.loot = { copper: 0, items: [] };
+    const existing = mob.loot.items.find((slot) => slot.openToAll && slot.itemId === roll.itemId && !slot.personalFor);
+    if (existing) existing.count += 1;
+    else mob.loot.items.push({ itemId: roll.itemId, count: 1, openToAll: true });
+    mob.lootable = true;
+  }
+
   private lootSlotVisibleTo(slot: LootSlot, pid: number): boolean {
-    return !slot.personalFor || slot.personalFor.includes(pid);
+    return slot.openToAll || !slot.personalFor || slot.personalFor.includes(pid);
+  }
+
+  private hasPendingLootRollForMob(mobId: number): boolean {
+    return [...this.pendingLootRolls.values()].some((roll) => roll.mobId === mobId);
   }
 
   private pruneCorpseLoot(mob: Entity): void {
     if (!mob.loot) return;
     mob.loot.items = mob.loot.items.filter((s) => s.count > 0 && (!s.personalFor || s.personalFor.length > 0));
     if (mob.loot.copper <= 0 && mob.loot.items.length === 0) {
+      if (this.hasPendingLootRollForMob(mob.id)) {
+        mob.loot = null;
+        mob.lootable = true;
+        mob.corpseTimer = Math.max(mob.corpseTimer, LOOT_ROLL_TIMEOUT + 2);
+        return;
+      }
       mob.loot = null;
       mob.lootable = false;
       mob.corpseTimer = Math.min(mob.corpseTimer, 4);
@@ -3646,10 +4757,49 @@ export class Sim {
       mob.aggroTargetId = next.id;
       mob.aiState = 'chase';
       mob.inCombat = true;
+      mob.despawnTimer = undefined;
       return;
     }
+    const nythraxisFallback = this.nythraxisAddFallbackTarget(mob);
+    if (nythraxisFallback) {
+      mob.aggroTargetId = nythraxisFallback.id;
+      mob.aiState = 'chase';
+      mob.inCombat = true;
+      mob.despawnTimer = undefined;
+      addThreat(mob, nythraxisFallback.id, 1);
+      return;
+    }
+    if (this.scheduleNythraxisAddDespawnIfBossReset(mob)) return;
     mob.aggroTargetId = null;
     mob.aiState = 'evade';
+  }
+
+  private findNythraxisBossForAdd(add: Entity): Entity | null {
+    if (add.kind !== 'mob' || add.templateId !== NYTHRAXIS_ADD_ID) return null;
+    for (const e of this.entities.values()) {
+      if (e.kind !== 'mob' || e.templateId !== NYTHRAXIS_BOSS_ID || e.dead) continue;
+      if (e.summonedIds.includes(add.id) || dist2d(e.spawnPos, add.spawnPos) < 1) return e;
+    }
+    return null;
+  }
+
+  private nythraxisAddFallbackTarget(add: Entity): Entity | null {
+    const boss = this.findNythraxisBossForAdd(add);
+    if (!boss || !boss.inCombat || boss.aiState === 'idle' || boss.aiState === 'evade') return null;
+    const target = boss.aggroTargetId !== null ? this.entities.get(boss.aggroTargetId) : null;
+    return target && !target.dead && target.kind === 'player' ? target : null;
+  }
+
+  private scheduleNythraxisAddDespawnIfBossReset(add: Entity): boolean {
+    const boss = this.findNythraxisBossForAdd(add);
+    if (!boss || (boss.inCombat && boss.aiState !== 'idle' && boss.aiState !== 'evade')) return false;
+    add.aggroTargetId = null;
+    add.aiState = 'idle';
+    add.inCombat = false;
+    add.hostile = false;
+    add.despawnTimer = add.despawnTimer ?? 10;
+    clearThreat(add);
+    return true;
   }
 
   /** Highest-threat living attacker on the table; prunes stale entries. */
@@ -3697,6 +4847,88 @@ export class Sim {
     if (best !== cur) mob.aggroTargetId = best.id;
   }
 
+  // Effective melee reach. Large creatures measure range from their centre, which
+  // sits deep inside an oversized body — so a giant (e.g. Nythraxis at scale 3.1)
+  // can never close to the flat MELEE_RANGE and barely swings. Scale reach with
+  // size so big mobs connect from where the player actually stands (their feet).
+  private mobMeleeRange(mob: Entity): number {
+    return this.mobCombatProfile(mob).meleeRange;
+  }
+
+  private mobCombatProfile(mob: Entity): MobCombatProfile {
+    return combatProfileForMob(mob.templateId, mob.scale);
+  }
+
+  private mobEffectiveMeleeRange(mob: Entity, target: Entity): number {
+    const profile = this.mobCombatProfile(mob);
+    const targetMoved = dist2d(target.pos, target.prevPos) > 0.05;
+    const mobMoved = dist2d(mob.pos, mob.prevPos) > 0.05;
+    return effectiveMobMeleeRange(profile, targetMoved, mobMoved);
+  }
+
+  private tryMobMeleeSwingInRange(mob: Entity, target: Entity): boolean {
+    if (dist2d(mob.pos, target.pos) > this.mobEffectiveMeleeRange(mob, target)) return false;
+    mob.aiState = 'attack';
+    mob.facing = angleTo(mob.pos, target.pos);
+    if (mob.swingTimer <= 0) {
+      this.mobSwing(mob, target);
+      mob.swingTimer = mob.weapon.speed * this.swingIntervalMult(mob);
+    }
+    return true;
+  }
+
+  private usesProfiledMobCombat(mob: Entity): boolean {
+    const profile = this.mobCombatProfile(mob);
+    return profile.swingWhilePursuing || profile.immediateSwingOnEnterRange || !profile.canLeash;
+  }
+
+  private updateProfiledMobCombat(mob: Entity): void {
+    const profile = this.mobCombatProfile(mob);
+    this.updateMobTarget(mob);
+    const target = mob.aggroTargetId !== null ? this.entities.get(mob.aggroTargetId) : null;
+    if (!target || target.dead) {
+      this.retargetMob(mob);
+      return;
+    }
+    if (this.maybeFlee(mob, target)) return;
+
+    if (profile.canLeash) {
+      const leash = mob.spawnPos.x > DUNGEON_X_THRESHOLD ? DUNGEON_LEASH_DISTANCE : LEASH_DISTANCE;
+      const leashAnchor = mob.leashAnchor ?? mob.spawnPos;
+      if (mob.fleeReturnTimer > 0) {
+        mob.fleeReturnTimer = Math.max(0, mob.fleeReturnTimer - DT);
+        if (dist2d(mob.pos, leashAnchor) <= leash - 1) mob.fleeReturnTimer = 0;
+      }
+      if (dist2d(mob.pos, leashAnchor) > leash && mob.fleeReturnTimer <= 0) {
+        mob.aiState = 'evade';
+        mob.aggroTargetId = null;
+        clearThreat(mob);
+        mob.leashAnchor = null;
+        return;
+      }
+    }
+
+    mob.swingTimer = Math.max(0, mob.swingTimer - DT);
+    if (profile.swingWhilePursuing || mob.aiState === 'attack') {
+      this.tryMobMeleeSwingInRange(mob, target);
+    }
+
+    if (dist2d(mob.pos, target.pos) > profile.desiredRange) {
+      if (!this.isRooted(mob)) {
+        this.moveToward(mob, target.pos, mob.moveSpeed * profile.chaseSpeedMult * this.moveSpeedMult(mob));
+      } else {
+        mob.facing = angleTo(mob.pos, target.pos);
+      }
+    } else {
+      mob.facing = angleTo(mob.pos, target.pos);
+    }
+
+    if (profile.immediateSwingOnEnterRange || profile.swingWhilePursuing || mob.aiState === 'attack') {
+      this.tryMobMeleeSwingInRange(mob, target);
+    }
+    mob.aiState = dist2d(mob.pos, target.pos) <= profile.meleeRange ? 'attack' : 'chase';
+  }
+
   private aggroMob(mob: Entity, target: Entity, social: boolean): void {
     if (mob.dead || mob.aiState === 'evade' || mob.aiState === 'chase' || mob.aiState === 'attack' || mob.aiState === 'flee') return;
     mob.aiState = 'chase';
@@ -3739,9 +4971,25 @@ export class Sim {
 
   private updateMob(mob: Entity): void {
     if (mob.dead) {
+      if (mob.templateId === NYTHRAXIS_BOSS_ID && mob.nythraxis && !mob.nythraxis.deathSpoken) {
+        mob.nythraxis.deathSpoken = true;
+        mob.nythraxis.phase = 'dead';
+        this.nythraxisDialogueSet(mob, [
+          { speaker: 'nythraxis', text: 'Malric...', delay: 0 },
+          { speaker: 'nythraxis', text: 'What have you done', delay: NYTHRAXIS_DIALOGUE_LINE_SECONDS },
+        ]);
+      }
       if (mob.ownerId !== null && MOBS[mob.templateId]?.family !== 'demon') return;
       mob.corpseTimer -= DT;
       mob.respawnTimer -= DT;
+      // Death Throes: a volatile corpse counts down its fuse, then detonates once.
+      if (mob.detonateTimer !== Infinity) {
+        mob.detonateTimer -= DT;
+        if (mob.detonateTimer <= 0) {
+          mob.detonateTimer = Infinity;
+          this.detonateCorpse(mob);
+        }
+      }
       // a slain summoned demon unravels rather than respawning into the wild
       if (mob.ownerId !== null && MOBS[mob.templateId]?.family === 'demon') {
         if (mob.corpseTimer <= 0) this.despawnPet(mob);
@@ -3757,7 +5005,17 @@ export class Sim {
 
     mob.combatTimer += DT;
 
+    if (mob.templateId.startsWith('vision_')) {
+      mob.hostile = false;
+      mob.aiState = 'idle';
+      mob.inCombat = false;
+      mob.aggroTargetId = null;
+      clearThreat(mob);
+      return;
+    }
+
     if (mob.ownerId !== null) {
+      if (this.isStunned(mob)) return;
       this.updatePet(mob);
       return;
     }
@@ -3767,9 +5025,28 @@ export class Sim {
     // non-hostile mob is therefore a leak — exactly the "immortal, invalid
     // target" wolves players hit. Restore hostility so no mob can ever be left
     // permanently untargetable, whatever path corrupted it.
+    if (mob.templateId === NYTHRAXIS_ADD_ID && mob.despawnTimer !== undefined) {
+      mob.hostile = false;
+      mob.aiState = 'idle';
+      mob.inCombat = false;
+      mob.aggroTargetId = null;
+      return;
+    }
+
     if (!mob.hostile) mob.hostile = true;
 
-    if (mob.inCombat) this.updateBossMechanics(mob);
+    const isNythraxis = mob.templateId === NYTHRAXIS_BOSS_ID;
+    if (mob.inCombat || (isNythraxis && mob.nythraxis && mob.nythraxis.phase !== 'dead')) {
+      const nythraxisScriptLocked = isNythraxis
+        && mob.nythraxis
+        && (mob.nythraxis.phase === 'transition' || mob.nythraxis.deathlessCastRemaining > 0 || mob.nythraxis.deathlessStunRemaining > 0);
+      if (isNythraxis) {
+        this.updateNythraxisEncounter(mob);
+        if (nythraxisScriptLocked || (mob.nythraxis && (mob.nythraxis.phase === 'transition' || mob.nythraxis.deathlessCastRemaining > 0 || mob.nythraxis.deathlessStunRemaining > 0))) return;
+      } else {
+        this.updateBossMechanics(mob);
+      }
+    }
 
     if (this.isStunned(mob)) {
       if (this.updateFearMovement(mob)) return;
@@ -3789,6 +5066,25 @@ export class Sim {
 
     switch (mob.aiState) {
       case 'idle': {
+        if (mob.templateId === NYTHRAXIS_BOSS_ID && !mob.inCombat) {
+          mob.wanderTarget = null;
+          mob.wanderTimer = 3;
+          mob.pos = { ...mob.spawnPos };
+          mob.prevPos = { ...mob.pos };
+          mob.facing = Math.PI;
+          mob.prevFacing = Math.PI;
+          const template = MOBS[mob.templateId];
+          let detected: Entity | null = null;
+          let detectedD = Infinity;
+          this.playerGrid.forEachInRadius(mob.pos.x, mob.pos.z, 25, (e, d2) => {
+            if (e.dead) return;
+            const radius = Math.max(4, Math.min(20, template.aggroRadius + (mob.level - e.level) * 1.5));
+            const d = Math.sqrt(d2);
+            if (d < radius && d < detectedD) { detected = e; detectedD = d; }
+          });
+          if (detected) this.aggroMob(mob, detected, true);
+          return;
+        }
         const template = MOBS[mob.templateId];
         let detected: Entity | null = null;
         let detectedD = Infinity;
@@ -3827,6 +5123,10 @@ export class Sim {
         break;
       }
       case 'chase': {
+        if (this.usesProfiledMobCombat(mob)) {
+          this.updateProfiledMobCombat(mob);
+          break;
+        }
         this.updateMobTarget(mob);
         const target = mob.aggroTargetId !== null ? this.entities.get(mob.aggroTargetId) : null;
         if (!target || target.dead) {
@@ -3834,9 +5134,16 @@ export class Sim {
           break;
         }
         if (this.maybeFlee(mob, target)) break;
+        const spell = MOBS[mob.templateId]?.petSpell;
         const leash = mob.spawnPos.x > DUNGEON_X_THRESHOLD ? DUNGEON_LEASH_DISTANCE : LEASH_DISTANCE;
         const leashAnchor = mob.leashAnchor ?? mob.spawnPos;
-        if (dist2d(mob.pos, leashAnchor) > leash) {
+        if (mob.fleeReturnTimer > 0) {
+          mob.fleeReturnTimer = Math.max(0, mob.fleeReturnTimer - DT);
+          if (dist2d(mob.pos, leashAnchor) <= leash - 1) mob.fleeReturnTimer = 0;
+        }
+        // Nythraxis is a raid boss: he never leashes/resets from being kited.
+        // Only a full wipe resets him (handled in updateNythraxisEncounter).
+        if (!isNythraxis && dist2d(mob.pos, leashAnchor) > leash && mob.fleeReturnTimer <= 0) {
           mob.aiState = 'evade';
           mob.aggroTargetId = null;
           clearThreat(mob);
@@ -3844,22 +5151,35 @@ export class Sim {
           break;
         }
         const d = dist2d(mob.pos, target.pos);
-        if (d <= MELEE_RANGE * 0.8) {
+        if (spell && d <= spell.range) {
           mob.aiState = 'attack';
           mob.swingTimer = Math.min(mob.swingTimer, 0.4);
           break;
         }
+        mob.swingTimer = Math.max(0, mob.swingTimer - DT);
+        if (this.tryMobMeleeSwingInRange(mob, target)) break;
         if (!this.isRooted(mob)) this.moveToward(mob, target.pos, mob.moveSpeed * this.moveSpeedMult(mob));
         else mob.facing = angleTo(mob.pos, target.pos);
+        if (this.tryMobMeleeSwingInRange(mob, target)) break;
         break;
       }
       case 'attack': {
+        if (this.usesProfiledMobCombat(mob)) {
+          this.updateProfiledMobCombat(mob);
+          break;
+        }
         this.updateMobTarget(mob);
         const target = mob.aggroTargetId !== null ? this.entities.get(mob.aggroTargetId) : null;
         if (!target || target.dead) { this.retargetMob(mob); break; }
         if (this.maybeFlee(mob, target)) break;
         const d = dist2d(mob.pos, target.pos);
-        if (d > MELEE_RANGE) { mob.aiState = 'chase'; break; }
+        const spell = MOBS[mob.templateId]?.petSpell;
+        if (spell) {
+          if (d > spell.range) { mob.aiState = 'chase'; break; }
+          this.updateRangedPetAttack(mob, target, spell);
+          break;
+        }
+        if (d > this.mobEffectiveMeleeRange(mob, target)) { mob.aiState = 'chase'; break; }
         mob.facing = angleTo(mob.pos, target.pos);
         mob.swingTimer -= DT;
         if (mob.swingTimer <= 0) {
@@ -3911,25 +5231,72 @@ export class Sim {
             }
           }
         }
+        // Stoneskin: a periodic self-absorb barrier. Telegraphed via createMob,
+        // which seeds stoneskinTimer to one full interval so the first barrier
+        // never snaps up the instant combat opens. Reuses the `absorb` aura,
+        // which dealDamage already soaks before any health is lost.
+        const stoneskin = MOBS[mob.templateId]?.stoneskin;
+        if (stoneskin) {
+          mob.stoneskinTimer -= DT;
+          if (mob.stoneskinTimer <= 0) {
+            mob.stoneskinTimer = stoneskin.every;
+            const school = (stoneskin.school ?? 'physical') as Aura['school'];
+            this.emit({ type: 'spellfx', sourceId: mob.id, targetId: mob.id, school, fx: 'nova' });
+            this.emit({ type: 'log', text: `${mob.name} unleashes ${stoneskin.name}!`, color: '#c9c2b5', entityId: mob.id });
+            this.applyAura(mob, {
+              id: `stoneskin_${mob.templateId}`, name: stoneskin.name, kind: 'absorb',
+              remaining: stoneskin.duration, duration: stoneskin.duration, value: stoneskin.amount,
+              sourceId: mob.id, school,
+            });
+          }
+        }
+        // Banshee's Wail: a periodic, telegraphed scream that terrifies nearby
+        // players into fleeing. The fear analogue of War Stomp — same timed,
+        // room-wide cadence — but it applies the `fear_incap` aura the on-hit
+        // `dread` and player-cast Fear share, so `updateFearMovement` drives the
+        // panic. Telegraphed via createMob, which seeds terrifyTimer to one full
+        // interval so the first wail never lands the instant combat opens.
+        const terrify = MOBS[mob.templateId]?.terrify;
+        if (terrify) {
+          mob.terrifyTimer -= DT;
+          if (mob.terrifyTimer <= 0) {
+            mob.terrifyTimer = terrify.every;
+            const school = terrify.school ?? 'shadow';
+            this.emit({ type: 'spellfx', sourceId: mob.id, targetId: mob.id, school, fx: 'nova' });
+            this.emit({ type: 'log', text: `${mob.name} unleashes ${terrify.name}!`, color: '#ff9933', entityId: mob.id });
+            for (const meta of this.players.values()) {
+              const pe = this.entities.get(meta.entityId);
+              if (!pe || pe.dead || dist2d(pe.pos, mob.pos) > terrify.radius) continue;
+              const remaining = this.diminishedCrowdControlDuration(mob, pe, 'fear', terrify.duration);
+              if (remaining === null) continue;
+              this.applyAura(pe, {
+                id: 'fear_incap', name: terrify.name, kind: 'incapacitate',
+                remaining, duration: remaining,
+                value: this.rng.range(-Math.PI, Math.PI),
+                sourceId: mob.id, school, breaksOnDamage: true,
+              });
+            }
+          }
+        }
         break;
       }
       case 'flee': {
         const target = mob.aggroTargetId !== null ? this.entities.get(mob.aggroTargetId) : null;
         if (!target || target.dead) { this.retargetMob(mob); break; }
-        // Outran the leash while panicking: drop the pull and reset home.
+        const fleeSpeed = this.fleeMoveSpeed(mob);
+        // A panic flee should not be the thing that breaks leash and full-heals
+        // the mob. If it reaches the leash edge, it recovers and re-engages;
+        // normal chase/attack leash checks still handle genuine dragged pulls.
         const leash = mob.spawnPos.x > DUNGEON_X_THRESHOLD ? DUNGEON_LEASH_DISTANCE : LEASH_DISTANCE;
         const leashAnchor = mob.leashAnchor ?? mob.spawnPos;
-        if (dist2d(mob.pos, leashAnchor) > leash) {
-          mob.aiState = 'evade';
-          mob.aggroTargetId = null;
-          clearThreat(mob);
-          mob.leashAnchor = null;
+        if (dist2d(mob.pos, leashAnchor) >= leash - fleeSpeed * DT) {
+          this.recoverFromFlee(mob, target, leash, leashAnchor);
           break;
         }
         mob.fleeTimer -= DT;
         if (mob.fleeTimer <= 0) {
           // Recover nerve and turn to fight again; hasFled keeps it from re-fleeing.
-          mob.aiState = 'attack';
+          this.recoverFromFlee(mob, target, leash, leashAnchor);
           mob.swingTimer = Math.min(mob.swingTimer, 0.4);
           break;
         }
@@ -3939,7 +5306,7 @@ export class Sim {
         mob.facing = away;
         if (!this.isRooted(mob)) {
           const fleePos = this.groundPos(mob.pos.x + Math.sin(away) * 10, mob.pos.z + Math.cos(away) * 10);
-          this.moveToward(mob, fleePos, mob.moveSpeed * FLEE_SPEED_MULT * this.moveSpeedMult(mob));
+          this.moveToward(mob, fleePos, fleeSpeed);
         }
         break;
       }
@@ -3978,6 +5345,7 @@ export class Sim {
     mob.leashAnchor = null;
     mob.evadeStall = 0;
     mob.fleeTimer = 0;
+    mob.fleeReturnTimer = 0;
     mob.hasFled = false;
     clearThreat(mob);
     this.despawnSummonedAdds(mob);
@@ -3985,7 +5353,14 @@ export class Sim {
     mob.enraged = false;
     mob.healedThisPull = false;
     mob.stompTimer = MOBS[mob.templateId]?.stomp?.every ?? 0;
+    mob.terrifyTimer = MOBS[mob.templateId]?.terrify?.every ?? 0;
+    mob.mendTimer = MOBS[mob.templateId]?.mendAlly?.every ?? 0;
+    mob.wardTimer = MOBS[mob.templateId]?.wardAllies?.every ?? 0;
+    mob.stoneskinTimer = MOBS[mob.templateId]?.stoneskin?.every ?? 0;
+    mob.rallyTimer = MOBS[mob.templateId]?.rally?.every ?? 0;
+    mob.warcryTimer = MOBS[mob.templateId]?.warcry?.every ?? 0;
     mob.wanderTimer = this.rng.range(2, 8);
+    if (mob.templateId === NYTHRAXIS_BOSS_ID) this.resetNythraxisEncounter(mob);
   }
 
   // Cowardly mobs panic once per pull at low HP: turn and run from the attacker
@@ -4045,7 +5420,41 @@ export class Sim {
     if (mob.enraged && enrage) dmg *= enrage.dmgMult;
     const rawDmg = dmg; // pre-armor, post-crit/enrage — basis for cleave splash
     dmg *= 1 - armorReduction(this.effectiveArmor(target), mob.level);
-    this.dealDamage(mob, target, Math.max(1, Math.round(dmg)), crit, 'physical', null, 'hit');
+    const dealt = Math.max(1, Math.round(dmg));
+    this.dealDamage(mob, target, dealt, crit, 'physical', null, 'hit');
+    // Lifesteal: a landed swing heals the mob for a fraction of the damage it
+    // just dealt. Hostile mobs only, so a friendly pet (mobSwing's other caller)
+    // never drains for its owner; skip if the mob is already topped off or died
+    // to the defender's thorns/reflect earlier this swing.
+    const leech = MOBS[mob.templateId]?.lifeleech;
+    if (leech && mob.hostile && !mob.dead && mob.hp < mob.maxHp && this.rng.chance(leech.chance ?? 1)) {
+      const heal = Math.min(mob.maxHp - mob.hp, Math.max(1, Math.round(dealt * leech.healFrac)));
+      if (heal > 0) {
+        mob.hp += heal;
+        this.emit({ type: 'heal', targetId: mob.id, amount: heal });
+      }
+    }
+    // Battle Fury (Rampage): a landed swing whips this attacker into an escalating
+    // frenzy — a self-applied, stacking buff_ap aura (up to `maxStacks`) that grows
+    // its attack power, and thus its melee damage, the longer the fight drags on.
+    // Rides the existing buff_ap aura that effectiveAttackPower already folds into
+    // mob swing damage, so there is no new combat math. Hostile mobs only, so a
+    // friendly pet (mobSwing's other caller) never self-buffs off the party's kills;
+    // skip if the mob died to the defender's thorns/reflect earlier this swing. The
+    // single shared aura slot is bumped and refreshed each hit; left alone it falls
+    // off after `duration`s, so burning the mob down or kiting it out of melee both
+    // reset the ramp.
+    const rampage = MOBS[mob.templateId]?.rampage;
+    if (rampage && mob.hostile && !mob.dead) {
+      const existing = mob.auras.find((a) => a.id === `rampage_${mob.templateId}` && a.sourceId === mob.id);
+      const stacks = Math.min(rampage.maxStacks, (existing?.stacks ?? 0) + 1);
+      this.applyAura(mob, {
+        id: `rampage_${mob.templateId}`, name: rampage.name, kind: 'buff_ap',
+        remaining: rampage.duration, duration: rampage.duration,
+        value: rampage.ap * stacks, stacks,
+        sourceId: mob.id, school: rampage.school ?? 'physical',
+      });
+    }
     // Cleave: the swing splashes onto other players standing near the primary
     // target, each taking the hit reduced by their own armor. Hostile mobs only,
     // so a friendly pet swinging through mobSwing never cleaves its owner's party.
@@ -4072,11 +5481,172 @@ export class Sim {
         sourceId: mob.id, school: (venom.school as Aura['school']) ?? 'nature',
       });
     }
+    // soulrot ("Soulrot"): a landed swing may fester a refreshing SHADOW DoT.
+    // Same on-hit DoT seam as venom, but shadow-school — the undead/necrotic
+    // flavour. Hostile mobs only (mobSwing is also the pet attack path, so a
+    // friendly pet must never rot the party).
+    const soulrot = MOBS[mob.templateId]?.soulrot;
+    if (soulrot && mob.hostile && !target.dead && this.rng.chance(soulrot.chance)) {
+      this.applyAura(target, {
+        id: 'soulrot_' + mob.templateId, name: soulrot.name, kind: 'dot',
+        remaining: soulrot.duration, duration: soulrot.duration,
+        value: Math.max(1, Math.round(soulrot.perTick)),
+        tickInterval: soulrot.interval, tickTimer: soulrot.interval,
+        sourceId: mob.id, school: (soulrot.school as Aura['school']) ?? 'shadow',
+      });
+    }
+    // bleed ("Rend"): a landed swing may open a refreshing PHYSICAL DoT wound.
+    // Same on-hit DoT seam as venom, but physical-school — the predator/beast
+    // flavour (raking claws, gore). Hostile mobs only (mobSwing is also the pet
+    // attack path, so a friendly pet must never bleed the party).
+    const bleed = MOBS[mob.templateId]?.bleed;
+    if (bleed && mob.hostile && !target.dead && this.rng.chance(bleed.chance)) {
+      this.applyAura(target, {
+        id: 'bleed_' + mob.templateId, name: bleed.name, kind: 'dot',
+        remaining: bleed.duration, duration: bleed.duration,
+        value: Math.max(1, Math.round(bleed.perTick)),
+        tickInterval: bleed.interval, tickTimer: bleed.interval,
+        sourceId: mob.id, school: (bleed.school as Aura['school']) ?? 'physical',
+      });
+    }
+
+    // frostbite: a landed swing may sear the victim with a refreshing frost DoT
+    // (the frost twin of venom — chilling elementals). Hostile mobs only, never a
+    // friendly pet (mobSwing is also the pet attack path).
+    const frostbite = MOBS[mob.templateId]?.frostbite;
+    if (frostbite && mob.hostile && !target.dead && this.rng.chance(frostbite.chance)) {
+      this.applyAura(target, {
+        id: 'frostbite_' + mob.templateId, name: frostbite.name, kind: 'dot',
+        remaining: frostbite.duration, duration: frostbite.duration,
+        value: Math.max(1, Math.round(frostbite.perTick)),
+        tickInterval: frostbite.interval, tickTimer: frostbite.interval,
+        sourceId: mob.id, school: (frostbite.school as Aura['school']) ?? 'frost',
+      });
+    }
+
+    // smoldering fuse: a landed swing may ignite a refreshing fire DoT — the
+    // fire-school sibling of venom (same guards: hostile mobs only, never a pet).
+    const smolder = MOBS[mob.templateId]?.smolder;
+    if (smolder && mob.hostile && !target.dead && this.rng.chance(smolder.chance)) {
+      this.applyAura(target, {
+        id: 'smolder_' + mob.templateId, name: smolder.name, kind: 'dot',
+        remaining: smolder.duration, duration: smolder.duration,
+        value: Math.max(1, Math.round(smolder.perTick)),
+        tickInterval: smolder.interval, tickTimer: smolder.interval,
+        sourceId: mob.id, school: (smolder.school as Aura['school']) ?? 'fire',
+      });
+    }
+
+    // cinder: the fire-school twin of venom — a landed swing may set a refreshing
+    // burning DoT (hostile mobs only, never a friendly pet — mobSwing is also the
+    // pet attack path). Reuses the same dot aura seam; school defaults 'fire'.
+    const cinder = MOBS[mob.templateId]?.cinder;
+    if (cinder && mob.hostile && !target.dead && this.rng.chance(cinder.chance)) {
+      this.applyAura(target, {
+        id: 'cinder_' + mob.templateId, name: cinder.name, kind: 'dot',
+        remaining: cinder.duration, duration: cinder.duration,
+        value: Math.max(1, Math.round(cinder.perTick)),
+        tickInterval: cinder.interval, tickTimer: cinder.interval,
+        sourceId: mob.id, school: (cinder.school as Aura['school']) ?? 'fire',
+      });
+    }
+    // arcane rot: a landed swing may brand the victim with a searing arcane rune
+    // that festers as a refreshing DoT. The arcane-school twin of venom; reuses
+    // the `dot` aura. Guarded on hostile + alive so a friendly pet (the other
+    // mobSwing caller) never debuffs an ally.
+    const arcaneRot = MOBS[mob.templateId]?.arcaneRot;
+    if (arcaneRot && mob.hostile && !target.dead && this.rng.chance(arcaneRot.chance)) {
+      this.applyAura(target, {
+        id: 'arcaneRot_' + mob.templateId, name: arcaneRot.name, kind: 'dot',
+        remaining: arcaneRot.duration, duration: arcaneRot.duration,
+        value: Math.max(1, Math.round(arcaneRot.perTick)),
+        tickInterval: arcaneRot.interval, tickTimer: arcaneRot.interval,
+        sourceId: mob.id, school: (arcaneRot.school as Aura['school']) ?? 'arcane',
+      });
+    }
+
+    // deadly poison: a landed swing may apply (or add a stack to) a ramping DoT.
+    // Guarded on hostile so a friendly pet (the other mobSwing caller) never
+    // poisons an ally. Per-tick damage scales with the stack count.
+    const stackPoison = MOBS[mob.templateId]?.stackPoison;
+    if (stackPoison && mob.hostile && !target.dead && this.rng.chance(stackPoison.chance)) {
+      this.applyStackPoison(mob, target, stackPoison);
+    }
     // corrosive bite: a landed hit may shred the victim's armor (stacking sunder).
     // Guarded on hostile so a friendly pet (the other mobSwing caller) never debuffs an ally.
     const corrode = MOBS[mob.templateId]?.corrode;
     if (corrode && mob.hostile && !target.dead && this.rng.chance(corrode.chance)) {
       this.applyCorrosion(mob, target, corrode);
+    }
+    // silencing shriek: anti-caster mobs can lock the victim's spells on a hit.
+    // Guard on hostile + alive so a friendly pet (the other mobSwing caller)
+    // never silences the party. updateCasting interrupts any live spell next tick.
+    const silence = MOBS[mob.templateId]?.silence;
+    if (silence && mob.hostile && !target.dead && this.rng.chance(silence.chance)) {
+      this.applyAura(target, {
+        id: `silence_${mob.templateId}`, name: silence.name, kind: 'silence',
+        remaining: silence.duration, duration: silence.duration, value: 0,
+        sourceId: mob.id, school: (silence.school ?? 'shadow') as Aura['school'],
+      });
+    }
+    // blinding powder: a thrown handful of grit can leave the victim's own
+    // weapon swings whiffing. Guarded on hostile + alive so a friendly pet
+    // (mobSwing's other caller) never blinds the party. Carries the added miss
+    // chance in the aura value, read back in melee/ranged swings via blindMissBonus.
+    const blind = MOBS[mob.templateId]?.blind;
+    if (blind && mob.hostile && !target.dead && this.rng.chance(blind.chance)) {
+      this.applyAura(target, {
+        id: `blind_${mob.templateId}`, name: blind.name, kind: 'blind',
+        remaining: blind.duration, duration: blind.duration, value: blind.miss,
+        sourceId: mob.id, school: (blind.school ?? 'physical') as Aura['school'],
+      });
+    }
+    // disarm: a brutal swing can knock the weapon from a player's grip, suppressing
+    // their auto-attack for a duration. Players only (only they run the primary-target
+    // auto-attack path) and hostile only, so a friendly pet (mobSwing's other caller)
+    // never disarms the party. Refreshes by id; never stacks.
+    const disarm = MOBS[mob.templateId]?.disarm;
+    if (disarm && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(disarm.chance)) {
+      this.applyAura(target, {
+        id: `disarm_${mob.templateId}`, name: disarm.name, kind: 'disarm',
+        remaining: disarm.duration, duration: disarm.duration, value: 0,
+        sourceId: mob.id, school: (disarm.school ?? 'physical') as Aura['school'],
+      });
+    }
+
+    // school lockout: a counterspell-on-hit that seals a single spell school. Same
+    // hostile + alive guard as silence so a friendly pet never locks out the party.
+    const lockout = MOBS[mob.templateId]?.lockout;
+    if (lockout && mob.hostile && !target.dead && this.rng.chance(lockout.chance)) {
+      this.applyAura(target, {
+        id: `lockout_${mob.templateId}`, name: lockout.name, kind: 'lockout',
+        remaining: lockout.duration, duration: lockout.duration, value: 0,
+        sourceId: mob.id, school: lockout.school,
+      });
+    }
+    // draining curse: a landed hit can leave a cost-tax debuff that inflates the
+    // victim's ability costs. Guarded on hostile + alive so a friendly pet (the
+    // other mobSwing caller) never debuffs the party.
+    const costTax = MOBS[mob.templateId]?.costTax;
+    if (costTax && mob.hostile && !target.dead && this.rng.chance(costTax.chance)) {
+      this.applyAura(target, {
+        id: `cost_tax_${mob.templateId}`, name: costTax.name, kind: 'cost_tax',
+        remaining: costTax.duration, duration: costTax.duration, value: costTax.pct,
+        sourceId: mob.id, school: (costTax.school ?? 'shadow') as Aura['school'],
+      });
+    }
+
+    // Find Weakness: a landed hit can leave the victim's flesh exposed, so the
+    // next critical hits against them bite deeper. Hostile + player-only, like the
+    // other on-hit debuffs, so a friendly pet (mobSwing's other caller) never marks
+    // the party.
+    const cv = MOBS[mob.templateId]?.critVuln;
+    if (cv && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(cv.chance)) {
+      this.applyAura(target, {
+        id: `critvuln_${mob.templateId}`, name: cv.name, kind: 'critvuln',
+        remaining: cv.duration, duration: cv.duration, value: cv.critDamage,
+        sourceId: mob.id, school: (cv.school ?? 'physical') as Aura['school'],
+      });
     }
     // thorns / lightning shield on the defender
     if (!mob.dead) {
@@ -4099,6 +5669,424 @@ export class Sim {
         value: ms.healReduction,
         sourceId: mob.id,
         school: (ms.school as Aura['school']) ?? 'physical',
+      });
+    }
+    // Spell Vulnerability: a landed hit may curse the victim so they take more
+    // magic damage from everyone (the arcane twin of corrode's armor shred).
+    // Hostile mobs only, so a friendly pet (mobSwing's other caller) never curses
+    // the party. A single refreshing slot keyed by template, like mortal_wound.
+    const sv = MOBS[mob.templateId]?.spellVuln;
+    if (sv && mob.hostile && !target.dead && this.rng.chance(sv.chance)) {
+      this.applyAura(target, {
+        id: `spellvuln_${mob.templateId}`,
+        name: sv.name,
+        kind: 'spellvuln',
+        remaining: sv.duration,
+        duration: sv.duration,
+        value: sv.amp,
+        sourceId: mob.id,
+        school: (sv.school as Aura['school']) ?? 'arcane',
+      });
+    }
+
+    // Staggering blow: a landed hit may knock the victim off-balance, cutting their
+    // dodge for a short while so attacks land more reliably. Hostile mobs only (a
+    // friendly pet shares this swing path) and only players have a meaningful dodge
+    // chance. Rides buff_dodge with a NEGATIVE value — recalcPlayerStats already
+    // folds buff_dodge into e.dodgeChance and it recalcs on expiry (buff* kind), so
+    // no new aura kind is needed.
+    const stagger = MOBS[mob.templateId]?.staggerHit;
+    if (stagger && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(stagger.chance)) {
+      this.applyAura(target, {
+        id: `stagger_${mob.templateId}`,
+        name: stagger.name,
+        kind: 'buff_dodge',
+        remaining: stagger.duration,
+        duration: stagger.duration,
+        value: -stagger.dodgeReduction,
+        sourceId: mob.id,
+        school: 'physical',
+      });
+    }
+
+    // Heal-Absorb: a landed hit can brand the victim with a necrotic blight that
+    // devours the next chunk of incoming healing. The sibling of Mortal Strike —
+    // where Mortal Strike scales every heal down, this eats a fixed pool then
+    // fades. Guarded on `hostile` so a friendly pet (mobSwing's other caller)
+    // never blights an ally.
+    const ha = MOBS[mob.templateId]?.healAbsorb;
+    if (ha && mob.hostile && !target.dead && this.rng.chance(ha.chance)) {
+      this.applyAura(target, {
+        id: `heal_absorb_${mob.templateId}`,
+        name: ha.name,
+        kind: 'heal_absorb',
+        remaining: ha.duration,
+        duration: ha.duration,
+        value: ha.amount,
+        sourceId: mob.id,
+        school: (ha.school as Aura['school']) ?? 'shadow',
+      });
+    }
+    // Ensnare: a landed hit may web the victim in place (root). Hostile mobs only
+    // (a friendly pet shares this swing path) and only roots players — `applyRootAura`
+    // applies crowd-control DR so repeated webs from the same mob shrink and break.
+    const ensnare = MOBS[mob.templateId]?.ensnare;
+    if (ensnare && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(ensnare.chance)) {
+      this.applyRootAura(mob, target, ensnare.name, `ensnare_${mob.templateId}`, ensnare.duration, ensnare.school ?? 'nature');
+    }
+    // stunOnHit: a landed crushing blow may briefly stun the victim. Hostile mobs
+    // only (a friendly pet shares this swing path) and only stuns players. Reuses
+    // the `stun` aura the AoE stomp already applies, so isStunned()/the HUD handle
+    // it with no new wiring. Kept low-chance/short so it threatens without locking.
+    const stunOnHit = MOBS[mob.templateId]?.stunOnHit;
+    if (stunOnHit && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(stunOnHit.chance)) {
+      this.applyAura(target, {
+        id: `stun_${mob.templateId}`, name: stunOnHit.name, kind: 'stun',
+        remaining: stunOnHit.duration, duration: stunOnHit.duration, value: 0,
+        sourceId: mob.id, school: stunOnHit.school ?? 'physical',
+      });
+    }
+    // Knockback: a landed hit can physically hurl the player victim straight back.
+    // Hostile mobs only (a friendly pet shares this swing path) and players only —
+    // shoving a fellow mob is meaningless. Pure positional displacement (no aura),
+    // terrain-clamped so it never strands the victim off the world; surfaced via a
+    // spellfx nova + the same "unleashes" log line War Stomp uses.
+    const knockback = MOBS[mob.templateId]?.knockback;
+    if (knockback && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(knockback.chance)) {
+      if (this.applyKnockback(mob, target, knockback.distance) > 0) {
+        const school = (knockback.school ?? 'physical') as Aura['school'];
+        this.emit({ type: 'spellfx', sourceId: mob.id, targetId: target.id, school, fx: 'nova' });
+        this.emit({ type: 'log', text: `${mob.name} unleashes ${knockback.name}!`, color: '#ff9933', entityId: mob.id });
+      }
+    }
+    // slowStrike: a landed hit may mire the victim, slowing their attack speed.
+    // Rides the existing `attackspeed` aura (swingIntervalMult: value > 1 = slower);
+    // refreshes by id and never stacks. Guarded on `hostile` so a friendly pet
+    // (mobSwing's other caller) never debuffs the party.
+    const slowStrike = MOBS[mob.templateId]?.slowStrike;
+    if (slowStrike && mob.hostile && !target.dead && this.rng.chance(slowStrike.chance)) {
+      this.applyAura(target, {
+        id: `slowstrike_${mob.templateId}`,
+        name: slowStrike.name,
+        kind: 'attackspeed',
+        remaining: slowStrike.duration,
+        duration: slowStrike.duration,
+        value: slowStrike.mult,
+        sourceId: mob.id,
+        school: (slowStrike.school as Aura['school']) ?? 'physical',
+      });
+    }
+    // Curse of Tongues: a landed hit may garble the victim's incantations, stretching
+    // their spell cast times (`tonguesMult` reads this at cast-start). Refreshes by id
+    // and never stacks. Guarded on `hostile` so a friendly pet (mobSwing's other
+    // caller) never curses an ally; players only, since only players hard-cast here.
+    const tongues = MOBS[mob.templateId]?.tongues;
+    if (tongues && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(tongues.chance)) {
+      this.applyAura(target, {
+        id: `tongues_${mob.templateId}`,
+        name: tongues.name,
+        kind: 'tongues',
+        remaining: tongues.duration,
+        duration: tongues.duration,
+        value: tongues.mult,
+        sourceId: mob.id,
+        school: (tongues.school as Aura['school']) ?? 'shadow',
+      });
+    }
+    // Mana Burn: a landed hit may sap a flat amount of mana from a mana-using
+    // victim (casters). No effect on rage/energy users. Guarded on `hostile` so
+    // a friendly pet (mobSwing's other caller) never drains an ally's mana. The
+    // mana bar visibly drops and the affix is surfaced via an `aura` log line.
+    const burn = MOBS[mob.templateId]?.manaBurn;
+    if (burn && mob.hostile && !target.dead && target.resourceType === 'mana' && target.resource > 0 && this.rng.chance(burn.chance)) {
+      target.resource = Math.max(0, target.resource - burn.amount);
+      this.emit({ type: 'aura', targetId: target.id, name: burn.name, gained: true });
+    }
+    // Sap Vigor: the melee-resource twin of manaBurn. A landed hit can drain a
+    // flat amount of rage or energy from a melee victim, starving their ability
+    // use. Mana users are unaffected (it does nothing to casters); hostile mobs
+    // only, so a friendly pet (mobSwing's other caller) never saps an ally. The
+    // resource bar visibly drops and the affix is surfaced via an `aura` log line.
+    const sap = MOBS[mob.templateId]?.sapVigor;
+    if (sap && mob.hostile && !target.dead && (target.resourceType === 'rage' || target.resourceType === 'energy')
+        && target.resource > 0 && this.rng.chance(sap.chance)) {
+      target.resource = Math.max(0, target.resource - sap.amount);
+      this.emit({ type: 'aura', targetId: target.id, name: sap.name, gained: true });
+    }
+    // Maddening curse: a landed hit can fog a caster's mind, draining Intellect
+    // and thus shrinking their mana pool. Mana users only (it does nothing to
+    // rage/energy users); hostile mobs only, so a friendly pet (mobSwing's other
+    // caller) never debuffs the party. Rides buff_int with a negative value, so
+    // recalcPlayerStats folds it through to maxResource with no new math.
+    const enfeeble = MOBS[mob.templateId]?.enfeeble;
+    if (enfeeble && mob.hostile && !target.dead && target.resourceType === 'mana' && this.rng.chance(enfeeble.chance)) {
+      this.applyAura(target, {
+        id: `enfeeble_${mob.templateId}`,
+        name: enfeeble.name,
+        kind: 'buff_int',
+        remaining: enfeeble.duration,
+        duration: enfeeble.duration,
+        value: -Math.abs(enfeeble.int),
+        sourceId: mob.id,
+        school: enfeeble.school ?? 'shadow',
+      });
+    }
+    // Vitality drain: a landed hit can siphon the victim's Stamina, shrinking
+    // their maximum-HP pool. Hits every class (all players have Stamina), unlike
+    // the mana-only enfeeble. Hostile mobs only, so a friendly pet (mobSwing's
+    // other caller) never drains the party. Rides buff_sta with a negative value,
+    // so recalcPlayerStats folds it through to maxHp with no new HP math.
+    const enervate = MOBS[mob.templateId]?.enervate;
+    if (enervate && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(enervate.chance)) {
+      this.applyAura(target, {
+        id: `enervate_${mob.templateId}`,
+        name: enervate.name,
+        kind: 'buff_sta',
+        remaining: enervate.duration,
+        duration: enervate.duration,
+        value: -Math.abs(enervate.sta),
+        sourceId: mob.id,
+        school: enervate.school ?? 'shadow',
+      });
+    }
+
+    // Plague: a landed hit can rot the victim's vitality, draining Stamina and
+    // thus shrinking their health pool (recalcPlayerStats folds the smaller
+    // Stamina through to a smaller maxHp; current HP scales down with it).
+    // Players only; hostile mobs only, so a friendly pet (mobSwing's other
+    // caller) never debuffs the party. Rides buff_sta with a negative value, so
+    // there is no new HP math. Refreshes by id and never stacks.
+    const plague = MOBS[mob.templateId]?.plague;
+    if (plague && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(plague.chance)) {
+      this.applyAura(target, {
+        id: `plague_${mob.templateId}`,
+        name: plague.name,
+        kind: 'buff_sta',
+        remaining: plague.duration,
+        duration: plague.duration,
+        value: -Math.abs(plague.sta),
+        sourceId: mob.id,
+        school: plague.school ?? 'nature',
+      });
+    }
+
+    // Withering curse: a landed hit can rot the victim's sinews, draining Agility
+    // and so thinning their armor (agi*2) and dodge at once. Hostile mobs only, so a
+    // friendly pet (mobSwing's other caller) never debuffs the party; player targets
+    // only (mobs derive no stats from auras). Rides buff_agi with a negative value, so
+    // recalcPlayerStats folds it through with no new stat math.
+    const wither = MOBS[mob.templateId]?.wither;
+    if (wither && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(wither.chance)) {
+      this.applyAura(target, {
+        id: `wither_${mob.templateId}`,
+        name: wither.name,
+        kind: 'buff_agi',
+        remaining: wither.duration,
+        duration: wither.duration,
+        value: -Math.abs(wither.agi),
+        sourceId: mob.id,
+        school: wither.school ?? 'nature',
+      });
+    }
+
+    // Spirit Siphon: a landed hit can drain a caster's Spirit, slowing their
+    // out-of-combat mana/health regen (updateRegen reads stats.spi). Mana users
+    // only (it does nothing to rage/energy users); hostile mobs only, so a
+    // friendly pet (mobSwing's other caller) never debuffs the party. Rides
+    // buff_spi with a negative value, so recalcPlayerStats folds it through with
+    // no new regen math; it expires like any buff* aura.
+    const siphon = MOBS[mob.templateId]?.siphonSpirit;
+    if (siphon && mob.hostile && !target.dead && target.resourceType === 'mana' && this.rng.chance(siphon.chance)) {
+      this.applyAura(target, {
+        id: `siphon_spirit_${mob.templateId}`,
+        name: siphon.name,
+        kind: 'buff_spi',
+        remaining: siphon.duration,
+        duration: siphon.duration,
+        value: -Math.abs(siphon.spi),
+        sourceId: mob.id,
+        school: siphon.school ?? 'shadow',
+      });
+    }
+    // On-hit chill: frost-touched mobs numb the victim, slowing their movement.
+    const chill = MOBS[mob.templateId]?.chillOnHit;
+    if (chill && !mob.dead && !target.dead && this.rng.chance(chill.chance)) {
+      this.applyAura(target, {
+        id: mob.templateId + '_chill', name: chill.name, kind: 'slow',
+        remaining: chill.duration, duration: chill.duration, value: chill.mult,
+        sourceId: mob.id, school: 'frost',
+      });
+    }
+    // Demoralizing affix: a successful hit saps the player victim's attack
+    // power for a few seconds, weakening the damage they deal back.
+    const demo = MOBS[mob.templateId]?.demoralize;
+    if (demo && !mob.dead && target.kind === 'player' && this.rng.chance(demo.chance ?? 1)) {
+      this.applyAura(target, {
+        id: 'mob_demoralize',
+        name: demo.name ?? 'Demoralized',
+        kind: 'buff_ap',
+        remaining: demo.duration,
+        duration: demo.duration,
+        value: -Math.abs(demo.ap),
+        sourceId: mob.id,
+        school: 'physical',
+      });
+    }
+    // Dread: a landed hit can terrify the victim into fleeing. Reuses the exact
+    // `fear_incap` incapacitate aura the player-cast Fear applies, so
+    // `updateFearMovement` drives the panicked run — no new aura kind or hook.
+    // Guarded on `hostile` (a friendly pet never fears the party) and on a player
+    // target (mobs can't flee via this path). `diminishedCrowdControlDuration`
+    // returns the full duration for a mob source (DR is PvP-only), so the victim
+    // gets the authored fear length.
+    const dread = MOBS[mob.templateId]?.dread;
+    if (dread && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(dread.chance)) {
+      const remaining = this.diminishedCrowdControlDuration(mob, target, 'fear', dread.duration);
+      if (remaining !== null) {
+        this.applyAura(target, {
+          id: 'fear_incap', name: dread.name, kind: 'incapacitate',
+          remaining, duration: remaining,
+          value: this.rng.range(-Math.PI, Math.PI),
+          sourceId: mob.id, school: dread.school ?? 'shadow', breaksOnDamage: true,
+        });
+      }
+    }
+    // Polymorph hex: a landed hit can briefly turn the victim into a critter,
+    // applying the same `polymorph` aura the mage's Polymorph uses — `isStunned`
+    // locks out every action and the aura is stripped the instant the victim
+    // takes damage (the caster's own next hit ends it), so it's a brief flavor
+    // incap, not a hard lock. Unlike the player-cast version we deliberately do
+    // NOT heal the victim to full on apply (a monster shouldn't restore its prey),
+    // but keep the aura's inherent regen tick. Guarded on `hostile` + a player
+    // target; `diminishedCrowdControlDuration` returns the full duration for a
+    // mob source (DR is PvP-only).
+    const hex = MOBS[mob.templateId]?.polymorphHex;
+    if (hex && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(hex.chance)) {
+      const remaining = this.diminishedCrowdControlDuration(mob, target, 'polymorph', hex.duration);
+      if (remaining !== null) {
+        this.applyAura(target, {
+          id: `hex_${mob.templateId}`, name: hex.name, kind: 'polymorph',
+          remaining, duration: remaining, value: 0,
+          tickInterval: 1, tickTimer: 1,
+          sourceId: mob.id, school: hex.school ?? 'nature', breaksOnDamage: true,
+        });
+      }
+    }
+    // Concussive Blow: a landed hit can briefly STUN the victim (single-target,
+    // distinct from War Stomp's AoE slam). Hostile mobs only so a friendly pet
+    // never stuns an ally; CC DR is PvP-only so a mob source always lands full.
+    const concuss = MOBS[mob.templateId]?.concuss;
+    if (concuss && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(concuss.chance)) {
+      this.applyAura(target, {
+        id: `concuss_${mob.templateId}`,
+        name: concuss.name,
+        kind: 'stun',
+        remaining: concuss.duration,
+        duration: concuss.duration,
+        value: 0,
+        sourceId: mob.id,
+        school: concuss.school ?? 'physical',
+      });
+    }
+
+    // Expose: a landed hit can crack the victim's guard, raising the physical
+    // damage they take for a duration. Guarded on `hostile` so a friendly pet
+    // (mobSwing's other caller) never debuffs the party.
+    const expose = MOBS[mob.templateId]?.expose;
+    if (expose && mob.hostile && !target.dead && this.rng.chance(expose.chance)) {
+      this.applyAura(target, {
+        id: `expose_${mob.templateId}`,
+        name: expose.name,
+        kind: 'expose',
+        remaining: expose.duration,
+        duration: expose.duration,
+        value: expose.dmgIncrease,
+        sourceId: mob.id,
+        school: (expose.school as Aura['school']) ?? 'physical',
+      });
+    }
+
+    // Curse of frailty: a landed hit may curse the victim so they take more
+    // damage from every source (a `vulnerability` aura read in dealDamage).
+    // Players only, hostile mobs only, so a friendly pet (mobSwing's other
+    // caller) never softens an ally. Refreshes by id, never stacks past one.
+    const vuln = MOBS[mob.templateId]?.vulnerability;
+    if (vuln && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(vuln.chance)) {
+      this.applyAura(target, {
+        id: `vulnerability_${mob.templateId}`,
+        name: vuln.name,
+        kind: 'vulnerability',
+        remaining: vuln.duration,
+        duration: vuln.duration,
+        value: vuln.amp,
+        sourceId: mob.id,
+        school: vuln.school ?? 'shadow',
+      });
+    }
+
+    // Weakening Hex: a landed hit can curse the player victim, scaling the damage
+    // AND healing they deal by (1 - reductionPct) for a while. Guarded on
+    // `hostile` so a friendly pet (mobSwing's other caller) never hexes the party,
+    // and on a player target. Rides a dedicated `hex` aura read by hexOutputMult.
+    const weakHex = MOBS[mob.templateId]?.hex;
+    if (weakHex && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(weakHex.chance)) {
+      this.applyAura(target, {
+        id: `hex_${mob.templateId}`,
+        name: weakHex.name,
+        kind: 'hex',
+        remaining: weakHex.duration,
+        duration: weakHex.duration,
+        value: weakHex.reductionPct,
+        sourceId: mob.id,
+        school: weakHex.school ?? 'shadow',
+      });
+    }
+    // Devour Magic: a landed hit can strip one beneficial enhancement buff off
+    // the player victim (classic warlock/demon Devour Magic). Hostile mobs only
+    // (a friendly pet — mobSwing's other caller — must never purge its owner's
+    // party) and players only. No-op when the victim carries no devourable buff.
+    const purge = MOBS[mob.templateId]?.purgeOnHit;
+    if (purge && mob.hostile && target.kind === 'player' && !target.dead && this.rng.chance(purge.chance)) {
+      this.devourBeneficialAura(target, purge.name);
+    }
+  }
+
+  // Strip one beneficial enhancement aura from a player victim. Removes the
+  // first devourable buff (auras are in application order, so this is
+  // deterministic), recalcs the player's derived stats so a stripped
+  // buff_armor/buff_ap/buff_int actually un-folds, and surfaces the proc via the
+  // standard `aura` event (the full aura array on the next snapshot reflects the
+  // removal to online clients). Returns whether anything was devoured.
+  private devourBeneficialAura(target: Entity, name: string): boolean {
+    const idx = target.auras.findIndex(isDevourableAura);
+    if (idx < 0) return false;
+    target.auras.splice(idx, 1);
+    const meta = this.players.get(target.id);
+    if (meta) recalcPlayerStats(target, meta.cls, meta.equipment, meta.talentMods);
+    this.emit({ type: 'aura', targetId: target.id, name, gained: true });
+    return true;
+  }
+
+  // Apply (or add a stack to) a ramping poison DoT on the victim. One shared
+  // `dot` slot found by id, its per-tick `value` recomputed as perTick*stacks
+  // (bumped up to `maxStacks`) and its timer fully refreshed each application —
+  // so the per-tick damage climbs the longer the creature keeps biting. The dot
+  // tick reads `value` directly, so storing perTick*stacks is what makes it ramp.
+  private applyStackPoison(mob: Entity, target: Entity, sp: NonNullable<MobTemplate['stackPoison']>): void {
+    const id = 'stackpoison_' + mob.templateId;
+    const existing = target.auras.find((a) => a.id === id && a.kind === 'dot');
+    if (existing) {
+      existing.stacks = Math.min(sp.maxStacks, (existing.stacks ?? 1) + 1);
+      existing.value = Math.max(1, Math.round(sp.perTick * existing.stacks));
+      existing.remaining = existing.duration;
+      this.emit({ type: 'aura', targetId: target.id, name: sp.name, gained: true });
+    } else {
+      this.applyAura(target, {
+        id, name: sp.name, kind: 'dot',
+        remaining: sp.duration, duration: sp.duration,
+        value: Math.max(1, Math.round(sp.perTick)),
+        tickInterval: sp.interval, tickTimer: sp.interval, stacks: 1,
+        sourceId: mob.id, school: (sp.school as Aura['school']) ?? 'nature',
       });
     }
   }
@@ -4180,17 +6168,59 @@ export class Sim {
 
     // heel
     pet.swingTimer = Math.max(0, pet.swingTimer - DT);
+    this.petFollow(pet, owner);
+  }
+
+  // Heel locomotion: route the pet to its owner AROUND obstacles instead of
+  // letting greedy slide-steering wedge on a wall and then snapping the pet to
+  // the owner. Mirrors the warrior-charge path cache (`petPath`): A* is recomputed
+  // at most every PET_PATH_RECALC and otherwise the cached waypoints are followed.
+  // The 60yd teleport is kept only as a true last resort, for when no route to the
+  // owner exists at all (e.g. owner stranded across un-navigable terrain).
+  private petFollow(pet: Entity, owner: Entity): void {
+    pet.petPathCooldown = Math.max(0, pet.petPathCooldown - DT);
     const d = dist2d(pet.pos, owner.pos);
-    if (d > PET_TELEPORT_DISTANCE) {
-      pet.pos = { ...owner.pos };
-      pet.prevPos = { ...pet.pos };
-      // a warp is a teleport: keep the spatial grid exact this tick instead of
-      // waiting for the end-of-tick refresh, so same-tick aggro/AoE queries
-      // don't miss the pet at its old cell (matches every other teleport site)
-      this.rebucket(pet);
-    } else if (d > PET_FOLLOW_DISTANCE && !this.isRooted(pet)) {
-      this.moveToward(pet, owner.pos, Math.max(pet.moveSpeed, RUN_SPEED * 1.1) * this.moveSpeedMult(pet));
+    if (d <= PET_FOLLOW_DISTANCE) { pet.petPath = []; return; }
+    if (this.isRooted(pet)) return;
+
+    const swim = this.mobCanSwim(MOBS[pet.templateId]);
+    const recompute = (): void => {
+      pet.petPath = findPlayerPath(this.cfg.seed, pet.pos, owner.pos, PET_PATH_SPAN, false, swim)
+        .map((w) => ({ x: w.x, y: 0, z: w.z }));
+      pet.petPathCooldown = PET_PATH_RECALC;
+    };
+    // recompute when the throttle has elapsed and the cache is stale: empty, or
+    // its end no longer lands near the (now-moved) owner. findPlayerPath returns a
+    // single-waypoint straight line (length 1) when the goal is unreachable.
+    const end = pet.petPath[pet.petPath.length - 1];
+    const stale = !end || dist2d(end, owner.pos) > PET_PATH_STALE_DISTANCE;
+    if (pet.petPathCooldown <= 0 && stale) recompute();
+    // drop waypoints we've reached; the last leg homes on the live owner position.
+    while (pet.petPath.length > 1 && dist2d(pet.pos, pet.petPath[0]) < PET_WAYPOINT_REACHED) pet.petPath.shift();
+
+    // Last-resort teleport: only when the owner is far AND genuinely unreachable.
+    // We confirm with a FRESH path (ignoring the throttle) so a stale single-point
+    // cache from a moment ago can never trigger a spurious snap while a real route
+    // exists — e.g. right after a combat→heel transition.
+    if (pet.petPath.length <= 1 && d > PET_TELEPORT_DISTANCE
+      && !lineOfSightClear(this.cfg.seed, pet.pos, owner.pos, BODY_RADIUS)) {
+      recompute();
+      if (pet.petPath.length <= 1) {
+        pet.pos = { ...owner.pos };
+        pet.prevPos = { ...pet.pos };
+        pet.petPath = [];
+        // a warp is a teleport: keep the spatial grid exact this tick instead of
+        // waiting for the end-of-tick refresh, so same-tick aggro/AoE queries
+        // don't miss the pet at its old cell (matches every other teleport site)
+        this.rebucket(pet);
+        return;
+      }
     }
+
+    const routed = pet.petPath.length > 1;
+    const aim = routed ? pet.petPath[0] : owner.pos;
+    const speed = Math.max(pet.moveSpeed, RUN_SPEED * 1.1) * this.moveSpeedMult(pet);
+    this.moveToward(pet, aim, speed);
   }
 
   /** A ranged demon pet (imp) hurls a spell-school bolt: a telegraphed
@@ -4231,13 +6261,18 @@ export class Sim {
 
   private petPickTarget(pet: Entity, owner: Entity): Entity | null {
     if (pet.petMode === 'passive') return null;
+    // Anti-AFK: an aggressive pet only proactively pulls fresh targets while its
+    // owner is actually playing. An idle owner's pet still defends (engagingUs /
+    // ownerOffense below) but cannot farm the area alone (hunter/warlock).
+    const ownerMeta = this.players.get(owner.id);
+    const ownerIdle = !ownerMeta || this.tickCount - ownerMeta.lastActiveTick > PET_OWNER_IDLE_TICKS;
     let best: Entity | null = null;
     let bestD = pet.petMode === 'aggressive' ? PET_AGGRESSIVE_RANGE : PET_ASSIST_RANGE;
     for (const m of this.entities.values()) {
       if (m.id === pet.id || m.dead || !this.isHostileTo(pet, m)) continue;
       const engagingUs = m.kind === 'mob' && (m.aggroTargetId === owner.id || m.aggroTargetId === pet.id);
       const ownerOffense = owner.targetId === m.id && (owner.autoAttack || (m.kind === 'mob' && m.threat.has(owner.id)));
-      const aggressive = pet.petMode === 'aggressive' && dist2d(pet.pos, m.pos) <= PET_AGGRESSIVE_RANGE;
+      const aggressive = pet.petMode === 'aggressive' && !ownerIdle && dist2d(pet.pos, m.pos) <= PET_AGGRESSIVE_RANGE;
       if (!engagingUs && !ownerOffense && !aggressive) continue;
       const d = dist2d(pet.pos, m.pos);
       if (d < bestD) { best = m; bestD = d; }
@@ -4325,15 +6360,29 @@ export class Sim {
     mob.aiState = 'idle';
     mob.aggroTargetId = null;
     mob.inCombat = false;
+    if (mob.templateId === NYTHRAXIS_BOSS_ID) {
+      mob.facing = Math.PI;
+      mob.prevFacing = Math.PI;
+    }
     mob.leashAnchor = null;
     mob.evadeStall = 0;
+    mob.fleeTimer = 0;
+    mob.fleeReturnTimer = 0;
+    mob.hasFled = false;
     clearThreat(mob);
     this.despawnSummonedAdds(mob);
     mob.firedSummons = 0;
     mob.enraged = false;
     mob.healedThisPull = false;
     mob.stompTimer = MOBS[mob.templateId]?.stomp?.every ?? 0;
+    mob.terrifyTimer = MOBS[mob.templateId]?.terrify?.every ?? 0;
+    mob.mendTimer = MOBS[mob.templateId]?.mendAlly?.every ?? 0;
+    mob.wardTimer = MOBS[mob.templateId]?.wardAllies?.every ?? 0;
+    mob.stoneskinTimer = MOBS[mob.templateId]?.stoneskin?.every ?? 0;
+    mob.rallyTimer = MOBS[mob.templateId]?.rally?.every ?? 0;
+    mob.warcryTimer = MOBS[mob.templateId]?.warcry?.every ?? 0;
     mob.wanderTimer = this.rng.range(2, 8);
+    if (mob.templateId === NYTHRAXIS_BOSS_ID) this.resetNythraxisEncounter(mob);
     for (const meta of this.players.values()) {
       const e = this.entities.get(meta.entityId);
       if (e && e.targetId === mob.id) e.targetId = null;
@@ -4391,12 +6440,42 @@ export class Sim {
     });
   }
 
+  // Death Throes (arm): a volatile creature does not explode the instant it
+  // dies. Its corpse destabilizes for `delay` seconds — a telegraph players can
+  // run from — by arming a fuse that the corpse tick (updateMob) counts down.
+  private armDeathThroes(dead: Entity): void {
+    const dt = MOBS[dead.templateId]?.deathThroes;
+    if (!dt) return;
+    dead.detonateTimer = dt.delay;
+    const school = dt.school ?? 'nature';
+    this.emit({ type: 'spellfx', sourceId: dead.id, targetId: dead.id, school, fx: 'nova' });
+    this.emit({ type: 'log', text: `${dead.name} begins to swell — get clear!`, color: '#9acd32', entityId: dead.id });
+  }
+
+  // Death Throes (detonate): the corpse bursts for min..max `school` damage to
+  // every living player within `radius`. Mirrors the aoePulse damage loop; the
+  // dead mob is the damage source so credit/threat resolve as a normal hit.
+  private detonateCorpse(dead: Entity): void {
+    const dt = MOBS[dead.templateId]?.deathThroes;
+    if (!dt) return;
+    const school = dt.school ?? 'nature';
+    this.emit({ type: 'spellfx', sourceId: dead.id, targetId: dead.id, school, fx: 'nova' });
+    this.emit({ type: 'log', text: `${dead.name} bursts in a cloud of ${dt.name}!`, color: '#9acd32', entityId: dead.id });
+    for (const meta of this.players.values()) {
+      const pe = this.entities.get(meta.entityId);
+      if (pe && !pe.dead && dist2d(pe.pos, dead.pos) <= dt.radius) {
+        const dmg = Math.round(this.rng.range(dt.min, dt.max));
+        this.dealDamage(dead, pe, dmg, false, school, dt.name, 'hit', true);
+      }
+    }
+  }
+
   // Boss threshold mechanics: add waves (summonAdds) and enrage. Checked
   // every tick while the boss is in combat; thresholds fire once per pull
   // and reset on evade/respawn.
   private updateBossMechanics(mob: Entity): void {
     const tmpl = MOBS[mob.templateId];
-    if (!tmpl || (!tmpl.summonAdds && !tmpl.enrage && !tmpl.desperateHeal)) return;
+    if (!tmpl || (!tmpl.summonAdds && !tmpl.enrage && !tmpl.desperateHeal && !tmpl.mendAlly && !tmpl.wardAllies && !tmpl.rally && !tmpl.warcry)) return;
     const hpFrac = mob.hp / Math.max(1, mob.maxHp);
     if (tmpl.summonAdds) {
       const thresholds = tmpl.summonAdds.atHpPct;
@@ -4421,6 +6500,700 @@ export class Sim {
         this.emit({ type: 'spellfx', sourceId: mob.id, targetId: mob.id, school: 'nature', fx: 'nova' });
       }
     }
+    // Support "Mend": periodically heal every wounded friendly mob in range
+    // (including the caster). Telegraphed via createMob seeding mendTimer to a
+    // full interval, so the first cast never lands the instant combat opens.
+    if (tmpl.mendAlly) {
+      mob.mendTimer -= DT;
+      if (mob.mendTimer <= 0) {
+        mob.mendTimer = tmpl.mendAlly.every;
+        const wounded: Entity[] = [];
+        for (const ally of this.entities.values()) {
+          if (ally.kind !== 'mob' || ally.dead || ally.ownerId !== null) continue; // skip players, pets, corpses
+          if (ally.hostile !== mob.hostile || ally.hp >= ally.maxHp) continue; // only wounded same-faction mobs
+          if (dist2d(ally.pos, mob.pos) > tmpl.mendAlly.radius) continue;
+          wounded.push(ally);
+        }
+        if (wounded.length > 0) {
+          const school = tmpl.mendAlly.school ?? 'nature';
+          this.emit({ type: 'spellfx', sourceId: mob.id, targetId: mob.id, school, fx: 'nova' });
+          this.emit({ type: 'log', text: `${mob.name} channels ${tmpl.mendAlly.name}.`, color: '#66ff99', entityId: mob.id });
+          for (const ally of wounded) {
+            const amount = Math.round(this.rng.range(tmpl.mendAlly.healMin, tmpl.mendAlly.healMax));
+            this.applyHeal(mob, ally, amount, tmpl.mendAlly.name);
+          }
+        }
+      }
+    }
+    // Support "Ward": the defensive twin of Mend. Periodically wrap every living
+    // friendly mob in range (including the caster) in an absorb shield. Unlike
+    // Mend it targets healthy allies too — a barrier pre-empts the next blows.
+    // Refreshes each interval, replacing any partially-soaked ward (same aura id).
+    if (tmpl.wardAllies) {
+      mob.wardTimer -= DT;
+      if (mob.wardTimer <= 0) {
+        mob.wardTimer = tmpl.wardAllies.every;
+        const allies: Entity[] = [];
+        for (const ally of this.entities.values()) {
+          if (ally.kind !== 'mob' || ally.dead || ally.ownerId !== null) continue; // skip players, pets, corpses
+          if (ally.hostile !== mob.hostile) continue; // same-faction mobs only
+          if (dist2d(ally.pos, mob.pos) > tmpl.wardAllies.radius) continue;
+          allies.push(ally);
+        }
+        if (allies.length > 0) {
+          const school = tmpl.wardAllies.school ?? 'holy';
+          this.emit({ type: 'spellfx', sourceId: mob.id, targetId: mob.id, school, fx: 'nova' });
+          this.emit({ type: 'log', text: `${mob.name} channels ${tmpl.wardAllies.name}.`, color: '#aad4ff', entityId: mob.id });
+          for (const ally of allies) {
+            this.applyAura(ally, {
+              id: `ward_${mob.templateId}`, name: tmpl.wardAllies.name, kind: 'absorb',
+              remaining: tmpl.wardAllies.duration, duration: tmpl.wardAllies.duration,
+              value: tmpl.wardAllies.amount, sourceId: mob.id, school,
+            });
+          }
+        }
+      }
+    }
+
+    // Commander "Rally": periodically empower every friendly mob in range
+    // (including the caster) with a refreshing attack-power buff. The offensive
+    // twin of mendAlly — same telegraphed timer, same same-faction ally scan —
+    // but it grants buff_ap (folded by effectiveAttackPower) instead of healing.
+    if (tmpl.rally) {
+      mob.rallyTimer -= DT;
+      if (mob.rallyTimer <= 0) {
+        mob.rallyTimer = tmpl.rally.every;
+        const allies: Entity[] = [];
+        for (const ally of this.entities.values()) {
+          if (ally.kind !== 'mob' || ally.dead || ally.ownerId !== null) continue; // skip players, pets, corpses
+          if (ally.hostile !== mob.hostile) continue; // only same-faction mobs
+          if (dist2d(ally.pos, mob.pos) > tmpl.rally.radius) continue;
+          allies.push(ally);
+        }
+        if (allies.length > 0) {
+          const school = tmpl.rally.school ?? 'physical';
+          this.emit({ type: 'spellfx', sourceId: mob.id, targetId: mob.id, school, fx: 'nova' });
+          this.emit({ type: 'log', text: `${mob.name} unleashes ${tmpl.rally.name}!`, color: '#ffcc33', entityId: mob.id });
+          for (const ally of allies) {
+            this.applyAura(ally, {
+              id: `rally_${mob.templateId}`,
+              name: tmpl.rally.name,
+              kind: 'buff_ap',
+              remaining: tmpl.rally.duration,
+              duration: tmpl.rally.duration,
+              value: tmpl.rally.ap,
+              sourceId: mob.id,
+              school,
+            });
+          }
+        }
+      }
+    }
+    // Support "War Cadence": periodically quicken every nearby friendly mob's
+    // swings (including the caster) by re-applying a refreshing buff_haste aura.
+    // Same telegraph as Mend; rides swingIntervalMult's existing buff_haste fold.
+    if (tmpl.warcry) {
+      mob.warcryTimer -= DT;
+      if (mob.warcryTimer <= 0) {
+        mob.warcryTimer = tmpl.warcry.every;
+        const allies: Entity[] = [];
+        for (const ally of this.entities.values()) {
+          if (ally.kind !== 'mob' || ally.dead || ally.ownerId !== null) continue; // skip players, pets, corpses
+          if (ally.hostile !== mob.hostile) continue; // same-faction only
+          if (dist2d(ally.pos, mob.pos) > tmpl.warcry.radius) continue;
+          allies.push(ally);
+        }
+        if (allies.length > 0) {
+          const school = tmpl.warcry.school ?? 'physical';
+          const auraId = `warcry_${mob.templateId}`;
+          this.emit({ type: 'spellfx', sourceId: mob.id, targetId: mob.id, school, fx: 'nova' });
+          this.emit({ type: 'log', text: `${mob.name} channels ${tmpl.warcry.name}.`, color: '#ffd27f', entityId: mob.id });
+          for (const ally of allies) {
+            const existing = ally.auras.find((a) => a.id === auraId);
+            if (existing) {
+              existing.remaining = tmpl.warcry.duration; // refresh on each pulse; never stack
+              continue;
+            }
+            ally.auras.push({
+              id: auraId,
+              name: tmpl.warcry.name,
+              kind: 'buff_haste',
+              remaining: tmpl.warcry.duration,
+              duration: tmpl.warcry.duration,
+              value: tmpl.warcry.hasteMult,
+              sourceId: mob.id,
+              school,
+            });
+            this.emit({ type: 'aura', targetId: ally.id, name: tmpl.warcry.name, gained: true });
+          }
+        }
+      }
+    }
+  }
+
+  private initNythraxisEncounter(boss: Entity): NonNullable<Entity['nythraxis']> {
+    if (!boss.nythraxis) {
+      boss.nythraxis = {
+        phase: 1,
+        introSpoken: false,
+        transitionStarted: false,
+        transitionTimer: 0,
+        transitionCues: [],
+        transitionReleased: false,
+        dialogueBusyUntil: 0,
+        dialogueToken: 0,
+        gravebreakerTimer: 1.5,
+        gravebreakerCasts: 0,
+        raiseFallenTimer: NYTHRAXIS_RAISE_FALLEN_EVERY,
+        soulRendTimer: NYTHRAXIS_SOUL_REND_EVERY,
+        soulRendMarks: [],
+        soulRendLockout: 0,
+        deathlessTimer: NYTHRAXIS_DEATHLESS_EVERY,
+        deathlessCastRemaining: 0,
+        deathlessStunRemaining: 0,
+        wardChannels: [],
+        finalStand: false,
+        deathSpoken: false,
+      };
+    }
+    return boss.nythraxis;
+  }
+
+  private resetNythraxisEncounter(boss: Entity): void {
+    for (const p of this.playersInNythraxisRoom(boss)) {
+      p.auras = p.auras.filter((a) => a.id !== 'nythraxis_soul_rend' && a.id !== 'nythraxis_transition_stun');
+      this.clearNythraxisWardChannelCast(p);
+    }
+    for (const e of this.nythraxisTransitionStunTargets(boss)) {
+      if (e.kind !== 'player') e.auras = e.auras.filter((a) => a.id !== 'nythraxis_transition_stun');
+    }
+    const aldric = this.findNythraxisAldric(boss);
+    if (aldric) this.dropEntity(aldric.id);
+    for (const ward of this.nythraxisDeathlessChannelObjects(boss)) {
+      ward.auras = ward.auras.filter((a) => a.id !== 'nythraxis_wardstone_lit');
+    }
+    boss.nythraxis = undefined;
+    boss.castingAbility = null;
+    boss.castRemaining = 0;
+    boss.castTotal = 0;
+    boss.channeling = false;
+  }
+
+  // Full wipe: every player in the arena is dead. Send Nythraxis home at full
+  // health, clear his adds/Aldric/wards/auras, and drop combat so the sealed
+  // doors reopen and the raid can run back in for another attempt.
+  private wipeNythraxisEncounter(boss: Entity): void {
+    boss.pos = { ...boss.spawnPos };
+    boss.prevPos = { ...boss.spawnPos };
+    this.rebucket(boss);
+    this.resetEvadingMob(boss); // restores hp, clears threat/auras/adds + resetNythraxisEncounter
+  }
+
+  private updateNythraxisEncounter(boss: Entity): void {
+    const st = this.initNythraxisEncounter(boss);
+    if (!st.introSpoken) {
+      st.introSpoken = true;
+      this.nythraxisDialogueSet(boss, [
+        { speaker: 'nythraxis', text: 'Another kingdom comes to challenge me', delay: 0 },
+        { speaker: 'nythraxis', text: 'You will join the rest', delay: NYTHRAXIS_OPENER_SECOND_YELL_DELAY },
+      ]);
+    }
+
+    // Wipe-or-kill is the only reset: if every player in the arena is dead the
+    // encounter resets for a retry; otherwise keep the boss locked onto a live
+    // target so kiting him out of melee never sends him home.
+    const room = this.playersInNythraxisRoom(boss);
+    if (room.length === 0) { this.wipeNythraxisEncounter(boss); return; }
+    const tgt = boss.aggroTargetId !== null ? this.entities.get(boss.aggroTargetId) : null;
+    if (!tgt || tgt.dead || tgt.kind !== 'player' || dist2d(tgt.pos, boss.spawnPos) > NYTHRAXIS_ROOM_RADIUS) {
+      const topId = threatEntries(boss, 1)[0]?.[0] ?? null;
+      const top = topId !== null ? this.entities.get(topId) : null;
+      const next = (top && !top.dead && top.kind === 'player') ? top : room[0];
+      boss.aggroTargetId = next.id;
+      boss.inCombat = true;
+      if (boss.aiState === 'idle' || boss.aiState === 'evade') boss.aiState = 'chase';
+    }
+    if (boss.aggroTargetId !== null && (boss.aiState === 'idle' || boss.aiState === 'evade')) {
+      boss.inCombat = true;
+      boss.aiState = 'chase';
+    }
+
+    if (st.soulRendLockout > 0) st.soulRendLockout = Math.max(0, st.soulRendLockout - DT);
+    this.updateNythraxisSoulRend(boss, st);
+    if (st.phase === 'transition') {
+      this.updateNythraxisTransition(boss, st);
+      return;
+    }
+    if (st.phase === 'dead') return;
+
+    const hpFrac = boss.hp / Math.max(1, boss.maxHp);
+    if (st.phase === 1 && hpFrac <= NYTHRAXIS_PHASE_TWO_HP) {
+      this.startNythraxisTransition(boss, st);
+      return;
+    }
+
+    if (st.phase === 2 && !st.finalStand && hpFrac <= NYTHRAXIS_FINAL_STAND_HP) {
+      st.finalStand = true;
+      boss.enraged = true;
+      this.nythraxisDialogueSet(boss, [
+        { speaker: 'nythraxis', text: 'I built a kingdom', delay: 0 },
+        { speaker: 'nythraxis', text: 'I will not lose it again', delay: NYTHRAXIS_DIALOGUE_LINE_SECONDS },
+      ]);
+      this.applyAura(boss, {
+        id: 'nythraxis_final_stand', name: 'Final Stand', kind: 'buff_haste',
+        remaining: 600, duration: 600, value: 1.45, sourceId: boss.id, school: 'shadow',
+      });
+      this.emit({ type: 'spellfx', sourceId: boss.id, targetId: boss.id, school: 'shadow', fx: 'nova' });
+    }
+
+    if (st.deathlessStunRemaining > 0) {
+      st.deathlessStunRemaining = Math.max(0, st.deathlessStunRemaining - DT);
+      return;
+    }
+    if (st.deathlessCastRemaining > 0) {
+      this.updateNythraxisDeathlessRage(boss, st);
+      return;
+    }
+
+    this.updateNythraxisGravebreaker(boss, st);
+    if (st.phase === 1) this.updateNythraxisRaiseFallen(boss, st);
+    if (st.phase === 2) {
+      st.soulRendTimer -= DT;
+      if (st.soulRendTimer <= 0) {
+        if (this.canCastNythraxisSoulRend(st)) this.castNythraxisSoulRend(boss, st);
+        else st.soulRendTimer = 1;
+      }
+      st.deathlessTimer -= DT;
+      if (st.deathlessTimer <= 0) {
+        if (st.soulRendMarks.length === 0 && st.soulRendLockout <= 0) this.startNythraxisDeathlessRage(boss, st);
+        else st.deathlessTimer = 1;
+      }
+    }
+  }
+
+  private reserveNythraxisDialogue(
+    boss: Entity,
+    duration: number,
+    critical = false,
+    queue = false,
+  ): { st: NonNullable<Entity['nythraxis']>; token: number } | null {
+    const st = this.initNythraxisEncounter(boss);
+    const busyUntil = st.dialogueBusyUntil ?? 0;
+    if (!critical && busyUntil > this.time && !queue) return null;
+    const delay = !critical && queue && busyUntil > this.time ? busyUntil - this.time : 0;
+    const token = (st.dialogueToken ?? 0) + 1;
+    st.dialogueToken = token;
+    st.dialogueBusyUntil = this.time + delay + duration;
+    return { st, token };
+  }
+
+  private nythraxisDialogueSet(
+    boss: Entity,
+    lines: { speaker: 'nythraxis' | 'aldric'; text: string; delay: number }[],
+    critical = false,
+    queue = false,
+  ): boolean {
+    if (lines.length === 0) return true;
+    const duration = Math.max(...lines.map((line) => line.delay)) + NYTHRAXIS_DIALOGUE_LINE_SECONDS;
+    const busyUntil = boss.nythraxis?.dialogueBusyUntil ?? 0;
+    const startDelay = !critical && queue && busyUntil > this.time ? busyUntil - this.time : 0;
+    const reservation = this.reserveNythraxisDialogue(boss, duration, critical, queue);
+    if (!reservation) return false;
+    const { st, token } = reservation;
+    for (const line of lines) {
+      const delay = startDelay + line.delay;
+      if (delay <= 0) {
+        this.emitNythraxisYell(boss, line.speaker, line.text);
+        continue;
+      }
+      this.delayedEvents.push({
+        at: this.time + delay,
+        event: this.nythraxisYellEvent(boss, line.speaker, line.text),
+        guard: () => critical || st.dialogueToken === token,
+      });
+    }
+    return true;
+  }
+
+  private nythraxisSay(boss: Entity, speaker: 'nythraxis' | 'aldric', text: string, critical = false): boolean {
+    const reservation = this.reserveNythraxisDialogue(boss, NYTHRAXIS_DIALOGUE_LINE_SECONDS, critical);
+    if (!reservation) return false;
+    this.emitNythraxisYell(boss, speaker, text);
+    return true;
+  }
+
+  private nythraxisYellEvent(boss: Entity, speaker: 'nythraxis' | 'aldric', text: string): SimEvent {
+    const actor = speaker === 'aldric' ? this.findNythraxisAldric(boss) : boss;
+    const from = actor?.name ?? (speaker === 'aldric' ? 'Brother Aldric' : boss.name);
+    const fromPid = actor?.id ?? boss.id;
+    return { type: 'chat', fromPid, from, text, channel: 'yell', entityId: actor?.id ?? boss.id };
+  }
+
+  private emitNythraxisYell(boss: Entity, speaker: 'nythraxis' | 'aldric', text: string): void {
+    const event = this.nythraxisYellEvent(boss, speaker, text);
+    for (const meta of this.players.values()) {
+      const p = this.entities.get(meta.entityId);
+      if (!p || dist2d(p.pos, boss.pos) > YELL_RANGE) continue;
+      this.emit({ ...event, pid: meta.entityId });
+    }
+  }
+
+  private findNythraxisAldric(boss: Entity): Entity | null {
+    for (const e of this.entities.values()) {
+      if (e.templateId === NYTHRAXIS_ALDRIC_ID && !e.dead && dist2d(e.spawnPos, boss.spawnPos) < NYTHRAXIS_ROOM_RADIUS) return e;
+    }
+    return null;
+  }
+
+  private playersInNythraxisRoom(boss: Entity): Entity[] {
+    const out: Entity[] = [];
+    for (const meta of this.players.values()) {
+      const p = this.entities.get(meta.entityId);
+      if (p && !p.dead && dist2d(p.pos, boss.spawnPos) <= NYTHRAXIS_ROOM_RADIUS) out.push(p);
+    }
+    out.sort((a, b) => a.id - b.id);
+    return out;
+  }
+
+  private nythraxisTransitionStunTargets(boss: Entity): Entity[] {
+    return [...this.entities.values()].filter((e) =>
+      !e.dead
+      && dist2d(e.pos, boss.spawnPos) <= NYTHRAXIS_ROOM_RADIUS
+      && (e.kind === 'player' || (e.kind === 'mob' && (e.templateId === NYTHRAXIS_ADD_ID || e.ownerId !== null))));
+  }
+
+  private nythraxisRoomMetas(boss: Entity): PlayerMeta[] {
+    const out: PlayerMeta[] = [];
+    for (const meta of this.players.values()) {
+      const p = this.entities.get(meta.entityId);
+      if (p && dist2d(p.pos, boss.spawnPos) <= NYTHRAXIS_ROOM_RADIUS) out.push(meta);
+    }
+    out.sort((a, b) => a.entityId - b.entityId);
+    return out;
+  }
+
+  private grantNythraxisLockout(boss: Entity): void {
+    const until = this.lockoutNowMs() + NYTHRAXIS_LOCKOUT_MS;
+    for (const meta of this.nythraxisRoomMetas(boss)) {
+      meta.raidLockouts.set('nythraxis_boss_arena', until);
+    }
+  }
+
+  private updateNythraxisGravebreaker(boss: Entity, st: NonNullable<Entity['nythraxis']>): void {
+    st.gravebreakerTimer -= DT;
+    if (st.gravebreakerTimer > 0) return;
+    st.gravebreakerTimer = NYTHRAXIS_GRAVEBREAKER_EVERY;
+    st.gravebreakerCasts = (st.gravebreakerCasts ?? 0) + 1;
+    if (st.gravebreakerCasts % 3 === 0) this.nythraxisSay(boss, 'nythraxis', 'Kneel before your king');
+    this.emit({ type: 'spellfx', sourceId: boss.id, targetId: boss.id, school: 'physical', fx: 'nova' });
+    let rawDmg = this.rng.range(boss.weapon.min, boss.weapon.max) + (this.effectiveAttackPower(boss) / 14) * boss.weapon.speed;
+    const enrage = MOBS[boss.templateId]?.enrage;
+    if (boss.enraged && enrage) rawDmg *= enrage.dmgMult;
+    for (const p of this.playersInNythraxisRoom(boss)) {
+      const d = dist2d(p.pos, boss.pos);
+      if (d > NYTHRAXIS_GRAVEBREAKER_RANGE) continue;
+      const delta = Math.abs(normAngle(angleTo(boss.pos, p.pos) - boss.facing));
+      if (delta > NYTHRAXIS_GRAVEBREAKER_HALF_ARC) continue;
+      const mult = p.id === boss.aggroTargetId ? 1 : 1.5;
+      const mitigated = rawDmg * mult * (1 - armorReduction(this.effectiveArmor(p), boss.level));
+      const dmg = Math.max(1, Math.round(mitigated));
+      this.dealDamage(boss, p, dmg, false, 'physical', 'Gravebreaker', 'hit', true);
+    }
+  }
+
+  private updateNythraxisRaiseFallen(boss: Entity, st: NonNullable<Entity['nythraxis']>): void {
+    st.raiseFallenTimer -= DT;
+    if (st.raiseFallenTimer > 0) return;
+    st.raiseFallenTimer = NYTHRAXIS_RAISE_FALLEN_EVERY;
+    this.nythraxisDialogueSet(boss, [
+      { speaker: 'nythraxis', text: 'Rise once more', delay: 0 },
+      { speaker: 'nythraxis', text: 'Your king commands it', delay: NYTHRAXIS_DIALOGUE_LINE_SECONDS },
+    ]);
+    this.spawnNythraxisAdds(boss);
+  }
+
+  private spawnNythraxisAdds(boss: Entity): void {
+    const template = MOBS[NYTHRAXIS_ADD_ID];
+    if (!template) return;
+    // Raise the guards from BEHIND the boss (toward the back wall), so they rise
+    // up behind him and march out around him, not between the boss and the raid.
+    const back = boss.spawnPos.z + 16;
+    const spawnPoints = [
+      this.groundPos(boss.spawnPos.x - 12, back),
+      this.groundPos(boss.spawnPos.x + 12, back),
+    ];
+    const inst = this.instances.find((i) => i.partyKey !== null && i.mobIds.includes(boss.id));
+    const victimId = boss.aggroTargetId ?? threatEntries(boss, 1)[0]?.[0] ?? null;
+    const victim = victimId !== null ? this.entities.get(victimId) : null;
+    for (const pos of spawnPoints) {
+      const add = createMob(this.nextId++, template, template.maxLevel, pos);
+      add.spawnPos = { ...boss.spawnPos };
+      add.tappedById = boss.tappedById;
+      this.addEntity(add);
+      boss.summonedIds.push(add.id);
+      inst?.mobIds.push(add.id);
+      if (victim && !victim.dead && victim.kind === 'player') this.aggroMob(add, victim, false);
+    }
+    this.emit({ type: 'spellfx', sourceId: boss.id, targetId: boss.id, school: 'shadow', fx: 'nova' });
+  }
+
+  private startNythraxisTransition(boss: Entity, st: NonNullable<Entity['nythraxis']>): void {
+    st.phase = 'transition';
+    st.transitionStarted = true;
+    const queuedDialogueDelay = Math.max(0, (st.dialogueBusyUntil ?? 0) - this.time);
+    st.transitionTimer = NYTHRAXIS_TRANSITION_DURATION + queuedDialogueDelay;
+    st.transitionReleased = false;
+    st.soulRendMarks = [];
+    st.deathlessCastRemaining = 0;
+    boss.castingAbility = null;
+    boss.castRemaining = 0;
+    boss.castTotal = 0;
+    const transitionLines = [
+      { speaker: 'nythraxis' as const, text: 'Another priest...', delay: 0 },
+      { speaker: 'aldric' as const, text: 'Your kingdom is gone, Nythraxis', delay: 3.0 },
+      { speaker: 'aldric' as const, text: 'Yet you still cling to it', delay: 5.7 },
+      { speaker: 'aldric' as const, text: 'Champions, listen carefully!', delay: 8.4 },
+      { speaker: 'aldric' as const, text: 'The wardstones still bind his soul.', delay: 11.2 },
+      { speaker: 'aldric' as const, text: 'When the time comes, do not ignore them.', delay: 14.1 },
+      { speaker: 'aldric' as const, text: 'Fail and we all perish', delay: 17.1 },
+    ];
+    this.emit({ type: 'spellfx', sourceId: boss.id, targetId: boss.id, school: 'physical', fx: 'nova' });
+    for (const e of this.nythraxisTransitionStunTargets(boss)) {
+      this.applyAura(e, {
+        id: 'nythraxis_transition_stun', name: 'War Stomp', kind: 'stun',
+        remaining: NYTHRAXIS_TRANSITION_STUN, duration: NYTHRAXIS_TRANSITION_STUN,
+        value: 0, sourceId: boss.id, school: 'physical',
+      });
+    }
+    this.applyAura(boss, {
+      id: 'nythraxis_transition_pause', name: 'War Stomp', kind: 'stun',
+      remaining: NYTHRAXIS_TRANSITION_STUN, duration: NYTHRAXIS_TRANSITION_STUN,
+      value: 0, sourceId: boss.id, school: 'physical',
+    });
+    this.spawnNythraxisAldric(boss);
+    this.lightNythraxisWardstones(boss);
+    this.nythraxisDialogueSet(boss, transitionLines, false, true);
+    st.transitionCues = [];
+  }
+
+  private spawnNythraxisAldric(boss: Entity): void {
+    if (this.findNythraxisAldric(boss)) return;
+    // Brother Aldric is a friendly quest NPC, not a mob: modeling him as an NPC
+    // lets the online client mirror his questIds and open the turn-in dialog
+    // (createMob produced a friendly mob the client could never interact with).
+    const def = NPCS[NYTHRAXIS_ALDRIC_ID];
+    if (!def) return;
+    const aldric = createNpc(this.nextId++, def,
+      this.groundPos(boss.spawnPos.x, boss.spawnPos.z - NYTHRAXIS_ALDRIC_SPAWN_DIST));
+    aldric.level = boss.level; // createNpc defaults to 10; match the boss's level for the nameplate
+    aldric.hostile = false;
+    aldric.facing = 0;
+    aldric.prevFacing = 0;
+    aldric.spawnPos = { ...aldric.pos };
+    this.addEntity(aldric);
+    const inst = this.instances.find((i) => i.partyKey !== null && i.mobIds.includes(boss.id));
+    inst?.mobIds.push(aldric.id);
+  }
+
+  private updateNythraxisTransition(boss: Entity, st: NonNullable<Entity['nythraxis']>): void {
+    const aldric = this.findNythraxisAldric(boss);
+    if (aldric) {
+      const dest = this.groundPos(boss.spawnPos.x, boss.spawnPos.z - NYTHRAXIS_ALDRIC_WALK_DIST);
+      this.moveToward(aldric, dest, aldric.moveSpeed);
+    }
+    st.transitionTimer -= DT;
+    if (st.transitionTimer > 0) return;
+    st.phase = 2;
+    st.transitionReleased = true;
+    st.gravebreakerTimer = 3;
+    st.soulRendTimer = NYTHRAXIS_PHASE_TWO_SETTLE_DELAY;
+    st.deathlessTimer = NYTHRAXIS_PHASE_TWO_SETTLE_DELAY + 15;
+    boss.auras = boss.auras.filter((a) => a.id !== 'nythraxis_transition_pause');
+    for (const e of this.nythraxisTransitionStunTargets(boss)) {
+      e.auras = e.auras.filter((a) => a.id !== 'nythraxis_transition_stun');
+    }
+  }
+
+  private lightNythraxisWardstones(boss: Entity): void {
+    for (const ward of this.nythraxisDeathlessChannelObjects(boss)) {
+      this.applyAura(ward, {
+        id: 'nythraxis_wardstone_lit', name: 'Soul Ward', kind: 'absorb',
+        remaining: 600, duration: 600, value: 1, sourceId: boss.id, school: 'arcane',
+      });
+      this.emit({ type: 'spellfx', sourceId: ward.id, targetId: boss.id, school: 'arcane', fx: 'projectile' });
+    }
+  }
+
+  private canCastNythraxisSoulRend(st: NonNullable<Entity['nythraxis']>): boolean {
+    return st.deathlessCastRemaining <= 0
+      && st.deathlessStunRemaining <= 0;
+  }
+
+  private castNythraxisSoulRend(boss: Entity, st: NonNullable<Entity['nythraxis']>): void {
+    const candidates = this.playersInNythraxisRoom(boss).filter((p) => p.id !== boss.aggroTargetId);
+    if (candidates.length === 0) {
+      st.soulRendTimer = 3;
+      return;
+    }
+    const picked: Entity[] = [];
+    while (picked.length < 3 && candidates.length > 0) {
+      const idx = this.rng.int(0, candidates.length - 1);
+      picked.push(candidates.splice(idx, 1)[0]);
+    }
+    st.soulRendMarks = picked.map((p) => ({ playerId: p.id, remaining: NYTHRAXIS_SOUL_REND_DURATION }));
+    st.soulRendTimer = NYTHRAXIS_SOUL_REND_EVERY;
+    this.nythraxisSay(boss, 'nythraxis', 'Your spirit belongs to me', true);
+    for (const p of picked) {
+      this.applyAura(p, {
+        id: 'nythraxis_soul_rend', name: 'Soul Rend', kind: 'vulnerability',
+        remaining: NYTHRAXIS_SOUL_REND_DURATION, duration: NYTHRAXIS_SOUL_REND_DURATION,
+        value: 0, sourceId: boss.id, school: 'shadow',
+      });
+      this.emit({ type: 'spellfx', sourceId: boss.id, targetId: p.id, school: 'shadow', fx: 'projectile' });
+    }
+  }
+
+  private updateNythraxisSoulRend(boss: Entity, st: NonNullable<Entity['nythraxis']>): void {
+    if (st.soulRendMarks.length === 0) return;
+    for (const mark of st.soulRendMarks) mark.remaining -= DT;
+    if (st.soulRendMarks.some((m) => m.remaining > 0)) return;
+    const marked = st.soulRendMarks
+      .map((m) => this.entities.get(m.playerId))
+      .filter((e): e is Entity => !!e && e.kind === 'player' && !e.dead);
+    for (const p of marked) {
+      const stacked = marked.filter((other) => dist2d(other.pos, p.pos) <= NYTHRAXIS_SOUL_REND_STACK_RANGE).length;
+      const share = Math.max(1, stacked);
+      this.dealDamage(boss, p, Math.ceil(p.maxHp / share), false, 'shadow', 'Soul Rend', 'hit', true);
+      p.auras = p.auras.filter((a) => a.id !== 'nythraxis_soul_rend');
+      this.emit({ type: 'spellfx', sourceId: boss.id, targetId: p.id, school: 'shadow', fx: 'nova' });
+    }
+    st.soulRendMarks = [];
+  }
+
+  private startNythraxisDeathlessRage(boss: Entity, st: NonNullable<Entity['nythraxis']>): void {
+    st.deathlessTimer = NYTHRAXIS_DEATHLESS_EVERY;
+    st.deathlessCastRemaining = NYTHRAXIS_DEATHLESS_CAST;
+    st.soulRendLockout = NYTHRAXIS_DEATHLESS_SOUL_REND_LOCKOUT;
+    st.wardChannels = this.nythraxisDeathlessChannelObjects(boss).map((ward) => ({
+      objectId: ward.id,
+      playerId: null,
+      remaining: NYTHRAXIS_DEATHLESS_CHANNEL,
+      complete: false,
+    }));
+    boss.castingAbility = 'nythraxis_deathless_rage';
+    boss.castTotal = NYTHRAXIS_DEATHLESS_CAST;
+    boss.castRemaining = NYTHRAXIS_DEATHLESS_CAST;
+    boss.channeling = false;
+    this.nythraxisSay(boss, 'nythraxis', 'Witness true eternity!', true);
+    this.emit({ type: 'spellfx', sourceId: boss.id, targetId: boss.id, school: 'shadow', fx: 'nova' });
+  }
+
+  private updateNythraxisDeathlessRage(boss: Entity, st: NonNullable<Entity['nythraxis']>): void {
+    st.deathlessCastRemaining = Math.max(0, st.deathlessCastRemaining - DT);
+    boss.castingAbility = 'nythraxis_deathless_rage';
+    boss.castTotal = NYTHRAXIS_DEATHLESS_CAST;
+    boss.castRemaining = st.deathlessCastRemaining;
+    this.updateNythraxisWardChannels(boss, st);
+    if (this.nythraxisWardstoneInterruptReady(st)) {
+      st.deathlessCastRemaining = 0;
+      boss.castingAbility = null;
+      boss.castRemaining = 0;
+      boss.castTotal = 0;
+      st.deathlessStunRemaining = NYTHRAXIS_DEATHLESS_STUN;
+      this.applyAura(boss, {
+        id: 'nythraxis_deathless_stun', name: 'Deathless Rage Interrupted', kind: 'stun',
+        remaining: NYTHRAXIS_DEATHLESS_STUN, duration: NYTHRAXIS_DEATHLESS_STUN,
+        value: 0, sourceId: boss.id, school: 'arcane',
+      });
+      this.emit({ type: 'spellfx', sourceId: boss.id, targetId: boss.id, school: 'arcane', fx: 'nova' });
+      return;
+    }
+    if (st.deathlessCastRemaining > 0) return;
+    boss.castingAbility = null;
+    boss.castRemaining = 0;
+    boss.castTotal = 0;
+    this.nythraxisSay(boss, 'nythraxis', 'You cannot stop what was promised..', true);
+    this.emit({ type: 'spellfx', sourceId: boss.id, targetId: boss.id, school: 'shadow', fx: 'nova' });
+    for (const p of this.playersInNythraxisRoom(boss)) {
+      this.dealDamage(boss, p, Math.ceil(p.maxHp * 0.82), false, 'shadow', 'Deathless Rage', 'hit', true);
+    }
+  }
+
+  private nythraxisWardstoneInterruptReady(st: NonNullable<Entity['nythraxis']>): boolean {
+    if (st.wardChannels.length === 0 || !st.wardChannels.every((c) => c.complete && c.playerId !== null)) return false;
+    return new Set(st.wardChannels.map((c) => c.playerId)).size === st.wardChannels.length;
+  }
+
+  private updateNythraxisWardChannels(boss: Entity, st: NonNullable<Entity['nythraxis']>): void {
+    for (const channel of st.wardChannels) {
+      if (channel.complete || channel.playerId === null) continue;
+      const ward = this.entities.get(channel.objectId);
+      const p = this.entities.get(channel.playerId);
+      if (!ward || !p || p.dead || this.isStunned(p) || dist2d(p.pos, ward.pos) > INTERACT_RANGE + 1) {
+        if (p) this.clearNythraxisWardChannelCast(p);
+        channel.playerId = null;
+        channel.remaining = NYTHRAXIS_DEATHLESS_CHANNEL;
+        continue;
+      }
+      channel.remaining = Math.max(0, channel.remaining - DT);
+      p.castingAbility = 'nythraxis_ward_channel';
+      p.channeling = true;
+      p.castTotal = NYTHRAXIS_DEATHLESS_CHANNEL;
+      p.castRemaining = channel.remaining;
+      this.emit({ type: 'spellfx', sourceId: ward.id, targetId: boss.id, school: 'shadow', fx: 'beam' });
+      if (channel.remaining <= 0) {
+        channel.complete = true;
+        this.clearNythraxisWardChannelCast(p);
+        this.emit({ type: 'spellfx', sourceId: ward.id, targetId: boss.id, school: 'arcane', fx: 'nova' });
+      }
+    }
+  }
+
+  private clearNythraxisWardChannelCast(p: Entity): void {
+    if (p.castingAbility !== 'nythraxis_ward_channel') return;
+    p.castingAbility = null;
+    p.channeling = false;
+    p.castRemaining = 0;
+    p.castTotal = 0;
+  }
+
+  private nythraxisWardstones(boss: Entity): Entity[] {
+    const wards = [...this.entities.values()].filter((e) =>
+      e.kind === 'object'
+      && e.objectItemId === NYTHRAXIS_WARDSTONE_ITEM_ID
+      && dist2d(e.pos, boss.spawnPos) < NYTHRAXIS_WARDSTONE_RANGE);
+    wards.sort((a, b) => a.id - b.id);
+    return wards;
+  }
+
+  private nythraxisDeathlessChannelObjects(boss: Entity): Entity[] {
+    return this.nythraxisWardstones(boss);
+  }
+
+  private tryStartNythraxisWardChannel(ward: Entity, player: Entity): boolean {
+    if (ward.objectItemId !== NYTHRAXIS_WARDSTONE_ITEM_ID) return false;
+    const boss = [...this.entities.values()].find((e) =>
+      e.kind === 'mob'
+      && e.templateId === NYTHRAXIS_BOSS_ID
+      && !e.dead
+      && dist2d(e.spawnPos, ward.pos) < NYTHRAXIS_WARDSTONE_RANGE);
+    // No Nythraxis boss in range: this is not a raid wardstone but the overworld
+    // "Sunken Bastion" quest ward stone (same item id). Fall through so the normal
+    // quest pickup runs, instead of swallowing the interaction.
+    if (!boss) return false;
+    if (!boss.nythraxis || boss.nythraxis.deathlessCastRemaining <= 0) return true;
+    const channel = boss.nythraxis.wardChannels.find((c) => c.objectId === ward.id);
+    if (!channel || channel.complete) return true;
+    if (channel.playerId === player.id) return true;
+    if (channel.playerId !== null && channel.playerId !== player.id) return true;
+    channel.playerId = player.id;
+    channel.remaining = NYTHRAXIS_DEATHLESS_CHANNEL;
+    player.castingAbility = 'nythraxis_ward_channel';
+    player.channeling = true;
+    player.castTotal = NYTHRAXIS_DEATHLESS_CHANNEL;
+    player.castRemaining = NYTHRAXIS_DEATHLESS_CHANNEL;
+    this.emit({ type: 'spellfx', sourceId: ward.id, targetId: boss.id, school: 'shadow', fx: 'beam' });
+    return true;
   }
 
   private spawnBossAdds(boss: Entity, mobId: string, count: number): void {
@@ -4434,7 +7207,9 @@ export class Sim {
       const o = this.instanceOriginOf(i);
       return Math.abs(boss.pos.x - o.x) < 120 && Math.abs(boss.pos.z - o.z) < 250;
     });
-    const victim = boss.aggroTargetId !== null ? this.entities.get(boss.aggroTargetId) : null;
+    const [topThreatId] = threatEntries(boss, 1)[0] ?? [];
+    const victimId = boss.aggroTargetId ?? topThreatId ?? null;
+    const victim = victimId !== null ? this.entities.get(victimId) : null;
     for (let k = 0; k < count; k++) {
       const ang = (k / count) * Math.PI * 2 + 0.7;
       const pos = this.groundPos(boss.pos.x + Math.sin(ang) * 3.5, boss.pos.z + Math.cos(ang) * 3.5);
@@ -4445,7 +7220,12 @@ export class Sim {
       this.addEntity(add);
       boss.summonedIds.push(add.id);
       inst?.mobIds.push(add.id);
-      if (victim && !victim.dead && victim.kind === 'player') this.aggroMob(add, victim, false);
+      if (victim && !victim.dead && victim.kind === 'player') {
+        add.aggroTargetId = victim.id;
+        add.inCombat = true;
+        add.aiState = dist2d(add.pos, victim.pos) > this.mobMeleeRange(add) ? 'chase' : 'attack';
+        addThreat(add, victim.id, 1);
+      }
     }
   }
 
@@ -4463,23 +7243,29 @@ export class Sim {
     const e = this.entities.get(id);
     if (!e || (e.dead && !e.lootable)) return;
     p.targetId = id;
-    if (!e.hostile || e.dead) p.autoAttack = false;
+    if (!this.isHostileTo(p, e) || e.dead) p.autoAttack = false;
   }
 
   tabTarget(pid?: number): void {
     const r = this.resolve(pid);
     if (!r) return;
     const p = r.e;
-    const candidates: { e: Entity; d: number }[] = [];
-    this.grid.forEachInRadius(p.pos.x, p.pos.z, 40, (e, d2) => {
-      if (e.kind !== 'mob' || e.dead || !e.hostile) return;
-      candidates.push({ e, d: Math.sqrt(d2) });
-    });
+    const candidates = this.enemyCandidates(p);
     if (candidates.length === 0) return;
-    candidates.sort((a, b) => a.d - b.d);
-    const curIdx = candidates.findIndex((c) => c.e.id === p.targetId);
-    const next = candidates[(curIdx + 1) % candidates.length];
-    p.targetId = next.e.id;
+    // Cycle the enemies the player can see / is fighting first; off-screen ones
+    // stay reachable but never steal the selection (see tab_target.ts).
+    const ordered = orderTabTargets(
+      candidates.map((c) => ({
+        id: c.e.id,
+        dx: c.e.pos.x - p.pos.x,
+        dz: c.e.pos.z - p.pos.z,
+        d: c.d,
+        engaged: c.e.aggroTargetId === p.id || c.e.targetId === p.id,
+      })),
+      p.facing,
+    );
+    const curIdx = ordered.indexOf(p.targetId ?? -1);
+    p.targetId = ordered[(curIdx + 1) % ordered.length];
   }
 
   targetNearestEnemy(pid?: number): void {
@@ -4489,10 +7275,36 @@ export class Sim {
     let best: Entity | null = null;
     let bestD2 = 40 * 40;
     this.grid.forEachInRadius(p.pos.x, p.pos.z, 40, (e, d2) => {
-      if (e.kind !== 'mob' || e.dead || !e.hostile) return;
+      if (!this.isEnemyTargetCandidate(p, e)) return;
       if (d2 < bestD2) { bestD2 = d2; best = e; }
     });
     if (best) p.targetId = (best as Entity).id;
+  }
+
+  private enemyCandidates(p: Entity): { e: Entity; d: number }[] {
+    const out: { e: Entity; d: number }[] = [];
+    if (p.dead) return out;
+    this.grid.forEachInRadius(p.pos.x, p.pos.z, 40, (e, d2) => {
+      if (!this.isEnemyTargetCandidate(p, e)) return;
+      out.push({ e, d: Math.sqrt(d2) });
+    });
+    return out;
+  }
+
+  private isEnemyTargetCandidate(attacker: Entity, target: Entity): boolean {
+    if (attacker.dead) return false;
+    if (target.id === attacker.id || target.dead) return false;
+    if (this.isHostileTo(attacker, target)) return true;
+    if (target.kind === 'mob' && target.ownerId !== null) {
+      const owner = this.entities.get(target.ownerId);
+      return !!owner && owner.kind === 'player' && this.isEnemyTargetCandidate(attacker, owner);
+    }
+    if (target.kind !== 'player') return false;
+    const attackerPlayer = this.pvpController(attacker);
+    if (!attackerPlayer || attackerPlayer.dead) return false;
+    const match = this.arenaMatches.get(attackerPlayer.id);
+    return !!match && match.state === 'countdown'
+      && this.isArenaCrossTeam(match, attackerPlayer.id, target.id);
   }
 
   // Nearby allies a beneficial spell can land on: other players (and friendly
@@ -4581,6 +7393,7 @@ export class Sim {
     const def = ITEMS[itemId];
     const available = this.countItem(itemId, meta.entityId);
     if (!def || available <= 0) { this.error(meta.entityId, "You don't have that item."); return; }
+    if (def.noDiscard) return;
     const discardCount = Number.isFinite(count) ? Math.min(Math.floor(count), available) : 0;
     if (discardCount <= 0) return;
     this.removeItem(itemId, discardCount, meta.entityId);
@@ -4599,7 +7412,7 @@ export class Sim {
     const def = ITEMS[itemId];
     if (!def || !def.slot || (def.kind !== 'weapon' && def.kind !== 'armor')) return;
     if (this.countItem(itemId, meta.entityId) <= 0) return;
-    if (def.requiredClass && !def.requiredClass.includes(meta.cls)) {
+    if (!canEquipItem(meta.cls, def)) {
       this.error(meta.entityId, 'You cannot equip that.');
       return;
     }
@@ -4608,8 +7421,28 @@ export class Sim {
     this.removeItem(itemId, 1, meta.entityId);
     if (old) this.addItemSilent(old, 1, meta);
     meta.equipment[slot] = itemId;
-    recalcPlayerStats(p, meta.cls, meta.equipment, meta.talentMods);
+    recalcPlayerStats(p, meta.cls, meta.equipment, this.playerMods(meta));
     this.emit({ type: 'log', text: `Equipped ${def.name}.`, color: '#8f8', pid: meta.entityId });
+  }
+
+  // Remove the piece in `slot` back to the bags, leaving the slot empty. Unlike
+  // equipItem (which only swaps in a replacement) this is the way to fully
+  // unequip. Bags are uncapped, so the returned item never has nowhere to go.
+  unequipItem(slot: EquipSlot, pid?: number): boolean {
+    const r = this.resolve(pid);
+    if (!r) return false;
+    const { meta, e: p } = r;
+    const itemId = meta.equipment[slot];
+    if (!itemId) return false;
+    delete meta.equipment[slot];
+    // addItemSilent (not addItem): returning a piece you already owned to bags is
+    // not a fresh acquisition, so it must not fire collect-quest credit. No quest
+    // today keys on an unequip, so there is nothing to award here regardless.
+    this.addItemSilent(itemId, 1, meta);
+    recalcPlayerStats(p, meta.cls, meta.equipment, this.playerMods(meta));
+    const def = ITEMS[itemId];
+    this.emit({ type: 'log', text: `Unequipped ${def?.name ?? itemId}.`, color: '#8f8', pid: meta.entityId });
+    return true;
   }
 
   private hasFishableWaterAhead(p: Entity): boolean {
@@ -4617,6 +7450,18 @@ export class Sim {
     const cos = Math.cos(p.facing);
     return FISHING_SAMPLE_DISTANCES.some((d) =>
       groundHeight(p.pos.x + sin * d, p.pos.z + cos * d, this.cfg.seed) < WATER_LEVEL - SWIM_DEPTH);
+  }
+
+  private isAtDeepfenShallowsFishingSpot(p: Entity): boolean {
+    const d = Math.hypot(p.pos.x - DEEPFEN_SHALLOWS_LAKE.x, p.pos.z - DEEPFEN_SHALLOWS_LAKE.z);
+    return d <= DEEPFEN_SHALLOWS_LAKE.radius + DEEPFEN_FISHING_SHORE_MARGIN;
+  }
+
+  private shouldCatchCodfather(p: Entity, meta: PlayerMeta): boolean {
+    const qp = meta.questLog.get(THE_CODFATHER_QUEST_ID);
+    return qp?.state === 'active'
+      && this.countItem(THE_CODFATHER_ITEM_ID, meta.entityId) === 0
+      && this.isAtDeepfenShallowsFishingSpot(p);
   }
 
   private startFishing(p: Entity, meta: PlayerMeta): void {
@@ -4634,17 +7479,32 @@ export class Sim {
   }
 
   private completeFishing(p: Entity, meta: PlayerMeta): void {
-    const roll = this.rng.next();
-    if (roll < 0.7) {
-      this.addItem('raw_mirror_trout', 1, meta.entityId);
-    } else if (roll < 0.9) {
-      this.addItem('tangled_weed', 1, meta.entityId);
-    } else {
-      this.emit({ type: 'log', text: 'No fish are biting.', color: '#999', pid: p.id });
+    if (this.shouldCatchCodfather(p, meta)) {
+      this.addItem(THE_CODFATHER_ITEM_ID, 1, meta.entityId);
+      return;
     }
+    // The catch depends on which zone's water you're fishing — each has its own
+    // weighted table (src/sim/content/items.ts). Fall back to the Vale table for
+    // any spot without its own (e.g. fishable water inside a dungeon zone).
+    const table = FISHING_TABLES[zoneAt(p.pos.z).id] ?? FISHING_TABLES.eastbrook_vale;
+    const total = table.reduce((sum, e) => sum + e.weight, 0);
+    let roll = this.rng.next() * total;
+    let caught: string | null = null;
+    for (const entry of table) {
+      roll -= entry.weight;
+      if (roll < 0) { caught = entry.itemId; break; }
+    }
+    if (caught === null) {
+      this.emit({ type: 'log', text: 'No fish are biting.', color: '#999', pid: p.id });
+      return;
+    }
+    if (caught === FISHING_RARE_ID) {
+      this.emit({ type: 'log', text: 'A rare catch! Something gleams on your line.', color: '#1eff00', pid: p.id });
+    }
+    this.addItem(caught, 1, meta.entityId);
   }
 
-  useItem(itemId: string, pid?: number): void {
+  useItem(itemId: string, pid?: number): ItemUseResult | void {
     const r = this.resolve(pid);
     if (!r) return;
     const { meta, e: p } = r;
@@ -4653,6 +7513,13 @@ export class Sim {
     if (this.countItem(itemId, meta.entityId) <= 0) { this.error(meta.entityId, "You don't have that item."); return; }
     if (def.use?.type === 'fishing') {
       this.startFishing(p, meta);
+      return;
+    }
+    if (def.use?.type === 'mechChroma') {
+      return this.unlockMechChromaFromItem(meta, itemId, def.use.chromaId);
+    }
+    if (def.use?.type === 'skinSelect') {
+      this.openSkinSelect(meta, def.use.catalog ?? 'class', itemId);
       return;
     }
     if (p.castingAbility === FISHING_CAST_ID) { this.error(meta.entityId, 'You are busy.'); return; }
@@ -4694,6 +7561,18 @@ export class Sim {
       if (restoresMana) {
         p.resource = Math.min(p.maxResource, p.resource + def.potionMana!);
       }
+      this.emit({ type: 'log', text: `You quaff ${def.name}.`, color: '#c9f', pid: meta.entityId });
+    } else if (def.kind === 'elixir') {
+      // Battle elixir: grant a temporary stat-buff aura. Usable in combat (classic),
+      // no shared potion cooldown; re-quaffing refreshes the buff via applyAura.
+      const elx = def.elixir;
+      if (!elx) return;
+      this.removeItem(itemId, 1, meta.entityId);
+      this.applyAura(p, {
+        id: `elixir_${itemId}`, name: elx.aura, kind: elx.kind,
+        remaining: elx.duration, duration: elx.duration, value: elx.value,
+        sourceId: p.id, school: 'nature',
+      });
       this.emit({ type: 'log', text: `You quaff ${def.name}.`, color: '#c9f', pid: meta.entityId });
     } else if (def.kind === 'weapon' || def.kind === 'armor') {
       this.equipItem(itemId, meta.entityId);
@@ -4747,6 +7626,7 @@ export class Sim {
     const sellCount = Number.isFinite(count) ? Math.min(Math.floor(count), available) : 0;
     if (sellCount <= 0) return;
     if (!this.vendorInRange(p)) { this.error(meta.entityId, 'There is no merchant nearby.'); return; }
+    if (def.noVendorSell) { this.error(meta.entityId, 'That item is not for sale.'); return; }
     if (def.kind === 'quest') { this.error(meta.entityId, 'You cannot sell quest items.'); return; }
     this.removeItem(itemId, sellCount, meta.entityId);
     this.recordVendorBuyback(meta, itemId, sellCount);
@@ -4784,7 +7664,7 @@ export class Sim {
   private maybeAutoEquip(itemId: string, meta: PlayerMeta): void {
     const def = ITEMS[itemId];
     if (!def?.slot) return;
-    if (def.requiredClass && !def.requiredClass.includes(meta.cls)) return;
+    if (!canEquipItem(meta.cls, def)) return;
     if (def.kind === 'weapon') {
       const cur = meta.equipment.mainhand ? ITEMS[meta.equipment.mainhand]?.weapon : null;
       const next = def.weapon;
@@ -4810,19 +7690,20 @@ export class Sim {
       || mob.tappedById === meta.entityId
       || !!tapperParty?.members.includes(meta.entityId);
     const hasPersonalLoot = mob.loot.items.some((s) => s.personalFor?.includes(meta.entityId));
-    if (!hasSharedLootRights && !hasPersonalLoot) {
+    const hasOpenLoot = mob.loot.items.some((s) => s.openToAll && s.count > 0);
+    if (!hasSharedLootRights && !hasPersonalLoot && !hasOpenLoot) {
       this.error(meta.entityId, "You don't have permission to loot that.");
       return;
     }
     if (dist2d(p.pos, mob.pos) > INTERACT_RANGE) { this.error(meta.entityId, 'Too far away.'); return; }
-    if (hasSharedLootRights && mob.loot.copper > 0) {
-      meta.copper += mob.loot.copper;
-      meta.counters.lootCopper += mob.loot.copper;
-      this.emit({ type: 'loot', text: `You loot ${formatMoney(mob.loot.copper)}.`, pid: meta.entityId });
-      mob.loot.copper = 0;
-    }
+    if (hasSharedLootRights) this.distributeLootCopper(mob, meta);
     for (const s of [...mob.loot.items]) {
       if (!this.lootSlotVisibleTo(s, meta.entityId)) continue;
+      if (s.openToAll) {
+        for (let i = 0; i < s.count; i++) this.addItem(s.itemId, 1, meta.entityId);
+        s.count = 0;
+        continue;
+      }
       if (s.personalFor) {
         this.addItem(s.itemId, 1, meta.entityId);
         s.personalFor = s.personalFor.filter((id) => id !== meta.entityId);
@@ -4830,7 +7711,7 @@ export class Sim {
       }
       if (!hasSharedLootRights) continue;
       for (let i = 0; i < s.count; i++) {
-        if (!this.rollGroupLoot(s.itemId, mob, meta)) this.addItem(s.itemId, 1, meta.entityId);
+        this.awardSharedLootItem(s.itemId, mob, meta);
       }
       s.count = 0;
     }
@@ -4845,6 +7726,9 @@ export class Sim {
     const obj = this.entities.get(objId);
     if (!obj || obj.kind !== 'object' || !obj.lootable || !obj.objectItemId) return;
     if (dist2d(p.pos, obj.pos) > INTERACT_RANGE) { this.error(meta.entityId, 'Too far away.'); return; }
+    if (this.tryStartNythraxisWardChannel(obj, p)) return;
+    if (this.activateNythraxisRelic(obj, meta)) return;
+    if (this.interactObjectForQuests(obj, meta)) return;
     const def = ITEMS[obj.objectItemId];
     if (def?.questId) {
       const qp = meta.questLog.get(def.questId);
@@ -4854,6 +7738,10 @@ export class Sim {
       }
       const quest = QUESTS[def.questId];
       const objIdx = quest.objectives.findIndex((o) => o.type === 'collect' && o.itemId === obj.objectItemId);
+      if (objIdx < 0) {
+        this.error(meta.entityId, def.pickupEnough ?? `${def.name} offers nothing more.`);
+        return;
+      }
       if (objIdx >= 0 && this.countItem(obj.objectItemId, meta.entityId) >= quest.objectives[objIdx].count) {
         this.error(meta.entityId, def.pickupEnough ?? 'You have enough of those.');
         return;
@@ -4864,33 +7752,229 @@ export class Sim {
     obj.respawnTimer = OBJECT_RESPAWN;
   }
 
+  private activateNythraxisRelic(obj: Entity, meta: PlayerMeta): boolean {
+    if (!obj.objectItemId) return false;
+    const mobId = NYTHRAXIS_RELIC_SUMMONS[obj.objectItemId];
+    if (!mobId) return false;
+    const qp = meta.questLog.get('q_nythraxis_sealed_crypt');
+    if (!qp || qp.state !== 'active') {
+      const def = ITEMS[obj.objectItemId];
+      this.error(meta.entityId, def?.pickupDeny ?? 'The relic is bound by the sealed crypt.');
+      return true;
+    }
+    const quest = QUESTS.q_nythraxis_sealed_crypt;
+    const objectiveIndex = quest.objectives.findIndex((o) => o.type === 'collect' && o.itemId === obj.objectItemId);
+    if (objectiveIndex >= 0 && this.countItem(obj.objectItemId, meta.entityId) >= quest.objectives[objectiveIndex].count) {
+      const def = ITEMS[obj.objectItemId];
+      this.error(meta.entityId, def?.pickupEnough ?? 'You have already recovered this relic.');
+      return true;
+    }
+    this.summonQuestMob(mobId, obj.pos, meta.entityId);
+    obj.lootable = false;
+    obj.respawnTimer = OBJECT_RESPAWN;
+    return true;
+  }
+
+  private interactObjectForQuests(obj: Entity, meta: PlayerMeta): boolean {
+    if (!obj.objectItemId) return false;
+    let handled = false;
+    for (const qp of meta.questLog.values()) {
+      if (qp.state !== 'active') continue;
+      const quest = QUESTS[qp.questId];
+      quest.objectives.forEach((objective, objectiveIndex) => {
+        if (objective.type !== 'interact' || objective.targetObjectItemId !== obj.objectItemId) return;
+        handled = true;
+        if (qp.counts[objectiveIndex] >= objective.count) return;
+        if (obj.objectItemId === 'crypt_ritual_circle' && !this.countItem('crypt_keystone', meta.entityId)) {
+          this.error(meta.entityId, 'The ritual circle is silent without the Crypt Keystone.');
+          return;
+        }
+        const shared = this.sharedNythraxisObjectParticipants(meta, obj, qp.questId, objectiveIndex);
+        for (const member of shared) {
+          const memberQp = member.questLog.get(qp.questId);
+          if (!memberQp || memberQp.state !== 'active') continue;
+          if (memberQp.counts[objectiveIndex] >= objective.count) continue;
+          memberQp.counts[objectiveIndex]++;
+          member.counters.questProgress++;
+          this.emit({
+            type: 'questProgress',
+            questId: memberQp.questId,
+            text: `${objective.label}: ${memberQp.counts[objectiveIndex]}/${objective.count}`,
+            pid: member.entityId,
+          });
+          this.checkQuestReady(memberQp, member);
+        }
+        const visionId = this.summonQuestVision(obj.objectItemId, obj.pos);
+        this.emitQuestObjectVision(obj.objectItemId, shared.map((m) => m.entityId), visionId);
+        if (obj.objectItemId === 'crypt_ritual_circle') this.summonQuestMob('bound_guardian', obj.pos, meta.entityId);
+      });
+    }
+    return handled;
+  }
+
+  private sharedNythraxisObjectParticipants(actor: PlayerMeta, obj: Entity, questId: string, objectiveIndex: number): PlayerMeta[] {
+    if (obj.objectItemId !== 'grave_sir_aldren'
+      && obj.objectItemId !== 'grave_high_priest_malric'
+      && obj.objectItemId !== 'grave_captain_voss'
+      && obj.objectItemId !== 'crypt_ritual_circle') {
+      return [actor];
+    }
+    const quest = QUESTS[questId];
+    const objective = quest.objectives[objectiveIndex];
+    const party = this.partyOf(actor.entityId);
+    const members = party ? party.members : [actor.entityId];
+    const eligible: PlayerMeta[] = [];
+    for (const pid of members) {
+      const member = this.players.get(pid);
+      const entity = this.entities.get(pid);
+      const memberQp = member?.questLog.get(questId);
+      if (!member || !entity || entity.dead || !memberQp || memberQp.state !== 'active') continue;
+      if (memberQp.counts[objectiveIndex] >= objective.count) continue;
+      if (dist2d(entity.pos, obj.pos) > NYTHRAXIS_PARTY_INTERACT_RANGE) continue;
+      eligible.push(member);
+    }
+    return eligible.some((member) => member.entityId === actor.entityId) ? eligible : [actor];
+  }
+
+  private emitQuestObjectVision(itemId: string, pids: number[], entityId?: number | null): void {
+    const lines = itemId === 'grave_sir_aldren'
+      ? [
+        'My king was a good man.',
+        'I swore my blade to him.',
+        'I would do so again.',
+      ]
+        : itemId === 'grave_high_priest_malric'
+          ? [
+            'There had to be another way.',
+            'I could not let him die.',
+            'I only wanted to save him.',
+          ]
+        : itemId === 'grave_captain_voss'
+          ? [
+            'The king was already dead.',
+            'Malric refused to accept it.',
+            'We should have let him rest.',
+            'If you find the crypt... end this.',
+          ]
+          : itemId === 'crypt_ritual_circle'
+            ? ['The Crypt Keystone turns cold as the seal breaks.']
+              : null;
+    if (!lines) return;
+    for (let i = 0; i < lines.length; i++) {
+      for (const pid of pids) {
+        const event: SimEvent = { type: 'log', text: lines[i], color: '#b8d7ff', pid, entityId: entityId ?? undefined };
+        if (i === 0) this.emit(event);
+        else this.delayedEvents.push({ at: this.time + i * NYTHRAXIS_VISION_LINE_DELAY, event });
+      }
+    }
+  }
+
+  private summonQuestVision(itemId: string, pos: Vec3): number | null {
+    const templateId = itemId === 'grave_sir_aldren'
+      ? 'vision_aldren_warrior'
+      : itemId === 'grave_high_priest_malric'
+        ? 'vision_malric_mage'
+        : itemId === 'grave_captain_voss'
+          ? 'vision_deathstalker_voss'
+          : null;
+    if (!templateId) return null;
+    const existing = [...this.entities.values()].find((e) => e.kind === 'mob' && e.templateId === templateId && !e.dead && dist2d(e.pos, pos) < 10);
+    if (existing) return existing.id;
+    const template = MOBS[templateId];
+    if (!template) return null;
+    const mob = createMob(this.nextId++, template, template.maxLevel, this.groundPos(pos.x + 2.4, pos.z + 2.4));
+    mob.hostile = false;
+    mob.aiState = 'idle';
+    mob.lootable = false;
+    mob.loot = null;
+    mob.despawnTimer = 22;
+    mob.facing = Math.PI;
+    mob.prevFacing = mob.facing;
+    mob.swingTimer = Infinity;
+    this.addEntity(mob);
+    return mob.id;
+  }
+
+  private summonQuestMob(templateId: string, pos: Vec3, ownerPid: number): void {
+    const existing = [...this.entities.values()].some((e) => e.kind === 'mob' && e.templateId === templateId && !e.dead && dist2d(e.pos, pos) < 18);
+    if (existing) return;
+    const template = MOBS[templateId];
+    if (!template) return;
+    const mob = createMob(this.nextId++, template, template.maxLevel, this.groundPos(pos.x, pos.z + 3));
+    mob.facing = Math.PI;
+    mob.prevFacing = mob.facing;
+    mob.tappedById = ownerPid;
+    this.addEntity(mob);
+    const owner = this.entities.get(ownerPid);
+    if (owner && owner.kind === 'player' && !owner.dead) this.aggroMob(mob, owner, false);
+    const inst = this.instances.find((i) => {
+      if (i.partyKey === null) return false;
+      const origin = this.instanceOriginOf(i);
+      return Math.abs(mob.pos.x - origin.x) < 120 && Math.abs(mob.pos.z - origin.z) < 250;
+    });
+    if (inst) inst.mobIds.push(mob.id);
+    this.emit({ type: 'log', text: `${template.name} awakens!`, color: '#ff6666' });
+    this.emitQuestMobDialogue(templateId, mob.id);
+  }
+
+  private emitQuestMobDialogue(templateId: string, entityId: number): void {
+    const text = templateId === 'fallen_captain_aldren'
+      ? 'Fallen Captain Aldren yells, "None shall disturb the king\'s rest! For Thornpeak!"'
+      : templateId === 'corrupted_priest_malric'
+        ? 'Corrupted Priest Malric yells, "Death shall never claim my king! The ritual must endure!"'
+        : templateId === 'deathstalker_voss'
+          ? 'Deathstalker Voss yells, "You will not reach him! The king must endure!"'
+          : null;
+    if (text) this.emit({ type: 'log', text, color: '#ff9999', entityId });
+  }
+
   interact(pid?: number): void {
     const r = this.resolve(pid);
     if (!r) return;
     const p = r.e;
+    if (p.targetId !== null) {
+      const target = this.entities.get(p.targetId);
+      if (target && dist2d(p.pos, target.pos) <= INTERACT_RANGE + 2) {
+        if (target.kind === 'mob' && target.lootable) { this.lootCorpse(target.id, p.id); return; }
+        if (target.kind === 'object' && target.lootable) {
+          if (target.templateId === 'dungeon_door' && target.dungeonId) { this.enterDungeon(target.dungeonId, p.id); return; }
+          if (target.templateId === 'dungeon_exit') { this.leaveDungeon(p.id); return; }
+          if (this.tryStartNythraxisWardChannel(target, p)) return;
+          this.pickUpObject(target.id, p.id);
+          return;
+        }
+        if (this.isQuestInteractionEntity(target)) { this.talkToNpc(target.id, p.id); return; }
+      }
+    }
     let bestCorpse: Entity | null = null;
     let bestCorpseD2 = INTERACT_RANGE * INTERACT_RANGE;
     let bestObj: Entity | null = null;
     let bestObjD2 = INTERACT_RANGE * INTERACT_RANGE;
-    let bestNpc: Entity | null = null;
-    let bestNpcD2 = INTERACT_RANGE * INTERACT_RANGE;
+    let bestQuestEntity: Entity | null = null;
+    let bestQuestD2 = INTERACT_RANGE * INTERACT_RANGE;
     this.grid.forEachInRadius(p.pos.x, p.pos.z, INTERACT_RANGE, (e, d2) => {
       if (e.kind === 'mob' && e.lootable && d2 < bestCorpseD2) { bestCorpse = e; bestCorpseD2 = d2; }
       if (e.kind === 'object' && e.lootable && d2 < bestObjD2) { bestObj = e; bestObjD2 = d2; }
-      if (e.kind === 'npc' && d2 < bestNpcD2) { bestNpc = e; bestNpcD2 = d2; }
+      if (this.isQuestInteractionEntity(e) && d2 < bestQuestD2) { bestQuestEntity = e; bestQuestD2 = d2; }
     });
     // re-read through wider types: TS cannot see the closure assignments above
     const corpse = bestCorpse as Entity | null;
     const obj = bestObj as Entity | null;
-    const npc = bestNpc as Entity | null;
+    const questEntity = bestQuestEntity as Entity | null;
     if (corpse) { this.lootCorpse(corpse.id, p.id); return; }
     if (obj) {
       if (obj.templateId === 'dungeon_door' && obj.dungeonId) { this.enterDungeon(obj.dungeonId, p.id); return; }
       if (obj.templateId === 'dungeon_exit') { this.leaveDungeon(p.id); return; }
+      if (this.tryStartNythraxisWardChannel(obj, p)) return;
       this.pickUpObject(obj.id, p.id);
       return;
     }
-    if (npc) this.talkToNpc(npc.id, p.id);
+    if (questEntity) this.talkToNpc(questEntity.id, p.id);
+  }
+
+  private isQuestInteractionEntity(e: Entity): boolean {
+    if (e.kind === 'npc') return true;
+    return e.kind === 'mob' && !e.hostile && !e.dead && e.questIds.length > 0;
   }
 
   talkToNpc(npcId: number, pid?: number): void {
@@ -4898,9 +7982,11 @@ export class Sim {
     if (!r) return;
     const { meta } = r;
     const npc = this.entities.get(npcId);
-    if (!npc || npc.kind !== 'npc') return;
+    if (!npc || !this.isQuestInteractionEntity(npc)) return;
+    if (this.interactNpcForQuests(npc, meta)) return;
     for (const qid of npc.questIds) {
-      if (QUESTS[qid].turnInNpcId === npc.templateId && meta.questLog.get(qid)?.state === 'ready') {
+      const quest = QUESTS[qid];
+      if (quest && isQuestTurnInNpc(quest, npc.templateId) && meta.questLog.get(qid)?.state === 'ready') {
         this.turnInQuest(qid, meta.entityId);
         return;
       }
@@ -4911,6 +7997,24 @@ export class Sim {
         return;
       }
     }
+  }
+
+  private interactNpcForQuests(npc: Entity, meta: PlayerMeta): boolean {
+    let progressed = false;
+    for (const qp of meta.questLog.values()) {
+      if (qp.state !== 'active') continue;
+      const quest = QUESTS[qp.questId];
+      quest.objectives.forEach((objective, objectiveIndex) => {
+        if (objective.type !== 'interact' || objective.targetNpcId !== npc.templateId) return;
+        if (qp.counts[objectiveIndex] >= objective.count) return;
+        qp.counts[objectiveIndex]++;
+        progressed = true;
+        meta.counters.questProgress++;
+        this.emit({ type: 'questProgress', questId: qp.questId, text: `${objective.label}: ${qp.counts[objectiveIndex]}/${objective.count}`, pid: meta.entityId });
+        this.checkQuestReady(qp, meta);
+      });
+    }
+    return progressed;
   }
 
   // -------------------------------------------------------------------------
@@ -4925,10 +8029,11 @@ export class Sim {
 
   private questNpcFor(questId: string, role: 'giver' | 'turnIn', p: Entity): { npc: Entity | null; tooFar: boolean } {
     const quest = QUESTS[questId];
-    const templateId = role === 'giver' ? quest.giverNpcId : quest.turnInNpcId;
+    const templateIds = role === 'giver' ? [quest.giverNpcId] : questTurnInNpcIds(quest);
     let sawNpc = false;
     for (const e of this.entities.values()) {
-      if (e.kind !== 'npc' || e.templateId !== templateId) continue;
+      if (!this.isQuestInteractionEntity(e) || !templateIds.includes(e.templateId)) continue;
+      if (role === 'giver' && e.kind !== 'npc') continue;
       sawNpc = true;
       if (dist2d(p.pos, e.pos) <= INTERACT_RANGE + 2) return { npc: e, tooFar: false };
     }
@@ -4948,6 +8053,11 @@ export class Sim {
       return;
     }
     meta.questLog.set(questId, { questId, counts: quest.objectives.map(() => 0), state: 'active' });
+    // Re-grant any quest item this quest needs from earlier progression but the player
+    // no longer holds, so a missing item can never permanently block the quest.
+    for (const itemId of questFallbackGrants(quest, (id) => this.countItem(id, meta.entityId) > 0)) {
+      this.addItem(itemId, 1, meta.entityId);
+    }
     this.emit({ type: 'questAccepted', questId, pid: meta.entityId });
     this.emit({ type: 'log', text: `Quest accepted: ${quest.name}`, color: '#ff0', pid: meta.entityId });
     this.onInventoryChangedForQuests(meta);
@@ -4994,6 +8104,9 @@ export class Sim {
     this.emit({ type: 'questDone', questId, pid: meta.entityId });
     this.emit({ type: 'log', text: `Quest completed: ${quest.name}`, color: '#ff0', pid: meta.entityId });
   }
+
+  // No-op in offline mode
+  reportTelemetry(): void {}
 
   private onMobKilledForQuests(mob: Entity, meta: PlayerMeta): void {
     for (const qp of meta.questLog.values()) {
@@ -5052,6 +8165,7 @@ export class Sim {
     if (!r) return;
     const { meta, e: p } = r;
     if (!p.dead) return;
+    if (this.arenaMatches.has(p.id)) return;
     p.dead = false;
     // dying in a dungeon sends you to the graveyard of the zone its door is
     // in; dying outdoors, to your current zone's graveyard
@@ -5063,10 +8177,12 @@ export class Sim {
     p.facing = 0;
     p.auras = [];
     p.ccDr.clear();
-    recalcPlayerStats(p, meta.cls, meta.equipment, meta.talentMods);
+    recalcPlayerStats(p, meta.cls, meta.equipment, this.playerMods(meta));
     p.hp = p.maxHp;
     p.resource = p.resourceType === 'mana' ? p.maxResource : p.resourceType === 'energy' ? 100 : 0;
     p.targetId = null;
+    p.autoAttack = false;
+    p.queuedOnSwing = null;
     p.combatTimer = 99;
     p.inCombat = false;
     this.emit({ type: 'respawn', pid: meta.entityId });
@@ -5208,6 +8324,14 @@ export class Sim {
 
     if (/^\/who(?:\s|$)/i.test(raw)) {
       this.error(r.meta.entityId, 'The /who roster is available in online play.');
+      return null;
+    }
+
+    // "/talents" (aliases "/talent", "/spec") — self-only readout of the
+    // player's specialization and how their talent points are spent. Returns
+    // null (unlogged); no server interceptor, so it works online for free.
+    if (/^\/(?:talents|talent|spec)(?:\s|$)/i.test(raw)) {
+      this.error(r.meta.entityId, this.talentsReadout(r.meta, r.e));
       return null;
     }
 
@@ -5565,6 +8689,7 @@ export class Sim {
 
   isHostileTo(attacker: Entity, target: Entity): boolean {
     if (target.kind === 'mob') {
+      if (target.templateId.startsWith('vision_')) return false;
       if (target.ownerId !== null) {
         const owner = this.entities.get(target.ownerId);
         return !!owner && owner.kind === 'player' && this.isHostileTo(attacker, owner);
@@ -5574,15 +8699,15 @@ export class Sim {
     if (target.kind === 'player') {
       const attackerPlayer = this.pvpController(attacker);
       if (!attackerPlayer) return false;
+      if (attackerPlayer.dead) return false;
       if (attackerPlayer.id === target.id) return false;
       const duel = this.duels.get(attackerPlayer.id);
       if (duel && duel.state === 'active'
         && ((duel.a === attackerPlayer.id && duel.b === target.id)
           || (duel.b === attackerPlayer.id && duel.a === target.id))) return true;
       const match = this.arenaMatches.get(attackerPlayer.id);
-      return !!match && match.state === 'active'
-        && ((match.a === attackerPlayer.id && match.b === target.id)
-          || (match.b === attackerPlayer.id && match.a === target.id));
+      return !!match && match.state === 'active' && !match.defeated.has(attackerPlayer.id)
+        && this.isArenaCrossTeam(match, attackerPlayer.id, target.id);
     }
     return false;
   }
@@ -5621,6 +8746,14 @@ export class Sim {
       || this.hasActiveInvite(this.duelInvites, targetPid);
   }
 
+  private entityInDungeon(e: Entity, dungeonId: string): boolean {
+    return dungeonAt(e.pos.x)?.id === dungeonId;
+  }
+
+  private partyCapacity(party: Party | null): number {
+    return party?.raid ? RAID_MAX : PARTY_MAX;
+  }
+
   partyInvite(targetPid: number, pid?: number): void {
     const r = this.resolve(pid);
     const target = this.players.get(targetPid);
@@ -5628,7 +8761,7 @@ export class Sim {
     if (targetPid === r.meta.entityId) return;
     const myParty = this.partyOf(r.meta.entityId);
     if (myParty && myParty.leader !== r.meta.entityId) { this.error(r.meta.entityId, 'Only the party leader may invite.'); return; }
-    if (myParty && myParty.members.length >= PARTY_MAX) { this.error(r.meta.entityId, 'Your party is full.'); return; }
+    if (myParty && myParty.members.length >= this.partyCapacity(myParty)) { this.error(r.meta.entityId, myParty.raid ? 'Your raid is full.' : 'Your party is full.'); return; }
     if (this.partyOf(targetPid)) { this.error(r.meta.entityId, `${target.name} is already in a party.`); return; }
     if (this.hasPendingSocialInvite(targetPid)) { this.error(r.meta.entityId, `${target.name} already has a pending invitation.`); return; }
     this.partyInvites.set(targetPid, { fromPid: r.meta.entityId, expires: this.time + 30 });
@@ -5651,12 +8784,21 @@ export class Sim {
     if (!leaderMeta) return;
     let party = this.partyOf(invite.fromPid);
     if (!party) {
-      party = { id: this.nextPartyId++, leader: invite.fromPid, members: [invite.fromPid] };
+      party = {
+        id: this.nextPartyId++,
+        leader: invite.fromPid,
+        members: [invite.fromPid],
+        raid: false,
+        raidGroups: new Map([[invite.fromPid, 1]]),
+        lootStrategies: { ...DEFAULT_PARTY_LOOT_STRATEGIES },
+      };
       this.parties.set(party.id, party);
       this.partyByPid.set(invite.fromPid, party.id);
     }
-    if (party.members.length >= PARTY_MAX) { this.error(r.meta.entityId, 'That party is full.'); return; }
+    if (party.members.length >= this.partyCapacity(party)) { this.error(r.meta.entityId, party.raid ? 'That raid is full.' : 'That party is full.'); return; }
+    const raidGroup = this.nextRaidGroupFor(party);
     party.members.push(r.meta.entityId);
+    party.raidGroups.set(r.meta.entityId, raidGroup);
     this.partyByPid.set(r.meta.entityId, party.id);
     for (const mPid of party.members) {
       this.emit({ type: 'log', text: `${r.meta.name} joins the party.`, color: '#aaf', pid: mPid });
@@ -5688,11 +8830,57 @@ export class Sim {
     this.removeFromParty(targetPid, 'has been removed from the party');
   }
 
+  convertPartyToRaid(pid?: number): void {
+    const r = this.resolve(pid);
+    if (!r) return;
+    const party = this.partyOf(r.meta.entityId);
+    if (!party) { this.error(r.meta.entityId, 'You need a full party of five before converting to raid.'); return; }
+    if (party.leader !== r.meta.entityId) { this.error(r.meta.entityId, 'Only the party leader may convert to raid.'); return; }
+    if (party.raid) { this.error(r.meta.entityId, 'Your group is already a raid.'); return; }
+    if (party.members.length < RAID_MIN) { this.error(r.meta.entityId, 'You need a full party of five before converting to raid.'); return; }
+    party.raid = true;
+    this.normalizeRaidGroups(party);
+    for (const mPid of party.members) {
+      this.emit({ type: 'log', text: 'Your party has converted to a raid group.', color: '#aaf', pid: mPid });
+    }
+  }
+
+  moveRaidMember(targetPid: number, group: 1 | 2, pid?: number): void {
+    const r = this.resolve(pid);
+    if (!r) return;
+    const party = this.partyOf(r.meta.entityId);
+    if (!party || !party.raid) { this.error(r.meta.entityId, 'You are not in a raid group.'); return; }
+    if (party.leader !== r.meta.entityId) { this.error(r.meta.entityId, 'Only the raid leader may adjust groups.'); return; }
+    if (!party.members.includes(targetPid)) return;
+    const current = party.raidGroups.get(targetPid) ?? 1;
+    if (current === group) return;
+    const inTargetGroup = party.members.filter((mPid) => (party.raidGroups.get(mPid) ?? 1) === group).length;
+    if (inTargetGroup >= RAID_GROUP_MAX) { this.error(r.meta.entityId, `Raid group ${group} is full.`); return; }
+    party.raidGroups.set(targetPid, group);
+    const moved = this.players.get(targetPid)?.name ?? 'Someone';
+    for (const mPid of party.members) {
+      this.emit({ type: 'log', text: `${moved} has been moved to raid group ${group}.`, color: '#aaf', pid: mPid });
+    }
+  }
+
+  private nextRaidGroupFor(party: Party): 1 | 2 {
+    const g1 = party.members.filter((mPid) => (party.raidGroups.get(mPid) ?? 1) === 1).length;
+    return g1 < RAID_GROUP_MAX ? 1 : 2;
+  }
+
+  private normalizeRaidGroups(party: Party): void {
+    party.raidGroups.clear();
+    for (let i = 0; i < party.members.length; i++) {
+      party.raidGroups.set(party.members[i], i < RAID_GROUP_MAX ? 1 : 2);
+    }
+  }
+
   private removeFromParty(pid: number, verb: string): void {
     const party = this.partyOf(pid);
     if (!party) return;
     const meta = this.players.get(pid);
     party.members = party.members.filter((m) => m !== pid);
+    party.raidGroups.delete(pid);
     this.partyByPid.delete(pid);
     for (const mPid of [...party.members, pid]) {
       this.emit({ type: 'log', text: `${meta?.name ?? 'Someone'} ${verb}.`, color: '#aaf', pid: mPid });
@@ -5711,6 +8899,7 @@ export class Sim {
         this.emit({ type: 'log', text: `${newLeader?.name ?? 'Someone'} is now the party leader.`, color: '#aaf', pid: mPid });
       }
     }
+    if (party.raid) this.normalizeRaidGroups(party);
   }
 
   // -------------------------------------------------------------------------
@@ -5779,6 +8968,10 @@ export class Sim {
     const targetE = this.entities.get(targetPid);
     if (!r || !target || !targetE) return;
     if (targetPid === r.meta.entityId) return;
+    if (this.entityInDungeon(r.e, 'nythraxis_boss_arena') || this.entityInDungeon(targetE, 'nythraxis_boss_arena')) {
+      this.error(r.meta.entityId, 'You cannot duel in Nythraxis Raid Arena.');
+      return;
+    }
     if (this.duels.has(r.meta.entityId) || this.duels.has(targetPid)) { this.error(r.meta.entityId, 'A duel is already in progress.'); return; }
     if (dist2d(r.e.pos, targetE.pos) > 30) { this.error(r.meta.entityId, 'Target is too far away.'); return; }
     if (this.hasPendingSocialInvite(targetPid)) { this.error(r.meta.entityId, `${target.name} already has a pending invitation.`); return; }
@@ -5795,6 +8988,11 @@ export class Sim {
     this.duelInvites.delete(r.meta.entityId);
     const other = this.players.get(invite.fromPid);
     if (!other) return;
+    const otherE = this.entities.get(invite.fromPid);
+    if (!otherE || this.entityInDungeon(r.e, 'nythraxis_boss_arena') || this.entityInDungeon(otherE, 'nythraxis_boss_arena')) {
+      this.error(r.meta.entityId, 'You cannot duel in Nythraxis Raid Arena.');
+      return;
+    }
     if (this.duels.has(invite.fromPid) || this.duels.has(r.meta.entityId)) {
       this.error(r.meta.entityId, 'A duel is already in progress.');
       return;
@@ -5884,7 +9082,7 @@ export class Sim {
     }
     if (statsDirty && target.kind === 'player') {
       const meta = this.players.get(target.id);
-      if (meta) recalcPlayerStats(target, meta.cls, meta.equipment, meta.talentMods);
+      if (meta) recalcPlayerStats(target, meta.cls, meta.equipment, this.playerMods(meta));
     }
   }
 
@@ -5921,16 +9119,25 @@ export class Sim {
   }
 
   // -------------------------------------------------------------------------
-  // The Ashen Coliseum — 1v1 ranked arena (queue, matchmaking, Elo)
+  // The Ashen Coliseum — ranked arena (1v1 + 2v2 queue, matchmaking, Elo)
   // -------------------------------------------------------------------------
 
-  arenaQueueJoin(pid?: number): void {
+  arenaQueueJoin(pidOrFormat?: number | ArenaFormat, format: ArenaFormat = '1v1'): void {
+    let pid: number | undefined;
+    let fmt: ArenaFormat = format;
+    if (typeof pidOrFormat === 'string') { fmt = pidOrFormat; pid = undefined; }
+    else { pid = pidOrFormat; }
     const r = this.resolve(pid);
     if (!r) return;
     const id = r.meta.entityId;
-    if (this.arenaQueue.includes(id)) {
-      // already waiting — just re-affirm their place in line
-      this.emit({ type: 'arenaQueued', position: this.arenaQueue.indexOf(id) + 1, pid: id });
+    if (this.isArenaQueued(id)) {
+      const currentFmt = this.arenaQueuedFormat(id);
+      if (currentFmt !== fmt) {
+        this.error(id, `You are already in the ${currentFmt} queue. Leave it before queueing for ${fmt}.`);
+        return;
+      }
+      const position = this.arenaQueuePosition(id, fmt);
+      this.emit({ type: 'arenaQueued', position, format: fmt, pid: id });
       return;
     }
     if (this.arenaMatches.has(id)) { this.error(id, 'You are already in an arena match.'); return; }
@@ -5938,25 +9145,120 @@ export class Sim {
     if (this.duels.has(id)) { this.error(id, 'You cannot queue while dueling.'); return; }
     if (this.trades.has(id)) { this.error(id, 'Finish your trade before queueing.'); return; }
     if (r.e.pos.x > DUNGEON_X_THRESHOLD) { this.error(id, 'You cannot queue from inside an instance.'); return; }
-    this.arenaQueue.push(id);
-    this.emit({ type: 'arenaQueued', position: this.arenaQueue.length, pid: id });
-    this.emit({ type: 'log', text: 'You join the Ashen Coliseum queue. Stand by for a worthy opponent…', color: '#ffa040', pid: id });
+
+    if (fmt === '1v1') {
+      const party = this.partyOf(id);
+      if (party && party.members.length > 1) {
+        this.error(id, 'Leave your party before queueing for 1v1.');
+        return;
+      }
+      this.arenaQueue1v1.push(id);
+      this.emit({ type: 'arenaQueued', position: this.arenaQueue1v1.length, format: '1v1', pid: id });
+      this.emit({ type: 'log', text: 'You join the Ashen Coliseum queue. Stand by for a worthy opponent…', color: '#ffa040', pid: id });
+      return;
+    }
+
+    // 2v2 and Fiesta share the same team-formation + queueing path; only the
+    // destination queue and the flavour text differ.
+    const isFiesta = fmt === 'fiesta';
+    const label = isFiesta ? 'Fiesta' : '2v2';
+    const party = this.partyOf(id);
+    let unitPids: number[];
+    if (!party || party.members.length === 1) {
+      unitPids = [id];
+    } else if (party.members.length === 2) {
+      if (party.leader !== id) {
+        this.error(id, `Only the party leader may queue your team for ${label}.`);
+        return;
+      }
+      unitPids = [...party.members];
+    } else {
+      this.error(id, `${label} premade requires a party of exactly two.`);
+      return;
+    }
+    for (const mPid of unitPids) {
+      if (mPid === id) continue;
+      const e = this.entities.get(mPid);
+      const mMeta = this.players.get(mPid);
+      if (!e || !mMeta) { this.error(id, 'A party member is unavailable.'); return; }
+      if (e.dead) { this.error(id, `${mMeta.name} cannot queue while dead.`); return; }
+      if (this.arenaMatches.has(mPid)) { this.error(id, `${mMeta.name} is already in an arena match.`); return; }
+      if (this.isArenaQueued(mPid)) { this.error(id, `${mMeta.name} is already in the arena queue.`); return; }
+      if (this.duels.has(mPid)) { this.error(id, `${mMeta.name} cannot queue while dueling.`); return; }
+      if (this.trades.has(mPid)) { this.error(id, `${mMeta.name} must finish trading before queueing.`); return; }
+      if (e.pos.x > DUNGEON_X_THRESHOLD) { this.error(id, `${mMeta.name} cannot queue from inside an instance.`); return; }
+    }
+    const queue = isFiesta ? this.arenaQueueFiesta : this.arenaQueue2v2;
+    const unit: ArenaQueueUnit = { pids: unitPids, rating: this.arenaTeamRating(unitPids, '2v2') };
+    queue.push(unit);
+    const position = queue.reduce((n, u) => n + u.pids.length, 0);
+    const joinText = isFiesta
+      ? 'You join the 2v2 Fiesta queue. Get ready to PARTY…'
+      : 'You join the Ashen Coliseum 2v2 queue. Stand by for opponents…';
+    for (const mPid of unitPids) {
+      this.emit({ type: 'arenaQueued', position, format: fmt, pid: mPid });
+      this.emit({ type: 'log', text: joinText, color: isFiesta ? '#ff3df0' : '#ffa040', pid: mPid });
+    }
   }
 
   arenaQueueLeave(pid?: number): void {
     const r = this.resolve(pid);
     if (!r) return;
-    if (this.arenaDequeue(r.meta.entityId)) {
-      this.emit({ type: 'arenaUnqueued', pid: r.meta.entityId });
-      this.emit({ type: 'log', text: 'You leave the Ashen Coliseum queue.', color: '#ffa040', pid: r.meta.entityId });
+    const id = r.meta.entityId;
+    const fmt = this.arenaQueuedFormat(id);
+    const teamQueue = fmt === '2v2' ? this.arenaQueue2v2 : fmt === 'fiesta' ? this.arenaQueueFiesta : null;
+    const unit = teamQueue ? teamQueue.find((u) => u.pids.includes(id)) : null;
+    if (this.arenaDequeue(id)) {
+      this.emit({ type: 'arenaUnqueued', pid: id });
+      const leaveText = fmt === 'fiesta' ? 'You leave the 2v2 Fiesta queue.'
+        : fmt === '2v2' ? 'You leave the Ashen Coliseum 2v2 queue.'
+          : 'You leave the Ashen Coliseum queue.';
+      this.emit({ type: 'log', text: leaveText, color: '#ffa040', pid: id });
+      if (unit) {
+        const teamLeaveText = fmt === 'fiesta'
+          ? 'Your team leaves the 2v2 Fiesta queue.'
+          : 'Your team leaves the Ashen Coliseum 2v2 queue.';
+        for (const mPid of unit.pids) {
+          if (mPid === id) continue;
+          this.emit({ type: 'arenaUnqueued', pid: mPid });
+          this.emit({ type: 'log', text: teamLeaveText, color: '#ffa040', pid: mPid });
+        }
+      }
     }
   }
 
+  private isArenaQueued(pid: number): boolean {
+    return this.arenaQueue1v1.includes(pid)
+      || this.arenaQueue2v2.some((u) => u.pids.includes(pid))
+      || this.arenaQueueFiesta.some((u) => u.pids.includes(pid));
+  }
+
+  private arenaQueuedFormat(pid: number): ArenaFormat | null {
+    if (this.arenaQueue1v1.includes(pid)) return '1v1';
+    if (this.arenaQueue2v2.some((u) => u.pids.includes(pid))) return '2v2';
+    if (this.arenaQueueFiesta.some((u) => u.pids.includes(pid))) return 'fiesta';
+    return null;
+  }
+
+  private arenaQueuePosition(pid: number, format: ArenaFormat): number {
+    if (format === '1v1') return this.arenaQueue1v1.indexOf(pid) + 1;
+    const queue = format === 'fiesta' ? this.arenaQueueFiesta : this.arenaQueue2v2;
+    let pos = 0;
+    for (const unit of queue) {
+      if (unit.pids.includes(pid)) return pos + 1;
+      pos += unit.pids.length;
+    }
+    return pos + 1;
+  }
+
   private arenaDequeue(pid: number): boolean {
-    const i = this.arenaQueue.indexOf(pid);
-    if (i < 0) return false;
-    this.arenaQueue.splice(i, 1);
-    return true;
+    const i1 = this.arenaQueue1v1.indexOf(pid);
+    if (i1 >= 0) { this.arenaQueue1v1.splice(i1, 1); return true; }
+    const ui = this.arenaQueue2v2.findIndex((u) => u.pids.includes(pid));
+    if (ui >= 0) { this.arenaQueue2v2.splice(ui, 1); return true; }
+    const fi = this.arenaQueueFiesta.findIndex((u) => u.pids.includes(pid));
+    if (fi >= 0) { this.arenaQueueFiesta.splice(fi, 1); return true; }
+    return false;
   }
 
   private freeArenaSlot(): number | null {
@@ -5966,113 +9268,345 @@ export class Sim {
     return null;
   }
 
+  private arenaTeamOf(match: ArenaMatch, pid: number): 'A' | 'B' | null {
+    if (match.teamA.includes(pid)) return 'A';
+    if (match.teamB.includes(pid)) return 'B';
+    return null;
+  }
+
+  arenaAllPids(match: ArenaMatch): number[] {
+    return [...match.teamA, ...match.teamB];
+  }
+
+  private arenaStanding(meta: PlayerMeta, format: ArenaFormat): ArenaStanding {
+    return format === '2v2'
+      ? { rating: meta.arena2v2Rating, wins: meta.arena2v2Wins, losses: meta.arena2v2Losses }
+      : { rating: meta.arenaRating, wins: meta.arenaWins, losses: meta.arenaLosses };
+  }
+
+  private arenaRatingForPid(pid: number, format: ArenaFormat): number {
+    const meta = this.players.get(pid);
+    return meta ? this.arenaStanding(meta, format).rating : ARENA_BASE_RATING;
+  }
+
+  private addArenaResult(meta: PlayerMeta, format: ArenaFormat, delta: number, won: boolean | null): { before: number; after: number } {
+    const before = this.arenaStanding(meta, format).rating;
+    const after = Math.max(ARENA_MIN_RATING, before + delta);
+    if (format === '2v2') {
+      meta.arena2v2Rating = after;
+      if (won === true) meta.arena2v2Wins++;
+      else if (won === false) meta.arena2v2Losses++;
+    } else {
+      meta.arenaRating = after;
+      if (won === true) meta.arenaWins++;
+      else if (won === false) meta.arenaLosses++;
+    }
+    return { before, after };
+  }
+
+  private arenaTeamRating(pids: number[], format: ArenaFormat): number {
+    if (pids.length === 0) return ARENA_BASE_RATING;
+    let sum = 0;
+    for (const pid of pids) sum += this.arenaRatingForPid(pid, format);
+    return sum / pids.length;
+  }
+
+  private isArenaCrossTeam(match: ArenaMatch, attackerPid: number, targetPid: number): boolean {
+    const atkTeam = this.arenaTeamOf(match, attackerPid);
+    const tgtTeam = this.arenaTeamOf(match, targetPid);
+    if (!atkTeam || !tgtTeam || atkTeam === tgtTeam) return false;
+    if (this.arenaIsDown(match, attackerPid)) return false;
+    return !this.arenaIsDown(match, targetPid);
+  }
+
+  // "Down" = out of the fight right now. Ranked bouts eliminate permanently
+  // (`defeated`); Fiesta only benches you until your respawn timer elapses.
+  private arenaIsDown(match: ArenaMatch, pid: number): boolean {
+    if (match.fiesta) return match.fiesta.respawn.has(pid);
+    return match.defeated.has(pid);
+  }
+
+  private isArenaTeamWiped(match: ArenaMatch, team: 'A' | 'B'): boolean {
+    const pids = team === 'A' ? match.teamA : match.teamB;
+    return pids.every((pid) => match.defeated.has(pid));
+  }
+
+  private arenaTeamHpFrac(match: ArenaMatch, team: 'A' | 'B'): number {
+    const pids = team === 'A' ? match.teamA : match.teamB;
+    let sum = 0, count = 0;
+    for (const pid of pids) {
+      if (match.defeated.has(pid)) continue;
+      const e = this.entities.get(pid);
+      if (!e) continue;
+      sum += e.hp / Math.max(1, e.maxHp);
+      count++;
+    }
+    return count > 0 ? sum / count : 0;
+  }
+
+  private arenaCombatants(pids: number[]): ArenaCombatant[] {
+    const out: ArenaCombatant[] = [];
+    for (const pid of pids) {
+      const meta = this.players.get(pid);
+      const e = this.entities.get(pid);
+      if (meta && e) out.push({ pid, name: meta.name, cls: meta.cls, level: e.level });
+    }
+    return out;
+  }
+
   private updateArena(): void {
-    this.matchmakeArena();
+    this.matchmakeArena1v1();
+    this.matchmakeArena2v2();
     const seen = new Set<ArenaMatch>();
     for (const match of this.arenaMatches.values()) {
       if (seen.has(match)) continue;
       seen.add(match);
-      const ea = this.entities.get(match.a);
-      const eb = this.entities.get(match.b);
-      if (!ea || !eb) {
-        // someone logged out: an already-decided bout just sends the survivor
-        // home; an in-progress one is forfeited to the remaining fighter
+      const missingA = match.teamA.some((pid) => !this.entities.get(pid));
+      const missingB = match.teamB.some((pid) => !this.entities.get(pid));
+      if (missingA || missingB) {
         if (match.state === 'over') this.returnFromArena(match);
-        else this.endArenaMatch(match, ea ? match.a : eb ? match.b : null, 'forfeit');
+        else {
+          let winner: 'A' | 'B' | null = null;
+          if (missingA && !missingB) winner = 'B';
+          else if (missingB && !missingA) winner = 'A';
+          this.endArenaMatch(match, winner, 'forfeit');
+        }
         continue;
       }
       if (match.state === 'over') {
-        // aftermath: both already cleansed and scored — count down, then go home
         match.timer -= DT;
         if (match.timer <= 0) this.returnFromArena(match);
         continue;
       }
+      const fighters = this.arenaAllPids(match).map((pid) => this.entities.get(pid)!).filter(Boolean);
       if (match.state === 'countdown') {
         const before = Math.ceil(match.timer);
         match.timer -= DT;
         const after = Math.ceil(match.timer);
         if (after < before && after > 0) {
-          for (const mPid of [match.a, match.b]) this.emit({ type: 'arenaCountdown', seconds: after, pid: mPid });
+          for (const mPid of this.arenaAllPids(match)) this.emit({ type: 'arenaCountdown', seconds: after, pid: mPid });
         }
         if (match.timer <= 0) {
           match.state = 'active';
           match.timer = 0;
-          for (const e of [ea, eb]) this.readyArenaFighter(e, { clearPrep: false });
-          for (const mPid of [match.a, match.b]) {
-            this.emit({ type: 'log', text: 'Fight!', color: '#ff5a3c', pid: mPid });
+          for (const e of fighters) this.readyArenaFighter(e, { clearPrep: false });
+          for (const mPid of this.arenaAllPids(match)) {
+            this.emit({ type: 'log', text: match.fiesta ? 'FIESTA — GO!' : 'Fight!', color: '#ff5a3c', pid: mPid });
             this.emit({ type: 'arenaStart', pid: mPid });
+          }
+          if (match.fiesta) {
+            for (const mPid of this.arenaAllPids(match)) {
+              this.emit({ type: 'fiestaScore', a: 0, b: 0, limit: match.fiesta.scoreLimit, team: this.arenaTeamOf(match, mPid)!, pid: mPid });
+            }
           }
         }
         continue;
       }
-      // active: a stalling bout resolves on remaining-health fraction
       match.timer += DT;
+      if (match.fiesta) { this.updateFiestaActive(match); continue; }
       if (match.timer >= ARENA_MAX_DURATION) {
-        const fa = ea.hp / Math.max(1, ea.maxHp);
-        const fb = eb.hp / Math.max(1, eb.maxHp);
-        const winner = Math.abs(fa - fb) < 0.02 ? null : fa > fb ? match.a : match.b;
+        const fa = this.arenaTeamHpFrac(match, 'A');
+        const fb = this.arenaTeamHpFrac(match, 'B');
+        const winner = Math.abs(fa - fb) < 0.02 ? null : fa > fb ? 'A' : 'B';
         this.endArenaMatch(match, winner, 'timeout');
       }
     }
   }
 
-  // Pair the longest-waiting contender with the nearest-rated opponent still in
-  // line, one bout per free slot. Skips (and drops) anyone who went offline or
-  // died while waiting.
-  private matchmakeArena(): void {
+  private matchmakeArena1v1(): void {
     let guard = ARENA_SLOT_COUNT + 1;
     while (guard-- > 0) {
-      this.arenaQueue = this.arenaQueue.filter((id) => {
+      this.arenaQueue1v1 = this.arenaQueue1v1.filter((id) => {
         const e = this.entities.get(id);
         return !!e && !e.dead && !this.arenaMatches.has(id);
       });
-      if (this.arenaQueue.length < 2 || this.freeArenaSlot() === null) return;
-      const aPid = this.arenaQueue[0];
-      const aRating = this.players.get(aPid)?.arenaRating ?? ARENA_BASE_RATING;
+      if (this.arenaQueue1v1.length < 2 || this.freeArenaSlot() === null) return;
+      const aPid = this.arenaQueue1v1[0];
+      const aRating = this.arenaRatingForPid(aPid, '1v1');
       let bPid = -1, bestGap = Infinity;
-      for (let i = 1; i < this.arenaQueue.length; i++) {
-        const id = this.arenaQueue[i];
-        const gap = Math.abs((this.players.get(id)?.arenaRating ?? ARENA_BASE_RATING) - aRating);
+      for (let i = 1; i < this.arenaQueue1v1.length; i++) {
+        const id = this.arenaQueue1v1[i];
+        const gap = Math.abs(this.arenaRatingForPid(id, '1v1') - aRating);
         if (gap < bestGap) { bestGap = gap; bPid = id; }
       }
       if (bPid < 0) return;
       this.arenaDequeue(aPid);
       this.arenaDequeue(bPid);
-      this.startArenaMatch(aPid, bPid);
+      this.startArenaMatch('1v1', [aPid], [bPid]);
     }
   }
 
-  private startArenaMatch(aPid: number, bPid: number): void {
+  private pruneTeamQueue(fmt: '2v2' | 'fiesta'): void {
+    const keep = (unit: ArenaQueueUnit) => unit.pids.every((id) => {
+      const e = this.entities.get(id);
+      return !!e && !e.dead && !this.arenaMatches.has(id);
+    });
+    if (fmt === 'fiesta') this.arenaQueueFiesta = this.arenaQueueFiesta.filter(keep);
+    else this.arenaQueue2v2 = this.arenaQueue2v2.filter(keep);
+  }
+
+  private removeTeamQueueUnits(units: ArenaQueueUnit[], fmt: '2v2' | 'fiesta'): void {
+    const queue = fmt === 'fiesta' ? this.arenaQueueFiesta : this.arenaQueue2v2;
+    for (const unit of units) {
+      const i = queue.indexOf(unit);
+      if (i >= 0) queue.splice(i, 1);
+    }
+  }
+
+  private matchmakeArena2v2(): void {
+    this.matchmakeTeamFormat('2v2');
+    this.matchmakeTeamFormat('fiesta');
+  }
+
+  // Shared 2v2 / Fiesta matchmaker: premades pair off first, then a premade is
+  // filled out against the two closest-rated solos, then four solos form two
+  // pairs. Identical for both formats — only the queue + spawned format differ.
+  private matchmakeTeamFormat(fmt: '2v2' | 'fiesta'): void {
+    let guard = ARENA_SLOT_COUNT + 1;
+    while (guard-- > 0) {
+      this.pruneTeamQueue(fmt);
+      if (this.freeArenaSlot() === null) return;
+      const queue = fmt === 'fiesta' ? this.arenaQueueFiesta : this.arenaQueue2v2;
+
+      const premades = queue.filter((u) => u.pids.length === 2);
+      if (premades.length >= 2) {
+        const anchor = premades[0];
+        let best = premades[1], bestGap = Math.abs(premades[1].rating - anchor.rating);
+        for (let i = 2; i < premades.length; i++) {
+          const gap = Math.abs(premades[i].rating - anchor.rating);
+          if (gap < bestGap) { bestGap = gap; best = premades[i]; }
+        }
+        this.removeTeamQueueUnits([anchor, best], fmt);
+        this.startArenaMatch(fmt, anchor.pids, best.pids);
+        continue;
+      }
+
+      if (premades.length >= 1) {
+        const solos = queue.filter((u) => u.pids.length === 1);
+        if (solos.length >= 2) {
+          const premade = premades[0];
+          const anchorSolo = solos[0];
+          let partner = solos[1], bestGap = Math.abs(solos[1].rating - anchorSolo.rating);
+          for (let i = 2; i < solos.length; i++) {
+            const gap = Math.abs(solos[i].rating - anchorSolo.rating);
+            if (gap < bestGap) { bestGap = gap; partner = solos[i]; }
+          }
+          this.removeTeamQueueUnits([premade, anchorSolo, partner], fmt);
+          this.startArenaMatch(fmt, premade.pids, [anchorSolo.pids[0], partner.pids[0]]);
+          continue;
+        }
+      }
+
+      const solos = queue.filter((u) => u.pids.length === 1);
+      if (solos.length >= 4) {
+        const anchor = solos[0];
+        let partner = solos[1], bestGap = Math.abs(solos[1].rating - anchor.rating);
+        for (let i = 2; i < solos.length; i++) {
+          const gap = Math.abs(solos[i].rating - anchor.rating);
+          if (gap < bestGap) { bestGap = gap; partner = solos[i]; }
+        }
+        const teamASet = new Set([anchor.pids[0], partner.pids[0]]);
+        const rest = solos.filter((u) => !teamASet.has(u.pids[0]));
+        if (rest.length >= 2) {
+          this.removeTeamQueueUnits([anchor, partner, rest[0], rest[1]], fmt);
+          this.startArenaMatch(fmt, [anchor.pids[0], partner.pids[0]], [rest[0].pids[0], rest[1].pids[0]]);
+          continue;
+        }
+      }
+      return;
+    }
+  }
+
+  private startArenaMatch(format: ArenaFormat, teamA: number[], teamB: number[]): void {
     const slot = this.freeArenaSlot();
-    const aMeta = this.players.get(aPid);
-    const bMeta = this.players.get(bPid);
-    const ea = this.entities.get(aPid);
-    const eb = this.entities.get(bPid);
-    if (slot === null || !aMeta || !bMeta || !ea || !eb) {
-      // couldn't seat them — put them back so the next tick retries
-      if (this.entities.get(aPid)) this.arenaQueue.unshift(aPid);
-      if (this.entities.get(bPid)) this.arenaQueue.unshift(bPid);
+    const allPids = [...teamA, ...teamB];
+    const entities = allPids.map((pid) => this.entities.get(pid));
+    const metas = allPids.map((pid) => this.players.get(pid));
+    if (slot === null || entities.some((e) => !e) || metas.some((m) => !m)) {
+      if (format === '1v1') {
+        for (const pid of allPids) {
+          if (this.entities.get(pid) && !this.arenaMatches.has(pid)) this.arenaQueue1v1.unshift(pid);
+        }
+      } else {
+        const requeue = format === 'fiesta' ? this.arenaQueueFiesta : this.arenaQueue2v2;
+        const okA = teamA.every((pid) => this.entities.get(pid) && !this.arenaMatches.has(pid));
+        const okB = teamB.every((pid) => this.entities.get(pid) && !this.arenaMatches.has(pid));
+        if (okB) requeue.unshift({ pids: teamB, rating: this.arenaTeamRating(teamB, format) });
+        if (okA) requeue.unshift({ pids: teamA, rating: this.arenaTeamRating(teamA, format) });
+      }
       return;
     }
     this.arenaBusySlots.add(slot);
+    const returns = new Map<number, { x: number; z: number; facing: number }>();
+    for (let i = 0; i < allPids.length; i++) {
+      const e = entities[i]!;
+      returns.set(allPids[i], { x: e.pos.x, z: e.pos.z, facing: e.facing });
+    }
+    const isFiesta = format === 'fiesta';
+    const countdown = isFiesta ? FIESTA_COUNTDOWN : ARENA_COUNTDOWN;
     const match: ArenaMatch = {
-      id: this.nextArenaMatchId++, a: aPid, b: bPid, slot, state: 'countdown', timer: ARENA_COUNTDOWN,
-      returnA: { x: ea.pos.x, z: ea.pos.z, facing: ea.facing },
-      returnB: { x: eb.pos.x, z: eb.pos.z, facing: eb.facing },
-      ratingA: aMeta.arenaRating, ratingB: bMeta.arenaRating,
+      id: this.nextArenaMatchId++, format, teamA, teamB, slot, state: 'countdown', timer: countdown,
+      returns, ratingA: this.arenaTeamRating(teamA, format), ratingB: this.arenaTeamRating(teamB, format),
+      defeated: new Set(),
+      fiesta: isFiesta ? this.createFiestaState() : undefined,
     };
-    this.arenaMatches.set(aPid, match);
-    this.arenaMatches.set(bPid, match);
+    for (const pid of allPids) this.arenaMatches.set(pid, match);
     const origin = arenaOrigin(slot);
-    this.placeInArena(ea, origin, ARENA_SPAWN_A);
-    this.placeInArena(eb, origin, ARENA_SPAWN_B);
-    this.resetForArena(ea);
-    this.resetForArena(eb);
-    this.emit({ type: 'arenaFound', oppName: bMeta.name, oppClass: bMeta.cls, oppLevel: eb.level, pid: aPid });
-    this.emit({ type: 'arenaFound', oppName: aMeta.name, oppClass: aMeta.cls, oppLevel: ea.level, pid: bPid });
-    for (const mPid of [aPid, bPid]) {
-      this.emit({ type: 'arenaCountdown', seconds: ARENA_COUNTDOWN, pid: mPid });
-      this.emit({ type: 'log', text: 'You step onto the sands of the Ashen Coliseum.', color: '#ffa040', pid: mPid });
+    if (format === '1v1') {
+      this.placeInArena(entities[0]!, origin, ARENA_SPAWN_A);
+      this.placeInArena(entities[1]!, origin, ARENA_SPAWN_B);
+    } else {
+      this.placeTeamInArena(teamA, origin, ARENA_SPAWNS_A_2v2);
+      this.placeTeamInArena(teamB, origin, ARENA_SPAWNS_B_2v2);
+    }
+    // Fiesta: everyone fights at a balanced level 20 — standardize before the
+    // clean-slate reset so countdown stats/abilities already reflect it.
+    if (isFiesta) {
+      for (let i = 0; i < allPids.length; i++) {
+        const m = metas[i]; const e = entities[i];
+        if (m && e) this.fiestaStandardize(m, e);
+      }
+    }
+    for (const e of entities) this.resetForArena(e!);
+    this.emitArenaFound(match);
+    const stepText = isFiesta
+      ? 'Welcome to the 2v2 FIESTA! Score takedowns, grab augments, survive the ring!'
+      : 'You step onto the sands of the Ashen Coliseum.';
+    for (const mPid of allPids) {
+      this.emit({ type: 'arenaCountdown', seconds: countdown, pid: mPid });
+      this.emit({ type: 'log', text: stepText, color: isFiesta ? '#ff3df0' : '#ffa040', pid: mPid });
+    }
+  }
+
+  private createFiestaState(): FiestaState {
+    return {
+      scoreA: 0, scoreB: 0, scoreLimit: FIESTA_SCORE_LIMIT,
+      wave: 0, nextWaveAt: FIESTA_FIRST_WAVE_AT,
+      offers: new Map(), ringRadius: FIESTA_RING_START, ringTarget: FIESTA_RING_START,
+      respawn: new Map(), deaths: new Map(), kills: new Map(), streak: new Map(), lastKill: new Map(),
+      pending: new Map(), powerups: [], nextPowerupId: 1, powerupTimer: FIESTA_POWERUP_FIRST,
+      firstBlood: false,
+      // Per-match deterministic stream, seeded off the sim clock + slot so a
+      // replay re-offers identical augment cards.
+      rng: new Rng((this.tickCount * 2654435761 + this.nextArenaMatchId * 40503) >>> 0),
+    };
+  }
+
+  private emitArenaFound(match: ArenaMatch): void {
+    for (const pid of this.arenaAllPids(match)) {
+      const myTeam = this.arenaTeamOf(match, pid)!;
+      const allyPids = (myTeam === 'A' ? match.teamA : match.teamB).filter((p) => p !== pid);
+      const enemyPids = myTeam === 'A' ? match.teamB : match.teamA;
+      const allies = this.arenaCombatants(allyPids);
+      const enemies = this.arenaCombatants(enemyPids);
+      const primary = enemies[0];
+      if (!primary) continue;
+      this.emit({
+        type: 'arenaFound', format: match.format,
+        oppName: enemies.map((e) => e.name).join(' & '),
+        oppClass: primary.cls, oppLevel: primary.level,
+        allies, enemies, pid,
+      });
     }
   }
 
@@ -6084,6 +9618,13 @@ export class Sim {
     this.rebucket(e);
   }
 
+  private placeTeamInArena(pids: number[], origin: { x: number; z: number }, spawns: { x: number; z: number; facing: number }[]): void {
+    for (let i = 0; i < pids.length; i++) {
+      const e = this.entities.get(pids[i]);
+      if (e) this.placeInArena(e, origin, spawns[i] ?? spawns[spawns.length - 1]);
+    }
+  }
+
   // A clean slate so the bout is decided by play, not by what each fighter
   // walked in carrying: full health/resource, cooldowns and combat reset.
   private resetForArena(e: Entity): void {
@@ -6091,13 +9632,14 @@ export class Sim {
   }
 
   private readyArenaFighter(e: Entity, opts: { clearPrep: boolean }): void {
+    e.dead = false;
     if (opts.clearPrep) {
       e.auras = [];
       e.cooldowns.clear();
       e.ccDr.clear();
     }
     const meta = this.players.get(e.id);
-    if (meta) recalcPlayerStats(e, meta.cls, meta.equipment, meta.talentMods);
+    if (meta) recalcPlayerStats(e, meta.cls, meta.equipment, this.playerMods(meta));
     e.hp = e.maxHp;
     e.resource = e.resourceType === 'mana' ? e.maxResource : e.resourceType === 'energy' ? 100 : 0;
     e.targetId = null;
@@ -6120,68 +9662,89 @@ export class Sim {
     e.drinking = null;
   }
 
-  // Decide a bout: score it (once), then either send a survivor home now (a
-  // forfeit, where the other fighter is gone) or hold both on the sands for a
-  // brief aftermath before returning them. winnerPid null = draw; reason is
-  // informational (defeat/timeout/forfeit).
-  private endArenaMatch(match: ArenaMatch, winnerPid: number | null, reason: 'defeat' | 'timeout' | 'forfeit'): void {
-    const aMeta = this.players.get(match.a);
-    const bMeta = this.players.get(match.b);
-    const ea = this.entities.get(match.a);
-    const eb = this.entities.get(match.b);
-
-    // rating: zero-sum Elo. A draw nudges each toward its expected score.
-    if (aMeta && bMeta) {
-      const ratingA0 = aMeta.arenaRating;
-      const ratingB0 = bMeta.arenaRating;
-      let deltaA: number;
-      if (winnerPid === null) {
-        deltaA = eloDelta(ratingA0, ratingB0, 0.5);
-        aMeta.arenaWins += 0; bMeta.arenaWins += 0; // draws count as neither
-      } else if (winnerPid === match.a) {
-        deltaA = eloDelta(ratingA0, ratingB0, 1);
-        aMeta.arenaWins++; bMeta.arenaLosses++;
-      } else {
-        deltaA = -eloDelta(ratingB0, ratingA0, 1);
-        bMeta.arenaWins++; aMeta.arenaLosses++;
-      }
-      aMeta.arenaRating = Math.max(ARENA_MIN_RATING, ratingA0 + deltaA);
-      bMeta.arenaRating = Math.max(ARENA_MIN_RATING, ratingB0 - deltaA);
-      this.emit({
-        type: 'arenaEnd', pid: match.a, draw: winnerPid === null, won: winnerPid === match.a,
-        oppName: bMeta.name, ratingBefore: ratingA0, ratingAfter: aMeta.arenaRating,
-      });
-      this.emit({
-        type: 'arenaEnd', pid: match.b, draw: winnerPid === null, won: winnerPid === match.b,
-        oppName: aMeta.name, ratingBefore: ratingB0, ratingAfter: bMeta.arenaRating,
-      });
+  // Decide a bout: score it (once), then either send survivors home now (a
+  // forfeit) or hold everyone on the sands for a brief aftermath before
+  // returning them. winnerTeam null = draw.
+  private endArenaMatch(match: ArenaMatch, winnerTeam: 'A' | 'B' | null, reason: 'defeat' | 'timeout' | 'forfeit'): void {
+    const ratingA0 = match.ratingA;
+    const ratingB0 = match.ratingB;
+    // Fiesta is unranked party play — it never moves the Elo ladder.
+    const ranked = !match.fiesta;
+    let deltaA: number;
+    if (!ranked) {
+      deltaA = 0;
+    } else if (winnerTeam === null) {
+      deltaA = eloDelta(ratingA0, ratingB0, 0.5);
+    } else if (winnerTeam === 'A') {
+      deltaA = eloDelta(ratingA0, ratingB0, 1);
+    } else {
+      deltaA = -eloDelta(ratingB0, ratingA0, 1);
     }
 
-    // a forfeit (rage-quit / disconnect) has no aftermath — send the survivor
-    // home immediately rather than leaving them on empty sands
-    if (reason === 'forfeit' || !ea || !eb) { this.returnFromArena(match); return; }
+    const scoreTeam = (team: 'A' | 'B', delta: number, won: boolean | null) => {
+      const pids = team === 'A' ? match.teamA : match.teamB;
+      const enemies = team === 'A' ? match.teamB : match.teamA;
+      const enemyNames = enemies.map((pid) => this.players.get(pid)?.name ?? '?').join(' & ');
+      for (const pid of pids) {
+        const meta = this.players.get(pid);
+        if (!meta) continue;
+        // Fiesta is unranked party play — it never moves the ladder, so report
+        // an unchanged rating; ranked bouts go through the per-bracket updater.
+        let ratingBefore: number, ratingAfter: number;
+        if (ranked) {
+          ({ before: ratingBefore, after: ratingAfter } = this.addArenaResult(meta, match.format, delta, won));
+        } else {
+          ratingBefore = ratingAfter = this.arenaStanding(meta, match.format).rating;
+        }
+        this.emit({
+          type: 'arenaEnd', pid, format: match.format,
+          draw: winnerTeam === null, won: won === true,
+          oppName: enemyNames, ratingBefore, ratingAfter,
+          allies: this.arenaCombatants(pids.filter((p) => p !== pid)),
+          enemies: this.arenaCombatants(enemies),
+        });
+      }
+    };
 
-    // decided bout: cleanse both right now so no arena auras/DoTs tick during
-    // the wait, then hold them on the sands for the aftermath countdown
-    this.resetForArena(ea);
-    this.resetForArena(eb);
+    const wonA = winnerTeam === null ? null : winnerTeam === 'A';
+    const wonB = winnerTeam === null ? null : winnerTeam === 'B';
+    scoreTeam('A', deltaA, wonA);
+    scoreTeam('B', -deltaA, wonB);
+
+    if (reason === 'forfeit') { this.returnFromArena(match); return; }
+
+    const allPresent = this.arenaAllPids(match).every((pid) => this.entities.get(pid));
+    if (!allPresent) { this.returnFromArena(match); return; }
+
+    for (const pid of this.arenaAllPids(match)) {
+      if (match.defeated.has(pid)) continue;
+      const e = this.entities.get(pid);
+      if (e) this.resetForArena(e);
+    }
     match.state = 'over';
     match.timer = ARENA_RETURN_DELAY;
-    for (const mPid of [match.a, match.b]) {
-      this.emit({ type: 'log', text: 'The bout is decided. Returning to the world…', color: '#ffa040', pid: mPid });
+    const overText = match.fiesta ? 'FIESTA OVER! What a party. Returning to the world…' : 'The bout is decided. Returning to the world…';
+    for (const mPid of this.arenaAllPids(match)) {
+      this.emit({ type: 'log', text: overText, color: match.fiesta ? '#ff3df0' : '#ffa040', pid: mPid });
     }
   }
 
-  // Teleport both fighters back to where they queued, fully cleansed (no arena
-  // auras, DoTs, debuffs, cooldowns or combat state follow them out), and
+  // Teleport all fighters back to where they queued, fully cleansed, and
   // release the instance slot.
   private returnFromArena(match: ArenaMatch): void {
-    this.arenaMatches.delete(match.a);
-    this.arenaMatches.delete(match.b);
+    for (const pid of this.arenaAllPids(match)) this.arenaMatches.delete(pid);
     this.arenaBusySlots.delete(match.slot);
-    for (const [e, ret] of [[this.entities.get(match.a), match.returnA], [this.entities.get(match.b), match.returnB]] as const) {
-      if (!e) continue;
-      this.resetForArena(e); // strips every aura/effect/cooldown and heals to full
+    for (const pid of this.arenaAllPids(match)) {
+      const e = this.entities.get(pid);
+      const ret = match.returns.get(pid);
+      if (!e || !ret) continue;
+      // Fiesta augments + the level-20 standardization are bout-only — undo both
+      // before the player goes home so resetForArena recomputes their real stats.
+      if (match.fiesta) {
+        const meta = this.players.get(pid);
+        if (meta) { this.fiestaRestoreChar(meta, e); this.clearFiestaAugments(meta, e); }
+      }
+      this.resetForArena(e);
       e.pos = this.groundPos(ret.x, ret.z);
       e.prevPos = { ...e.pos };
       e.facing = ret.facing;
@@ -6195,13 +9758,573 @@ export class Sim {
     return this.arenaMatches.get(pid) ?? null;
   }
 
+  // -------------------------------------------------------------------------
+  // 2v2 Fiesta — the dopamine-maxxed party mode. Score-based respawning bouts
+  // with augment waves and a closing hazard ring. The match lifecycle reuses the
+  // arena's countdown/aftermath; everything below drives the active phase.
+  // -------------------------------------------------------------------------
+
+  // The effective talent modifiers for a player: their talents with any Fiesta
+  // augments folded in. Every stat/ability/threat recompute reads through this,
+  // so augments persist through aura procs, gear swaps, and respawns.
+  playerMods(meta: PlayerMeta): TalentModifiers {
+    return meta.fiestaMods ?? meta.talentMods;
+  }
+
+  // talentMods + the chosen augments' flat effects, deep-cloned so the base
+  // talent struct is never mutated.
+  private mergeAugmentMods(base: TalentModifiers, augIds: string[]): TalentModifiers {
+    const m: TalentModifiers = {
+      spec: base.spec, role: base.role,
+      stats: { ...base.stats },
+      global: { ...base.global },
+      abilities: {},
+      grants: [...base.grants],
+    };
+    for (const k in base.abilities) m.abilities[k] = { ...base.abilities[k] };
+    for (const id of augIds) {
+      const eff = AUGMENTS_BY_ID[id]?.effect;
+      if (!eff) continue;
+      if (eff.stats) {
+        const s = m.stats, e = eff.stats;
+        s.str += e.str ?? 0; s.agi += e.agi ?? 0; s.sta += e.sta ?? 0; s.int += e.int ?? 0; s.spi += e.spi ?? 0;
+        s.armor += e.armor ?? 0; s.ap += e.ap ?? 0; s.crit += e.crit ?? 0; s.dodge += e.dodge ?? 0;
+        s.apPct += e.apPct ?? 0; s.staPct += e.staPct ?? 0; s.armorPct += e.armorPct ?? 0; s.maxHpPct += e.maxHpPct ?? 0;
+      }
+      if (eff.global) {
+        const g = m.global, e = eff.global;
+        g.meleeDmgPct += e.meleeDmgPct ?? 0; g.spellDmgPct += e.spellDmgPct ?? 0;
+        g.healPct += e.healPct ?? 0; g.threatPct += e.threatPct ?? 0;
+      }
+      for (const am of eff.ability ?? []) {
+        const cur = m.abilities[am.ability] ?? (m.abilities[am.ability] = { dmgPct: 0, flatDmg: 0, costPct: 0, cooldownPct: 0, castPct: 0 });
+        cur.dmgPct += am.dmgPct ?? 0; cur.flatDmg += am.flatDmg ?? 0;
+        cur.costPct += am.costPct ?? 0; cur.cooldownPct += am.cooldownPct ?? 0; cur.castPct += am.castPct ?? 0;
+      }
+      if (eff.grant) m.grants.push({ ability: eff.grant.ability, rank: eff.grant.rank ?? 1 });
+    }
+    return m;
+  }
+
+  // Recompute a fighter's effective modifiers + special bag from their picked
+  // augments, then rebuild known abilities and stats (preserving hp fraction so
+  // a +maxHp augment grows the bar instead of healing to full).
+  private fiestaApplyAugments(meta: PlayerMeta, e: Entity): void {
+    meta.fiestaMods = this.mergeAugmentMods(meta.talentMods, meta.fiestaAugments);
+    const sp: AugmentSpecial = {};
+    for (const id of meta.fiestaAugments) {
+      const s = AUGMENTS_BY_ID[id]?.special;
+      if (!s) continue;
+      if (s.lifestealPct) sp.lifestealPct = (sp.lifestealPct ?? 0) + s.lifestealPct;
+      if (s.moveSpeedPct) sp.moveSpeedPct = (sp.moveSpeedPct ?? 0) + s.moveSpeedPct;
+      if (s.scorePerKill) sp.scorePerKill = (sp.scorePerKill ?? 0) + s.scorePerKill;
+    }
+    meta.fiestaSpecial = sp;
+    meta.known = abilitiesKnownAt(meta.cls, e.level, meta.fiestaMods);
+    const frac = e.maxHp > 0 ? e.hp / e.maxHp : 1;
+    recalcPlayerStats(e, meta.cls, meta.equipment, meta.fiestaMods);
+    e.hp = e.dead ? 0 : Math.max(1, Math.round(e.maxHp * frac));
+  }
+
+  // Strip all Fiesta augment state and restore plain talent-only stats/abilities.
+  private clearFiestaAugments(meta: PlayerMeta, e: Entity): void {
+    if (meta.fiestaAugments.length === 0 && !meta.fiestaMods && !meta.fiestaSpecial.lifestealPct
+      && !meta.fiestaSpecial.moveSpeedPct && !meta.fiestaSpecial.scorePerKill) return;
+    meta.fiestaAugments = [];
+    meta.fiestaMods = null;
+    meta.fiestaSpecial = {};
+    meta.known = abilitiesKnownAt(meta.cls, e.level, meta.talentMods);
+    recalcPlayerStats(e, meta.cls, meta.equipment, meta.talentMods);
+  }
+
+  // Standardize a fighter to a balanced level-20 build for the bout. The
+  // pre-fiesta character is snapshotted in meta.fiestaRestore (which also makes
+  // serializeCharacter persist the real, not the temporary, state).
+  private fiestaStandardize(meta: PlayerMeta, e: Entity): void {
+    if (meta.fiestaRestore) return;
+    meta.fiestaRestore = { level: e.level, xp: meta.xp, talents: cloneAllocation(meta.talents) };
+    e.level = FIESTA_STANDARD_LEVEL;
+    meta.talents = defaultBuild(meta.cls, talentPointsAtLevel(FIESTA_STANDARD_LEVEL));
+    meta.talentMods = computeTalentModifiers(meta.cls, meta.talents);
+    meta.known = abilitiesKnownAt(meta.cls, e.level, this.playerMods(meta));
+    recalcPlayerStats(e, meta.cls, meta.equipment, this.playerMods(meta));
+  }
+
+  // Undo fiestaStandardize: restore the player's real level/xp/talents.
+  private fiestaRestoreChar(meta: PlayerMeta, e: Entity): void {
+    const snap = meta.fiestaRestore;
+    if (!snap) return;
+    e.level = snap.level;
+    meta.xp = snap.xp;
+    meta.talents = snap.talents;
+    meta.talentMods = computeTalentModifiers(meta.cls, meta.talents);
+    meta.fiestaRestore = null;
+    meta.known = abilitiesKnownAt(meta.cls, e.level, meta.talentMods);
+    recalcPlayerStats(e, meta.cls, meta.equipment, meta.talentMods);
+  }
+
+  // Player command: lock in one of the augments currently on offer.
+  arenaAugmentPick(augmentId: string, pid?: number): void {
+    const r = this.resolve(pid);
+    if (!r) return;
+    const id = r.meta.entityId;
+    const match = this.arenaMatches.get(id);
+    if (!match?.fiesta || match.state !== 'active') return;
+    const offer = match.fiesta.offers.get(id);
+    if (!offer) { this.error(id, 'You have no augment to choose right now.'); return; }
+    if (!offer.choices.includes(augmentId)) { this.error(id, 'That augment is not on offer.'); return; }
+    match.fiesta.offers.delete(id);
+    r.meta.fiestaAugments.push(augmentId);
+    this.fiestaApplyAugments(r.meta, r.e);
+    for (const mPid of this.arenaAllPids(match)) {
+      this.emit({ type: 'augmentChosen', augmentId, byPid: id, byName: r.meta.name, mine: mPid === id, pid: mPid });
+    }
+    // Still benched with more waves banked? Offer the next one right away.
+    if (this.arenaIsDown(match, id)) this.fiestaPresentPending(match, id);
+  }
+
+  private fiestaRespawnTime(deaths: number, elapsed: number): number {
+    const t = FIESTA_RESPAWN_BASE
+      + (deaths - 1) * FIESTA_RESPAWN_PER_DEATH
+      + Math.floor(elapsed / 60) * FIESTA_RESPAWN_PER_MINUTE;
+    return Math.min(FIESTA_RESPAWN_MAX, t);
+  }
+
+  // Strip a downed fighter to a clean dead state WITHOUT the normal player-death
+  // (graveyard) flow — Fiesta revives them itself on a timer.
+  private fiestaDownEntity(e: Entity, killer: Entity | null): void {
+    e.dead = true;
+    e.hp = 0;
+    e.auras = [];
+    e.ccDr.clear();
+    e.castingAbility = null;
+    e.castRemaining = 0;
+    e.channeling = false;
+    e.autoAttack = false;
+    e.queuedOnSwing = null;
+    e.comboPoints = 0;
+    e.comboTargetId = null;
+    e.eating = null; e.drinking = null; e.sitting = false;
+    e.chargeTargetId = null; e.chargePath = []; e.followTargetId = null;
+    e.targetId = null;
+    const meta = this.players.get(e.id);
+    if (meta) meta.counters.deaths++;
+    this.emit({ type: 'death', entityId: e.id, killerId: killer?.id ?? -1 });
+  }
+
+  // Bench a fighter and start their (growing) respawn countdown.
+  private fiestaDown(match: ArenaMatch, victim: Entity, killerPid: number | null): void {
+    const f = match.fiesta!;
+    if (f.respawn.has(victim.id)) return;
+    const killer = killerPid !== null ? this.entities.get(killerPid) ?? null : null;
+    this.fiestaDownEntity(victim, killer);
+    const deaths = (f.deaths.get(victim.id) ?? 0) + 1;
+    f.deaths.set(victim.id, deaths);
+    const respawnIn = this.fiestaRespawnTime(deaths, match.timer);
+    f.respawn.set(victim.id, respawnIn);
+    f.streak.set(victim.id, 0);
+    this.emit({ type: 'fiestaDown', seconds: Math.ceil(respawnIn), pid: victim.id });
+    // Down time is the polite moment to offer any augment that's been waiting.
+    this.fiestaPresentPending(match, victim.id);
+  }
+
+  // A scored takedown: award the point(s), bench the victim, fire the right
+  // word-pop, broadcast the new tally, and end the bout if the cap is reached.
+  private fiestaTakedown(match: ArenaMatch, killerPid: number, victim: Entity): void {
+    const f = match.fiesta!;
+    const victimStreak = f.streak.get(victim.id) ?? 0;
+    const killerTeam = this.arenaTeamOf(match, killerPid);
+    const killerMeta = this.players.get(killerPid);
+    const points = 1 + (killerMeta?.fiestaSpecial.scorePerKill ?? 0);
+    if (killerTeam === 'A') f.scoreA += points; else if (killerTeam === 'B') f.scoreB += points;
+    if (killerMeta) killerMeta.counters.kills++;
+    f.kills.set(killerPid, (f.kills.get(killerPid) ?? 0) + 1);
+
+    this.fiestaDown(match, victim, killerPid);
+
+    const now = match.timer;
+    const rapid = now - (f.lastKill.get(killerPid) ?? -999) <= 4;
+    f.lastKill.set(killerPid, now);
+    const ks = (f.streak.get(killerPid) ?? 0) + 1;
+    f.streak.set(killerPid, ks);
+    if (!f.firstBlood) { f.firstBlood = true; this.emit({ type: 'fiestaWord', flavor: 'firstblood', pid: killerPid }); }
+    else if (victimStreak >= 3) this.emit({ type: 'fiestaWord', flavor: 'shutdown', pid: killerPid });
+    else if (rapid) this.emit({ type: 'fiestaWord', flavor: 'doublekill', pid: killerPid });
+    else if (ks >= 3) this.emit({ type: 'fiestaWord', flavor: 'spree', n: ks, pid: killerPid });
+    else this.emit({ type: 'fiestaWord', flavor: 'kill', pid: killerPid });
+
+    for (const mPid of this.arenaAllPids(match)) {
+      this.emit({ type: 'fiestaScore', a: f.scoreA, b: f.scoreB, limit: f.scoreLimit, team: this.arenaTeamOf(match, mPid)!, pid: mPid });
+    }
+
+    if (f.scoreA >= f.scoreLimit || f.scoreB >= f.scoreLimit) {
+      this.endArenaMatch(match, f.scoreA >= f.scoreLimit ? 'A' : 'B', 'defeat');
+    }
+  }
+
+  private fiestaRevive(match: ArenaMatch, e: Entity): void {
+    const f = match.fiesta!;
+    f.respawn.delete(e.id);
+    const team = this.arenaTeamOf(match, e.id);
+    if (!team) return;
+    const origin = arenaOrigin(match.slot);
+    const spawns = team === 'A' ? ARENA_SPAWNS_A_2v2 : ARENA_SPAWNS_B_2v2;
+    const teamPids = team === 'A' ? match.teamA : match.teamB;
+    const idx = Math.max(0, teamPids.indexOf(e.id));
+    this.placeInArena(e, origin, spawns[idx] ?? spawns[0]);
+    this.readyArenaFighter(e, { clearPrep: true });
+    this.emit({ type: 'respawn', pid: e.id });
+    this.emit({ type: 'fiestaWord', flavor: 'revived', pid: e.id });
+  }
+
+  private fiestaOpenWave(match: ArenaMatch): void {
+    const f = match.fiesta!;
+    f.wave++;
+    f.nextWaveAt = match.timer + FIESTA_WAVE_INTERVAL;
+    // Close the ring one step toward its minimum with each wave.
+    const frac = f.wave / FIESTA_TOTAL_WAVES;
+    f.ringTarget = Math.round(FIESTA_RING_START - (FIESTA_RING_START - FIESTA_RING_MIN) * frac);
+    const tier = tierForWave(f.wave);
+    for (const pid of this.arenaAllPids(match)) {
+      const meta = this.players.get(pid);
+      const e = this.entities.get(pid);
+      if (!meta || !e) continue;
+      const owned = new Set(meta.fiestaAugments);
+      const pool = eligibleAugments(tier, meta.cls, this.playerMods(meta).role, owned);
+      const choices = this.fiestaPickOffers(f.rng, pool, 3);
+      if (choices.length === 0) continue;
+      // Don't interrupt the fight: queue the offer and reveal it on the player's
+      // next death (or right now if they're already down).
+      const queue = f.pending.get(pid) ?? [];
+      queue.push({ tier, wave: f.wave, choices });
+      f.pending.set(pid, queue);
+      if (this.arenaIsDown(match, pid)) this.fiestaPresentPending(match, pid);
+    }
+    for (const mPid of this.arenaAllPids(match)) {
+      this.emit({ type: 'fiestaWave', wave: f.wave, totalWaves: FIESTA_TOTAL_WAVES, pid: mPid });
+    }
+  }
+
+  // Reveal the oldest queued augment offer (the pick UI watches `offers`), unless
+  // the player is already mid-choice. Fired on death and on wave-open-while-down.
+  private fiestaPresentPending(match: ArenaMatch, pid: number): void {
+    const f = match.fiesta!;
+    if (f.offers.has(pid)) return;
+    const queue = f.pending.get(pid);
+    if (!queue || queue.length === 0) return;
+    const next = queue.shift()!;
+    if (queue.length === 0) f.pending.delete(pid);
+    f.offers.set(pid, next);
+    this.emit({ type: 'augmentOffer', tier: next.tier, wave: next.wave, choices: next.choices, pid });
+  }
+
+  // Deterministic Fisher–Yates draw of up to n augment ids from the eligible pool.
+  private fiestaPickOffers(rng: Rng, pool: AugmentDef[], n: number): string[] {
+    const arr = pool.slice();
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(rng.next() * (i + 1));
+      const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+    }
+    return arr.slice(0, Math.min(n, arr.length)).map((a) => a.id);
+  }
+
+  private fiestaRingDamage(match: ArenaMatch): void {
+    if (this.tickCount % 10 !== 0) return; // twice a second
+    const f = match.fiesta!;
+    const origin = arenaOrigin(match.slot);
+    const cx = origin.x + FIESTA_RING_CX, cz = origin.z + FIESTA_RING_CZ;
+    const interval = 10 * DT;
+    for (const pid of this.arenaAllPids(match)) {
+      if (this.arenaIsDown(match, pid)) continue;
+      const e = this.entities.get(pid);
+      if (!e || e.dead) continue;
+      const d = Math.hypot(e.pos.x - cx, e.pos.z - cz);
+      if (d <= f.ringRadius) continue;
+      const dmg = Math.max(1, Math.round(e.maxHp * FIESTA_RING_DPS_PCT * interval));
+      this.emit({ type: 'damage', sourceId: -1, targetId: pid, amount: Math.min(dmg, e.hp), crit: false, school: 'fire', ability: null, kind: 'hit' });
+      if (e.hp - dmg <= 0) { e.hp = 0; this.fiestaDown(match, e, null); }
+      else e.hp -= dmg;
+    }
+  }
+
+  private updateFiestaActive(match: ArenaMatch): void {
+    const f = match.fiesta!;
+    if (match.timer >= FIESTA_MAX_DURATION) {
+      const winner = f.scoreA === f.scoreB ? null : f.scoreA > f.scoreB ? 'A' : 'B';
+      this.endArenaMatch(match, winner, 'timeout');
+      return;
+    }
+    // Ease the ring toward its target radius and burn anyone caught outside.
+    if (f.ringRadius > f.ringTarget) {
+      f.ringRadius = Math.max(f.ringTarget, f.ringRadius - FIESTA_RING_SHRINK_RATE * DT);
+    }
+    this.fiestaRingDamage(match);
+    this.fiestaUpdatePowerups(match);
+    if (f.wave < FIESTA_TOTAL_WAVES && match.timer >= f.nextWaveAt) this.fiestaOpenWave(match);
+    for (const [pid, t] of [...f.respawn]) {
+      const nt = t - DT;
+      const e = this.entities.get(pid);
+      if (!e) { f.respawn.delete(pid); continue; }
+      if (nt <= 0) this.fiestaRevive(match, e);
+      else f.respawn.set(pid, nt);
+    }
+  }
+
+  // ---- Ring power-ups: spawn on a timer, telegraph, then wait to be grabbed --
+
+  private fiestaUpdatePowerups(match: ArenaMatch): void {
+    const f = match.fiesta!;
+    // age existing power-ups (telegraph → ready → despawn)
+    for (let i = f.powerups.length - 1; i >= 0; i--) {
+      const p = f.powerups[i];
+      p.timer -= DT;
+      if (p.timer <= 0) {
+        if (p.state === 'spawning') { p.state = 'ready'; p.timer = FIESTA_POWERUP_TTL; }
+        else { f.powerups.splice(i, 1); }
+      }
+    }
+    // pickups: a live fighter touching a ready power-up scoops it
+    for (let i = f.powerups.length - 1; i >= 0; i--) {
+      const p = f.powerups[i];
+      if (p.state !== 'ready') continue;
+      for (const pid of this.arenaAllPids(match)) {
+        if (this.arenaIsDown(match, pid)) continue;
+        const e = this.entities.get(pid);
+        if (!e || e.dead) continue;
+        if (Math.hypot(e.pos.x - p.x, e.pos.z - p.z) > FIESTA_POWERUP_RADIUS) continue;
+        this.fiestaGrabPowerup(match, e, p);
+        f.powerups.splice(i, 1);
+        break;
+      }
+    }
+    // spawn timer
+    f.powerupTimer -= DT;
+    if (f.powerupTimer <= 0) {
+      f.powerupTimer = FIESTA_POWERUP_INTERVAL;
+      if (f.powerups.length < FIESTA_POWERUP_MAX) this.fiestaSpawnPowerup(match);
+    }
+  }
+
+  private fiestaSpawnPowerup(match: ArenaMatch): void {
+    const f = match.fiesta!;
+    const def: PowerupDef = f.rng.pick(POWERUPS);
+    const origin = arenaOrigin(match.slot);
+    const cx = origin.x + FIESTA_RING_CX, cz = origin.z + FIESTA_RING_CZ;
+    // somewhere inside the current ring (kept off the exact centre)
+    const ang = f.rng.next() * Math.PI * 2;
+    const r = (0.25 + f.rng.next() * 0.6) * Math.max(3, f.ringRadius - 2);
+    f.powerups.push({
+      id: f.nextPowerupId++, defId: def.id,
+      x: cx + Math.sin(ang) * r, z: cz + Math.cos(ang) * r,
+      state: 'spawning', timer: FIESTA_POWERUP_TELEGRAPH,
+    });
+  }
+
+  private fiestaGrabPowerup(match: ArenaMatch, e: Entity, p: FiestaPowerup): void {
+    const def = POWERUPS_BY_ID[p.defId];
+    if (!def) return;
+    // Re-apply (refreshing) each buff aura for the power-up's duration. These are
+    // real auras, so they survive recalc and tick down in updateAuras.
+    for (const b of def.buffs) {
+      this.applyAura(e, {
+        id: `powerup_${def.id}_${b.kind}`, name: def.name, kind: b.kind,
+        remaining: def.duration, duration: def.duration, value: b.value,
+        sourceId: e.id, school: 'nature',
+      });
+    }
+    // The client localizes the pickup banner/log from this event (defId), so no
+    // English log text is emitted from the sim here.
+    this.emit({ type: 'fiestaPowerup', entityId: e.id, defId: def.id, glow: def.glow, duration: def.duration });
+  }
+
+  // -------------------------------------------------------------------------
+  // 2v2 Fiesta — OFFLINE/DEV practice vs bots. Spawns three AI-driven player
+  // bots, queues them with the local player, and steers them each tick so a full
+  // Fiesta bout plays out solo. Offline only (the online server never calls
+  // these — matches there are made of real players). Deterministic: all bot
+  // randomness flows through this.rng.
+  // -------------------------------------------------------------------------
+
+  private fiestaBotPids: number[] = [];
+
+  fiestaPracticeActive(): boolean {
+    return this.fiestaBotPids.some((pid) => this.entities.has(pid));
+  }
+
+  // Toggle target: start a practice set (spawn + queue bots + queue you), or
+  // tear it down if one is already running. Returns true when a set is active
+  // afterward.
+  startFiestaPractice(): boolean {
+    const me = this.entities.get(this.primaryId);
+    const meMeta = this.players.get(this.primaryId);
+    if (!me || !meMeta) return false;
+    if (this.fiestaPracticeActive()) { this.stopFiestaPractice(); return false; }
+    if (me.pos.x > DUNGEON_X_THRESHOLD) return false; // must queue from the overworld
+
+    this.fiestaBotPids = [];
+    const kit: { cls: PlayerClass; name: string }[] = [
+      { cls: 'paladin', name: 'Sir Botsworth' },
+      { cls: 'mage', name: 'Botzo the Arcane' },
+      { cls: 'rogue', name: 'Sneakbot' },
+    ];
+    for (let i = 0; i < kit.length; i++) {
+      const pid = this.addPlayer(kit[i].cls, kit[i].name);
+      const e = this.entities.get(pid);
+      if (e) {
+        const ang = (i / kit.length) * Math.PI * 2;
+        e.pos = this.groundPos(me.pos.x + Math.sin(ang) * 4, me.pos.z + Math.cos(ang) * 4);
+        e.prevPos = { ...e.pos };
+        this.rebucket(e);
+        if (me.level > 1) this.setPlayerLevel(me.level, pid); // a fair fight
+      }
+      this.fiestaBotPids.push(pid);
+    }
+    this.fiestaPracticeRequeue(true);
+    return true;
+  }
+
+  stopFiestaPractice(): void {
+    for (const pid of this.fiestaBotPids) {
+      this.arenaQueueLeave(pid);
+      const match = this.arenaMatches.get(pid);
+      if (match) this.returnFromArena(match);
+      if (this.entities.has(pid)) this.removePlayer(pid);
+    }
+    this.fiestaBotPids = [];
+  }
+
+  // Keep idle practice participants in the queue so bouts flow back-to-back.
+  // `includeMe` also (re)queues the local player — used on the explicit Start
+  // click; the per-tick driver only tops up the bots so you can step away.
+  private fiestaPracticeRequeue(includeMe: boolean): void {
+    const ids = includeMe ? [this.primaryId, ...this.fiestaBotPids] : [...this.fiestaBotPids];
+    for (const pid of ids) {
+      const e = this.entities.get(pid);
+      if (!e || e.dead) continue;
+      if (this.arenaMatches.has(pid) || this.isArenaQueued(pid)) continue;
+      if (e.pos.x > DUNGEON_X_THRESHOLD) continue;
+      this.arenaQueueJoin(pid, 'fiesta');
+    }
+  }
+
+  // Called once per tick from the offline loop (before tick()): keeps the bots
+  // queued between bouts and steers any that are mid-fight.
+  updateFiestaBots(): void {
+    if (this.fiestaBotPids.length === 0) return;
+    // drop any bot that no longer exists (shouldn't happen offline, but be safe)
+    this.fiestaBotPids = this.fiestaBotPids.filter((pid) => this.entities.has(pid));
+    this.fiestaPracticeRequeue(false);
+    for (const pid of this.fiestaBotPids) this.driveFiestaBot(pid);
+  }
+
+  private driveFiestaBot(pid: number): void {
+    const e = this.entities.get(pid);
+    const meta = this.players.get(pid);
+    if (!e || !meta) return;
+    const match = this.arenaMatches.get(pid);
+    // Snap up any offered augment immediately (random, deterministic via rng).
+    if (match?.fiesta) {
+      const offer = match.fiesta.offers.get(pid);
+      if (offer && offer.choices.length) this.arenaAugmentPick(this.rng.pick(offer.choices), pid);
+    }
+    meta.moveInput = emptyMoveInput();
+    if (e.dead || !match?.fiesta || match.state !== 'active') return;
+
+    const team = this.arenaTeamOf(match, pid);
+    const enemyPids = team === 'A' ? match.teamB : match.teamA;
+    let target: Entity | null = null, best = Infinity;
+    for (const id of enemyPids) {
+      const en = this.entities.get(id);
+      if (!en || en.dead || this.arenaIsDown(match, id)) continue;
+      const d = dist2d(e.pos, en.pos);
+      if (d < best) { best = d; target = en; }
+    }
+
+    // Stay inside the closing ring above all else.
+    const origin = arenaOrigin(match.slot);
+    const cx = origin.x + FIESTA_RING_CX, cz = origin.z + FIESTA_RING_CZ;
+    const distCenter = Math.hypot(e.pos.x - cx, e.pos.z - cz);
+    if (distCenter > match.fiesta.ringRadius - 2.5) {
+      e.facing = angleTo(e.pos, { x: cx, y: 0, z: cz });
+      meta.moveInput.forward = true;
+      return;
+    }
+    if (!target) return;
+
+    e.facing = angleTo(e.pos, target.pos);
+    const engageRange = CLASSES[meta.cls].ranged ? 22 : MELEE_RANGE * 0.9;
+    if (best > engageRange) meta.moveInput.forward = true;
+    e.targetId = target.id;
+    if (!e.autoAttack) this.startAutoAttack(pid);
+    // Fire an offensive ability now and then (staggered per bot by pid).
+    if (this.tickCount % 24 === pid % 24) {
+      const ability = this.pickBotAbility(meta);
+      if (ability) this.castAbility(ability, pid);
+    }
+  }
+
+  // The bot's go-to offensive ability: a known, enemy-targeted, damage-dealing
+  // spell/strike. castAbility no-ops if it's on cooldown or unaffordable.
+  private pickBotAbility(meta: PlayerMeta): string | null {
+    for (const k of meta.known) {
+      const def = k.def;
+      if (def.targetType === 'friendly' || !def.requiresTarget) continue;
+      const dealsDamage = def.effects.some((ef) =>
+        ef.type === 'directDamage' || ef.type === 'weaponDamage' || ef.type === 'dot');
+      if (dealsDamage) return def.id;
+    }
+    return null;
+  }
+
+  private fiestaMatchInfo(match: ArenaMatch, pid: number, team: 'A' | 'B'): import('../world_api').FiestaMatchInfo {
+    const f = match.fiesta!;
+    const origin = arenaOrigin(match.slot);
+    const meta = this.players.get(pid);
+    const offer = f.offers.get(pid);
+    const respawn = f.respawn.get(pid) ?? 0;
+    const roster = (pids: number[]): import('../world_api').FiestaScoreboardPlayer[] =>
+      pids.map((p) => {
+        const m = this.players.get(p);
+        const e = this.entities.get(p);
+        return {
+          pid: p, name: m?.name ?? '?', cls: m?.cls ?? 'warrior',
+          kills: f.kills.get(p) ?? 0, down: f.respawn.has(p), me: p === pid,
+        };
+      });
+    const powerups = f.powerups.map((p) => ({
+      id: p.id, defId: p.defId, x: p.x, z: p.z, state: p.state,
+      frac: p.state === 'spawning'
+        ? 1 - Math.max(0, p.timer) / FIESTA_POWERUP_TELEGRAPH
+        : Math.max(0, p.timer) / FIESTA_POWERUP_TTL,
+      color: POWERUPS_BY_ID[p.defId]?.color ?? 0xffffff,
+    }));
+    return {
+      team,
+      scoreA: f.scoreA, scoreB: f.scoreB,
+      myScore: team === 'A' ? f.scoreA : f.scoreB,
+      theirScore: team === 'A' ? f.scoreB : f.scoreA,
+      scoreLimit: f.scoreLimit,
+      wave: f.wave, totalWaves: FIESTA_TOTAL_WAVES,
+      ring: { cx: origin.x + FIESTA_RING_CX, cz: origin.z + FIESTA_RING_CZ, radius: f.ringRadius },
+      down: f.respawn.has(pid),
+      respawnIn: Math.ceil(respawn),
+      augments: meta ? [...meta.fiestaAugments] : [],
+      offer: offer ? { tier: offer.tier, wave: offer.wave, choices: [...offer.choices] } : null,
+      augmentPending: f.pending.get(pid)?.length ?? 0,
+      teamA: roster(match.teamA),
+      teamB: roster(match.teamB),
+      powerups,
+    };
+  }
+
   // Live standings of rated players currently online, best first.
-  arenaLadder(): import('../world_api').ArenaLadderEntry[] {
+  arenaLadder(format: ArenaFormat = '1v1'): import('../world_api').ArenaLadderEntry[] {
     const rows: import('../world_api').ArenaLadderEntry[] = [];
     for (const meta of this.players.values()) {
       const e = this.entities.get(meta.entityId);
       if (!e) continue;
-      rows.push({ pid: meta.entityId, name: meta.name, cls: meta.cls, rating: meta.arenaRating, wins: meta.arenaWins, losses: meta.arenaLosses });
+      const standing = this.arenaStanding(meta, format);
+      rows.push({ pid: meta.entityId, name: meta.name, cls: meta.cls, rating: standing.rating, wins: standing.wins, losses: standing.losses });
     }
     rows.sort((x, y) => y.rating - x.rating || y.wins - x.wins);
     return rows.slice(0, ARENA_LADDER_SIZE);
@@ -6211,26 +10334,59 @@ export class Sim {
     const meta = this.players.get(pid);
     if (!meta) return null;
     const match = this.arenaMatches.get(pid);
+    const queuedFmt = this.arenaQueuedFormat(pid);
     let matchInfo: import('../world_api').ArenaInfo['match'] = null;
     if (match) {
-      const oppPid = match.a === pid ? match.b : match.a;
-      const oppMeta = this.players.get(oppPid);
-      const oppE = this.entities.get(oppPid);
-      if (oppMeta && oppE) {
-        matchInfo = {
-          state: match.state, oppName: oppMeta.name, oppClass: oppMeta.cls, oppLevel: oppE.level, oppPid,
-          returnIn: match.state === 'over' ? Math.max(0, Math.ceil(match.timer)) : undefined,
-        };
+      const myTeam = this.arenaTeamOf(match, pid);
+      if (myTeam) {
+        const allyPids = (myTeam === 'A' ? match.teamA : match.teamB).filter((p) => p !== pid);
+        const enemyPids = myTeam === 'A' ? match.teamB : match.teamA;
+        const allies = this.arenaCombatants(allyPids);
+        const enemies = this.arenaCombatants(enemyPids);
+        const primary = enemies[0];
+        if (primary) {
+          matchInfo = {
+            format: match.format, state: match.state,
+            oppName: enemies.map((e) => e.name).join(' & '),
+            oppClass: primary.cls, oppLevel: primary.level, oppPid: primary.pid,
+            allies, enemies,
+            returnIn: match.state === 'over' ? Math.max(0, Math.ceil(match.timer)) : undefined,
+            fiesta: match.fiesta ? this.fiestaMatchInfo(match, pid, myTeam) : undefined,
+          };
+        }
       }
     }
+    const standings: Record<ArenaFormat, ArenaStanding> = {
+      '1v1': this.arenaStanding(meta, '1v1'),
+      '2v2': this.arenaStanding(meta, '2v2'),
+      // Fiesta is unranked party play — it keeps no standing of its own; mirror
+      // 2v2 just to satisfy the bracket record (the Fiesta UI never reads it).
+      'fiesta': this.arenaStanding(meta, '2v2'),
+    };
+    const ladders: Record<ArenaFormat, import('../world_api').ArenaLadderEntry[]> = {
+      '1v1': this.arenaLadder('1v1'),
+      '2v2': this.arenaLadder('2v2'),
+      'fiesta': [],
+    };
+    const format = match?.format ?? queuedFmt;
+    const readoutFormat = format ?? '1v1';
+    const standing = standings[readoutFormat];
+    const playerCount = (q: ArenaQueueUnit[]) => q.reduce((n, u) => n + u.pids.length, 0);
+    const queueSize = format === 'fiesta' ? playerCount(this.arenaQueueFiesta)
+      : format === '2v2' ? playerCount(this.arenaQueue2v2)
+      : format === '1v1' ? this.arenaQueue1v1.length
+      : 0;
     return {
-      rating: meta.arenaRating,
-      wins: meta.arenaWins,
-      losses: meta.arenaLosses,
-      queued: this.arenaQueue.includes(pid),
-      queueSize: this.arenaQueue.length,
+      rating: standing.rating,
+      wins: standing.wins,
+      losses: standing.losses,
+      standings,
+      format,
+      queued: queuedFmt !== null,
+      queueSize,
       match: matchInfo,
-      ladder: this.arenaLadder(),
+      ladder: ladders[readoutFormat],
+      ladders,
     };
   }
 
@@ -6430,6 +10586,24 @@ export class Sim {
       { itemId: 'oiled_boots', count: 1, price: 1900 },
       { itemId: 'quilted_trousers', count: 1, price: 2400 },
       { itemId: 'greyjaw_pelt_cloak', count: 1, price: 2900 },
+      // Quartermaster's Consignment — a standing line of practical travel gear.
+      { itemId: 'roadwardens_helm', count: 1, price: 2200 },
+      { itemId: 'wayfarers_hood', count: 1, price: 2000 },
+      { itemId: 'acolytes_circlet', count: 1, price: 2000 },
+      { itemId: 'reinforced_pauldrons', count: 1, price: 2400 },
+      { itemId: 'embroidered_mantle', count: 1, price: 1900 },
+      { itemId: 'sturdy_belt', count: 1, price: 1700 },
+      { itemId: 'silk_sash', count: 1, price: 1700 },
+      { itemId: 'roughspun_gloves', count: 1, price: 1500 },
+      // Crossroads Outfitters — eight pieces kept in standing stock
+      { itemId: 'tradesman_hatchet', count: 1, price: 2300 },
+      { itemId: 'drovers_staff', count: 1, price: 2500 },
+      { itemId: 'caravan_warden_dirk', count: 1, price: 2400 },
+      { itemId: 'outrider_brigandine', count: 1, price: 2600 },
+      { itemId: 'caravan_quilted_vest', count: 1, price: 1800 },
+      { itemId: 'outrider_legguards', count: 1, price: 2100 },
+      { itemId: 'pilgrims_leggings', count: 1, price: 1700 },
+      { itemId: 'outrider_sabatons', count: 1, price: 1900 },
     ];
     for (const s of stock) {
       if (!ITEMS[s.itemId]) continue;
@@ -6442,6 +10616,15 @@ export class Sim {
 
   // List a stack from your bags for sale. The goods are escrowed (pulled from
   // your bags immediately) and held by the Merchant until bought or reclaimed.
+  // Set the player's session-only World Market browse filter. Purely a
+  // display/query narrowing — no gameplay effect — so it needs no proximity or
+  // liveness gate; the next marketInfoFor snapshot reflects it.
+  marketSearch(query: string, pid?: number): void {
+    const r = this.resolve(pid);
+    if (!r) return;
+    r.meta.marketFilter = (query ?? '').slice(0, 40);
+  }
+
   marketList(itemId: string, count: number, price: number, pid?: number): void {
     const r = this.resolve(pid);
     if (!r) return;
@@ -6451,6 +10634,7 @@ export class Sim {
     const def = ITEMS[itemId];
     if (!def) return;
     if (def.kind === 'quest') { this.error(meta.entityId, 'The Merchant will not broker quest items.'); return; }
+    if (def.noMarketList) { this.error(meta.entityId, 'That item cannot be listed on the World Market.'); return; }
     if (!Number.isFinite(count)) { this.error(meta.entityId, 'Name how many you wish to sell.'); return; }
     const want = Math.max(1, Math.floor(count));
     if (this.countItem(itemId, meta.entityId) < want) { this.error(meta.entityId, 'You do not have that many to sell.'); return; }
@@ -6555,19 +10739,40 @@ export class Sim {
     // the World Market is a place you visit — only stream it while standing by
     // the Merchant, which also bounds the per-snapshot wire cost
     if (!this.nearMerchant(e)) return null;
-    const sorted = [...this.marketListings].sort((a, b) => {
+    // Server-side browse filter: a substring match on item name (and id) lets a
+    // player reach goods past MARKET_WIRE_LIMIT without lifting the wire cap.
+    const filter = meta.marketFilter.trim().toLowerCase();
+    const matched = filter
+      ? this.marketListings.filter((l) => {
+          const name = (ITEMS[l.itemId]?.name ?? l.itemId).toLowerCase();
+          return name.includes(filter) || l.itemId.toLowerCase().includes(filter);
+        })
+      : this.marketListings;
+    const sorted = [...matched].sort((a, b) => {
       const na = ITEMS[a.itemId]?.name ?? a.itemId;
       const nb = ITEMS[b.itemId]?.name ?? b.itemId;
       return na.localeCompare(nb) || a.price - b.price;
     });
-    const listings = sorted.slice(0, MARKET_WIRE_LIMIT).map((l) => ({
+    // Always wire the seller their own listings first, then fill the rest of the
+    // wire budget with everyone else's. Without this, on a busy shared market a
+    // seller's goods can sort past MARKET_WIRE_LIMIT and never reach them — the
+    // SELL tab would then read "12/12" while only a handful of their listings
+    // are visible. MARKET_MAX_LISTINGS (12) ≪ MARKET_WIRE_LIMIT (120), so a
+    // seller's own goods always fit alongside a healthy slice of the market.
+    const isMine = (l: MarketListing) => !l.house && l.sellerKey === meta.name;
+    const mineSorted = sorted.filter(isMine);
+    const others = sorted.filter((l) => !isMine(l));
+    const wired = [...mineSorted, ...others.slice(0, Math.max(0, MARKET_WIRE_LIMIT - mineSorted.length))];
+    const listings = wired.map((l) => ({
       id: l.id, sellerName: l.sellerName, itemId: l.itemId, count: l.count,
-      price: l.price, mine: !l.house && l.sellerKey === meta.name, house: l.house,
+      price: l.price, mine: isMine(l), house: l.house,
     }));
     const col = this.marketCollections.get(meta.name);
     const myListingCount = this.marketListings.reduce((n, l) => n + (!l.house && l.sellerKey === meta.name ? 1 : 0), 0);
     return {
       listings,
+      totalCount: matched.length,
+      filter: meta.marketFilter,
       collectionCopper: col?.copper ?? 0,
       collectionItems: col ? col.items.map((s) => ({ ...s })) : [],
       cutPct: Math.round(MARKET_CUT * 100),
@@ -6644,7 +10849,6 @@ export class Sim {
           return;
         }
       }
-      return;
     }
     if (this.dungeonDoorIds === null) {
       this.dungeonDoorIds = [];
@@ -6665,6 +10869,32 @@ export class Sim {
     const r = this.resolve(pid);
     const dungeon = DUNGEONS[dungeonId];
     if (!r || !dungeon || r.e.dead) return;
+    const party = this.partyOf(r.meta.entityId);
+    const raidAllowed = RAID_ALLOWED_DUNGEON_IDS.has(dungeonId);
+    const raidRequired = RAID_REQUIRED_DUNGEON_IDS.has(dungeonId);
+    if (party?.raid && !raidAllowed) {
+      this.error(r.meta.entityId, 'Raid groups cannot enter standard dungeons.');
+      return;
+    }
+    if (!party?.raid && raidRequired) {
+      this.error(r.meta.entityId, 'You must convert your party to a raid group first.');
+      return;
+    }
+    if (dungeonId === 'nythraxis_boss_arena' && !this.canEnterNythraxisRaid(r.meta)) {
+      this.error(r.meta.entityId, 'The royal door is sealed to you.');
+      return;
+    }
+    if (dungeonId === 'nythraxis_boss_arena' && this.isRaidLocked(r.meta, dungeonId)) {
+      this.error(r.meta.entityId, 'You are locked to Nythraxis Raid Arena.');
+      return;
+    }
+    if (dungeonId === 'nythraxis_boss_arena') {
+      const engaged = this.instances.find((i) => i.dungeonId === dungeonId && i.partyKey === this.instanceKeyFor(r.meta.entityId));
+      if (engaged && this.nythraxisInstanceSealed(engaged)) {
+        this.error(r.meta.entityId, 'Nythraxis is engaged — the royal door has sealed shut.');
+        return;
+      }
+    }
     const key = this.instanceKeyFor(r.meta.entityId);
     let inst = this.instances.find((i) => i.dungeonId === dungeonId && i.partyKey === key);
     if (!inst) {
@@ -6672,7 +10902,6 @@ export class Sim {
       if (!inst) { this.error(r.meta.entityId, `All instances of ${dungeon.name} are busy. Try again soon.`); return; }
       this.claimInstance(inst, key);
     }
-    const party = this.partyOf(r.meta.entityId);
     if (!party || party.members.length < dungeon.suggestedPlayers) {
       this.emit({ type: 'log', text: `${dungeon.name} is meant for a full party of ${dungeon.suggestedPlayers}. Tread carefully.`, color: '#f96', pid: r.meta.entityId });
     }
@@ -6688,6 +10917,39 @@ export class Sim {
     this.emit({ type: 'log', text: dungeon.enterText, color: '#b9f', pid: r.meta.entityId });
   }
 
+  private canEnterNythraxisCrypt(meta: PlayerMeta): boolean {
+    for (const questId of NYTHRAXIS_CRYPT_QUESTS) {
+      const qp = meta.questLog.get(questId);
+      if (qp && (qp.state === 'active' || qp.state === 'ready')) return true;
+      if (meta.questsDone.has(questId)) return true;
+    }
+    return false;
+  }
+
+  private canEnterNythraxisRaid(meta: PlayerMeta): boolean {
+    return meta.questsDone.has('q_nythraxis_bound_guardian');
+  }
+
+  private isRaidLocked(meta: PlayerMeta, dungeonId: string): boolean {
+    const until = meta.raidLockouts.get(dungeonId) ?? 0;
+    if (until <= this.lockoutNowMs()) {
+      meta.raidLockouts.delete(dungeonId);
+      return false;
+    }
+    return true;
+  }
+
+  // The royal door seals once Nythraxis is engaged (pulled, alive, pre-death).
+  // It reopens on his death or a full raid wipe (handled in the encounter loop).
+  private nythraxisInstanceSealed(inst: InstanceSlot): boolean {
+    for (const id of inst.mobIds) {
+      const e = this.entities.get(id);
+      if (e && e.templateId === NYTHRAXIS_BOSS_ID && !e.dead && e.inCombat
+        && e.nythraxis && e.nythraxis.phase !== 'dead') return true;
+    }
+    return false;
+  }
+
   leaveDungeon(pid?: number): void {
     const r = this.resolve(pid);
     if (!r || r.e.dead) return;
@@ -6696,6 +10958,13 @@ export class Sim {
     // that silently teleported outdoor callers to the Hollow Crypt door)
     const dungeon = dungeonAt(p.pos.x);
     if (!dungeon) return;
+    if (dungeon.id === 'nythraxis_boss_arena') {
+      const inst = this.instances.find((i) => i.dungeonId === dungeon.id && i.partyKey === this.instanceKeyFor(p.id));
+      if (inst && this.nythraxisInstanceSealed(inst)) {
+        this.error(r.meta.entityId, 'The royal door is sealed — Nythraxis must fall first.');
+        return;
+      }
+    }
     p.pos = this.groundPos(dungeon.doorPos.x, dungeon.doorPos.z - 4);
     p.prevPos = { ...p.pos };
     this.rebucket(p);
@@ -6727,6 +10996,17 @@ export class Sim {
       this.addEntity(mob);
       inst.mobIds.push(mob.id);
     }
+    for (const objDef of dungeon.objects ?? []) {
+      const obj = createGroundObject(this.nextId++, objDef.itemId, objDef.name, this.groundPos(origin.x + objDef.x, origin.z + objDef.z));
+      if (objDef.templateId) {
+        obj.templateId = objDef.templateId;
+        obj.dungeonId = objDef.dungeonId ?? null;
+        obj.objectItemId = null;
+        obj.lootable = true;
+      }
+      this.addEntity(obj);
+      inst.objectIds.push(obj.id);
+    }
     const exit = createGroundObject(this.nextId++, '', `${dungeon.name} Exit`, this.groundPos(origin.x + dungeon.exitOffset.x, origin.z + dungeon.exitOffset.z));
     exit.templateId = 'dungeon_exit';
     exit.dungeonId = dungeon.id;
@@ -6747,9 +11027,13 @@ export class Sim {
       }
       this.dropEntity(id);
     }
+    for (const id of inst.objectIds) {
+      if (this.entities.has(id)) this.dropEntity(id);
+    }
     if (inst.exitId !== null) this.dropEntity(inst.exitId);
     inst.partyKey = null;
     inst.mobIds = [];
+    inst.objectIds = [];
     inst.exitId = null;
     inst.emptyFor = 0;
   }
@@ -6782,6 +11066,7 @@ export class Sim {
     if (!party) return null;
     return {
       leader: party.leader,
+      raid: party.raid,
       members: party.members.flatMap((mPid) => {
         const meta = this.players.get(mPid);
         const e = this.entities.get(mPid);
@@ -6789,6 +11074,7 @@ export class Sim {
           pid: mPid, name: meta.name, cls: meta.cls, level: e.level,
           hp: e.hp, mhp: e.maxHp, res: Math.round(e.resource), mres: e.maxResource, rtype: e.resourceType,
           x: e.pos.x, z: e.pos.z, dead: e.dead ? 1 : 0, inCombat: e.inCombat ? 1 : 0,
+          group: party.raidGroups.get(mPid) ?? 1,
         }] : [];
       }),
     };
@@ -6879,7 +11165,7 @@ export class Sim {
       const tag = mPid === party.leader ? ' [leader]' : '';
       return `${meta.name} (Lvl ${e.level} ${cls}, ${state})${tag}`;
     });
-    return `Party (${party.members.length}/${PARTY_MAX}): ${parts.join(', ')}.`;
+    return `${party.raid ? 'Raid' : 'Party'} (${party.members.length}/${this.partyCapacity(party)}): ${parts.join(', ')}.`;
   }
   // Self-only readout for "/zones": lists every overworld zone in travel order
   // (south -> north) with its level range, tagging the zone the player is in.
@@ -6899,11 +11185,13 @@ export class Sim {
   // persisted PlayerMeta arena fields (no new state). Draws count as neither a
   // win nor a loss (see resolveArena), so "matches played" is wins + losses.
   private arenaReadout(meta: PlayerMeta): string {
-    const { arenaRating: rating, arenaWins: wins, arenaLosses: losses } = meta;
-    const played = wins + losses;
-    if (played <= 0) return `Arena: Rating ${rating} — no matches played yet.`;
-    const pct = Math.round((wins / played) * 100);
-    return `Arena: Rating ${rating} — ${wins} wins, ${losses} losses (${pct}% win rate).`;
+    const part = (label: ArenaFormat, rating: number, wins: number, losses: number): string => {
+      const played = wins + losses;
+      if (played <= 0) return `${label} Rating ${rating} - no matches played yet`;
+      const pct = Math.round((wins / played) * 100);
+      return `${label} Rating ${rating} - ${wins} wins, ${losses} losses (${pct}% win rate)`;
+    };
+    return `Arena: ${part('1v1', meta.arenaRating, meta.arenaWins, meta.arenaLosses)}. ${part('2v2', meta.arena2v2Rating, meta.arena2v2Wins, meta.arena2v2Losses)}.`;
   }
   private buybackReadout(meta: PlayerMeta): string {
     const slots = meta.vendorBuyback.filter((s) => ITEMS[s.itemId] && s.count > 0);
@@ -7073,7 +11361,7 @@ export class Sim {
   // only one is ever active, so the first match is the answer.
   private formReadout(e: Entity): string {
     const form = e.auras.find((a) =>
-      a.kind === 'form_bear' || a.kind === 'form_cat'
+      a.kind === 'form_bear' || a.kind === 'form_cat' || a.kind === 'form_travel'
       || a.kind === 'defensive_stance' || a.kind === 'stealth');
     if (!form) return 'You are not in any form or stance.';
     if (form.kind === 'stealth') return 'You are stealthed.';
@@ -7142,8 +11430,8 @@ export class Sim {
     return `You have ${Math.round(e.savedMana)} mana parked while shifted; it returns when you leave your form.`;
   }
 
-  private error(pid: number, text: string): void {
-    this.emit({ type: 'error', text, pid });
+  private error(pid: number, text: string, reason?: ErrorReason): void {
+    this.emit(reason ? { type: 'error', text, pid, reason } : { type: 'error', text, pid });
   }
 
   // Lines shown by the "/help" command, one system notice per entry. Keep this
@@ -7283,8 +11571,12 @@ export class Sim {
   private gearReadout(meta: PlayerMeta): string {
     const slots: [EquipSlot, string][] = [
       ['mainhand', 'Main Hand'],
+      ['helmet', 'Helmet'],
+      ['shoulder', 'Shoulder'],
       ['chest', 'Chest'],
+      ['waist', 'Waist'],
       ['legs', 'Legs'],
+      ['gloves', 'Gloves'],
       ['feet', 'Feet'],
     ];
     let worn = 0;
@@ -7450,6 +11742,36 @@ export class Sim {
       return `${name} is queued for your next melee swing (costs ${queued.cost} ${res}; you have ${have}).`;
     }
     return `${name} is queued for your next melee swing, but you cannot afford it (costs ${queued.cost} ${res}; you have ${have}) — it will fizzle.`;
+  }
+
+  // Self-only readout for "/talents": the player's specialization and how their
+  // talent points are split across the Class tree and the chosen spec tree.
+  // Points are derived live from level (talentPointsAtLevel), so the total stays
+  // correct after a level-up even if the allocation hasn't been touched since.
+  private talentsReadout(meta: PlayerMeta, e: Entity): string {
+    const ct = talentsFor(meta.cls);
+    if (!ct) return 'Your class has no talent tree yet.';
+    const total = talentPointsAtLevel(e.level);
+    if (total <= 0) return `You have not unlocked talents yet — they begin at level ${FIRST_TALENT_LEVEL}.`;
+    const spent = pointsSpent(meta.talents);
+    // Split spent points by tree (cold path: walk the allocation once on demand).
+    const byId = new Map(ct.nodes.map((n) => [n.id, n] as const));
+    let classPts = 0;
+    let specPts = 0;
+    for (const id in meta.talents.ranks) {
+      const node = byId.get(id);
+      if (!node) continue;
+      if (node.tree === 'class') classPts += meta.talents.ranks[id];
+      else specPts += meta.talents.ranks[id];
+    }
+    const specName = meta.talents.spec
+      ? ct.specs.find((s) => s.id === meta.talents.spec)?.name ?? meta.talents.spec
+      : null;
+    const head = specName ?? 'no specialization';
+    const breakdown = specName ? `Class ${classPts}, ${specName} ${specPts}` : `Class ${classPts}`;
+    const unspent = total - spent;
+    const tail = unspent > 0 ? ` ${unspent} unspent.` : '';
+    return `Talents: ${head} — ${spent}/${total} points spent (${breakdown}).${tail}`;
   }
 }
 

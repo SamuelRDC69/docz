@@ -1,13 +1,13 @@
 import { apiGet, apiLogin, apiPost, clearSession, getAdminName, getToken, ApiError } from './api';
 import { barChart, chartPanel } from './charts';
-import { escapeHtml, fmtBytes, fmtDuration } from './format';
-import { classLabel, t, localizeAdminError } from './i18n';
+import { escapeHtml, fmtBytes, fmtDate, fmtDuration } from './format';
+import { classLabel, t, localizeAdminError, ensureAdminLocaleLoaded, adminLanguage } from './i18n';
 import {
-  renderAccountDetail, renderAccountsTable, renderCharactersTable, renderChatFilter,
-  renderModerationDetail, renderModerationQueue, renderOnlineTable, renderPager,
+  renderAccountDetail, renderAccountsTable, renderBlockedIps, renderBugReportsTable, renderCharactersTable, renderChatFilter,
+  renderModerationDetail, renderModerationQueue, renderOnlineTable, renderPager, renderProviderUsage,
 } from './tables';
 import type {
-  AccountDetail, AccountRow, Activity, CharacterRow, ChatFilterData, LivePlayer,
+  AccountDetail, AccountRow, Activity, BlockedIpsData, BugReportRow, CharacterRow, ChatFilterData, LivePlayer,
   ModerationAccountDetail, ModerationQueueRow, Overview, Paginated,
 } from './types';
 
@@ -30,10 +30,14 @@ interface TableState {
 
 const accountsState: TableState = { page: 1, search: '', sort: 'id', dir: 'desc' };
 const charactersState: TableState = { page: 1, search: '', sort: 'level', dir: 'desc' };
+const bugReportsState = { page: 1 };
 let liveTimer: number | null = null;
 let activityTimer: number | null = null;
-type AdminPage = 'overview' | 'moderation' | 'chat-filter';
+type AdminPage = 'overview' | 'usage' | 'moderation' | 'chat-filter' | 'blocked-ips' | 'bug-reports';
 let activePage: AdminPage = 'overview';
+// Re-fetched when returning to the Moderation tab: its blocked-IP badges can be
+// changed from the Blocked IPs tab and would otherwise show stale.
+let openModerationAccountId: number | null = null;
 let pendingModerationAction: { endpoint: string; body: unknown; accountId: number; source: 'account' | 'moderation' } | null = null;
 
 // ---------------------------------------------------------------------------
@@ -84,8 +88,47 @@ function showPage(page: AdminPage): void {
   document.querySelectorAll<HTMLElement>('.admin-page').forEach((el) => {
     el.classList.toggle('active', el.id === `page-${page}`);
   });
-  if (page === 'moderation') void refreshModeration();
+  if (page === 'moderation') {
+    void refreshModeration();
+    if (openModerationAccountId !== null) void openModerationAccount(openModerationAccountId);
+  }
   if (page === 'chat-filter') void refreshChatFilter();
+  if (page === 'blocked-ips') void refreshBlockedIps();
+  if (page === 'bug-reports') void refreshBugReports();
+}
+
+async function refreshBugReports(): Promise<void> {
+  try {
+    const params = new URLSearchParams({ page: String(bugReportsState.page) });
+    const data = await apiGet<Paginated<BugReportRow>>(`/admin/api/bug-reports?${params}`);
+    $('bug-reports').innerHTML = renderBugReportsTable(data.rows);
+    $('bug-reports-pager').innerHTML = renderPager(data.total, data.page, data.limit);
+  } catch (err) {
+    if (!handleAuthFailure(err)) $('bug-reports').innerHTML = `<div class="empty">${t('bugReports.loadFailed')}</div>`;
+  }
+}
+
+// Fetch one report's screenshot on demand (kept out of the list payload) and show
+// it in a click-to-dismiss overlay.
+async function showBugScreenshot(id: number): Promise<void> {
+  try {
+    const data = await apiGet<{ screenshot: string | null }>(`/admin/api/bug-reports/${id}/screenshot`);
+    if (!data.screenshot) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'bug-shot-overlay';
+    overlay.tabIndex = -1;
+    const img = document.createElement('img');
+    img.src = data.screenshot;
+    img.alt = t('bugReports.screenshotAlt');
+    overlay.appendChild(img);
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', close);
+    overlay.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+    document.body.appendChild(overlay);
+    overlay.focus(); // so Escape works without a prior click
+  } catch (err) {
+    handleAuthFailure(err);
+  }
 }
 
 async function refreshChatFilter(): Promise<void> {
@@ -93,7 +136,16 @@ async function refreshChatFilter(): Promise<void> {
     const data = await apiGet<ChatFilterData>('/admin/api/chat-filter');
     $('chat-filter').innerHTML = renderChatFilter(data);
   } catch (err) {
-    if (!handleAuthFailure(err)) $('chat-filter').innerHTML = '<div class="empty">failed to load chat filter</div>';
+    if (!handleAuthFailure(err)) $('chat-filter').innerHTML = `<div class="empty">${t('chatFilter.loadFailed')}</div>`;
+  }
+}
+
+async function refreshBlockedIps(): Promise<void> {
+  try {
+    const data = await apiGet<BlockedIpsData>('/admin/api/blocked-ips');
+    $('blocked-ips').innerHTML = renderBlockedIps(data);
+  } catch (err) {
+    if (!handleAuthFailure(err)) $('blocked-ips').innerHTML = `<div class="empty">${t('blockedIps.loadFailed')}</div>`;
   }
 }
 
@@ -124,6 +176,7 @@ async function refreshLive(): Promise<void> {
       statCard(`${s.tickMsAvg} ms`, t('stats.avgTick')),
       statCard(fmtBytes(s.rssBytes), t('stats.serverRss')),
     ].join('');
+    $('usage').innerHTML = renderProviderUsage(overview.usage);
     $('online').innerHTML = renderOnlineTable(online.players);
   } catch (err) {
     if (!handleAuthFailure(err)) console.error('live refresh failed:', err);
@@ -212,6 +265,7 @@ async function refreshOpenAccountDetail(accountId: number): Promise<void> {
 }
 
 async function openModerationAccount(accountId: number): Promise<void> {
+  openModerationAccountId = accountId;
   $('moderation-detail').innerHTML = `<div class="empty">${t('report.loading')}</div>`;
   try {
     const detail = await apiGet<ModerationAccountDetail>(`/admin/api/moderation/accounts/${accountId}`);
@@ -298,6 +352,16 @@ function handleModerationActionClick(e: Event, source: 'account' | 'moderation')
     window.alert(t('alert.noteRequired'));
     return false;
   };
+  // Lift mute / reset strikes: non-destructive, no note/confirm. Available for
+  // any account (incl. admins) so an auto-muted operator can clear it themselves.
+  const chatModBtn = target.closest('button[data-lift-mute], button[data-reset-strikes]') as HTMLButtonElement | null;
+  if (chatModBtn && Number.isFinite(accountId)) {
+    const endpoint = chatModBtn.dataset.liftMute !== undefined ? 'lift-mute' : 'reset-strikes';
+    void apiPost(`/admin/api/moderation/accounts/${accountId}/${endpoint}`, {})
+      .then(() => { if (source === 'account') void refreshOpenAccountDetail(accountId); else void openModerationAccount(accountId); })
+      .catch((err: unknown) => { if (!handleAuthFailure(err)) window.alert(err instanceof Error ? localizeAdminError(err.message) : t('alert.actionFailed')); });
+    return true;
+  }
   const forceRenameBtn = target.closest('button[data-force-rename-character]') as HTMLButtonElement | null;
   if (forceRenameBtn) {
     if (!requireNote()) return true;
@@ -318,6 +382,36 @@ function handleModerationActionClick(e: Event, source: 'account' | 'moderation')
     });
     return true;
   }
+  // Handled before the actionWrap guard below: the IP buttons sit outside it.
+  // Banning is confirmed; unblocking is reversible and applies directly.
+  const banIpBtn = target.closest('button[data-ban-ip]') as HTMLButtonElement | null;
+  if (banIpBtn) {
+    const ip = banIpBtn.dataset.banIp ?? '';
+    const expiresAt = blockExpiryIso(banIpBtn.dataset.banDuration ?? '');
+    showModerationConfirm({
+      title: t('blockedIps.confirmBanTitle'),
+      rows: [
+        { label: t('blockedIps.colIp'), value: ip },
+        { label: t('dialog.action'), value: banIpBtn.textContent?.trim() ?? t('blockedIps.banIp') },
+        { label: t('dialog.reason'), value: note || '—' },
+        { label: '⚠', value: t('blockedIps.sharedIpWarning') },
+      ],
+      endpoint: '/admin/api/blocked-ips',
+      body: { ip, reason: note, expiresAt },
+      accountId,
+      source,
+      confirmEl,
+      danger: true,
+    });
+    return true;
+  }
+  const unblockIpBtn = target.closest('button[data-unblock-ip]') as HTMLButtonElement | null;
+  if (unblockIpBtn) {
+    void apiPost('/admin/api/blocked-ips/delete', { ip: unblockIpBtn.dataset.unblockIp })
+      .then(() => { if (source === 'account') void refreshOpenAccountDetail(accountId); else void openModerationAccount(accountId); })
+      .catch((err: unknown) => { if (!handleAuthFailure(err)) window.alert(err instanceof Error ? localizeAdminError(err.message) : t('alert.actionFailed')); });
+    return true;
+  }
   if (!actionWrap) return false;
   const suspendBtn = target.closest('button[data-suspend-hours]') as HTMLButtonElement | null;
   if (suspendBtn) {
@@ -330,7 +424,7 @@ function handleModerationActionClick(e: Event, source: 'account' | 'moderation')
         { label: t('dialog.account'), value: `#${accountId}` },
         { label: t('dialog.action'), value: t('dialog.actionSuspend') },
         { label: t('dialog.length'), value: t('detail.lengthHours', { count: hours }) },
-        { label: t('dialog.until'), value: new Date(expiresAt).toLocaleString() },
+        { label: t('dialog.until'), value: fmtDate(expiresAt) },
         { label: t('dialog.reason'), value: note },
       ],
       endpoint: `/admin/api/moderation/accounts/${accountId}/suspend`,
@@ -359,7 +453,7 @@ function handleModerationActionClick(e: Event, source: 'account' | 'moderation')
       rows: [
         { label: t('dialog.account'), value: `#${accountId}` },
         { label: t('dialog.action'), value: t('dialog.actionSuspend') },
-        { label: t('dialog.until'), value: expiry.toLocaleString() },
+        { label: t('dialog.until'), value: fmtDate(expiry.toISOString()) },
         { label: t('dialog.reason'), value: note },
       ],
       endpoint: `/admin/api/moderation/accounts/${accountId}/suspend`,
@@ -376,13 +470,13 @@ function handleModerationActionClick(e: Event, source: 'account' | 'moderation')
     const hours = Number(chatMuteBtn.dataset.chatMuteHours);
     const expiresAt = new Date(Date.now() + hours * 3600 * 1000).toISOString();
     showModerationConfirm({
-      title: 'Confirm chat mute',
+      title: t('dialog.confirmChatMute'),
       rows: [
-        { label: 'Account', value: `#${accountId}` },
-        { label: 'Action', value: 'Mute chat and send warning' },
-        { label: 'Length', value: `${hours} hour${hours === 1 ? '' : 's'}` },
-        { label: 'Until', value: new Date(expiresAt).toLocaleString() },
-        { label: 'Reason', value: note },
+        { label: t('dialog.account'), value: `#${accountId}` },
+        { label: t('dialog.action'), value: t('dialog.actionChatMute') },
+        { label: t('dialog.length'), value: t('detail.lengthHours', { count: hours }) },
+        { label: t('dialog.until'), value: fmtDate(expiresAt) },
+        { label: t('dialog.reason'), value: note },
       ],
       endpoint: `/admin/api/moderation/accounts/${accountId}/chat-mute`,
       body: { reason: note, expiresAt },
@@ -398,16 +492,16 @@ function handleModerationActionClick(e: Event, source: 'account' | 'moderation')
     const raw = moderationCustomExpiryInput(target)?.value ?? '';
     const expiry = raw ? new Date(raw) : null;
     if (!expiry || !Number.isFinite(expiry.getTime())) {
-      window.alert('Choose a custom chat mute expiry.');
+      window.alert(t('alert.customChatMuteRequired'));
       return true;
     }
     showModerationConfirm({
-      title: 'Confirm custom chat mute',
+      title: t('dialog.confirmCustomChatMute'),
       rows: [
-        { label: 'Account', value: `#${accountId}` },
-        { label: 'Action', value: 'Mute chat and send warning' },
-        { label: 'Until', value: expiry.toLocaleString() },
-        { label: 'Reason', value: note },
+        { label: t('dialog.account'), value: `#${accountId}` },
+        { label: t('dialog.action'), value: t('dialog.actionChatMute') },
+        { label: t('dialog.until'), value: fmtDate(expiry.toISOString()) },
+        { label: t('dialog.reason'), value: note },
       ],
       endpoint: `/admin/api/moderation/accounts/${accountId}/chat-mute`,
       body: { reason: note, expiresAt: expiry.toISOString() },
@@ -479,10 +573,11 @@ function wireEvents(): void {
   $('admin-tabs').addEventListener('click', (e) => {
     const tab = (e.target as HTMLElement).closest<HTMLButtonElement>('.admin-tab');
     const page = tab?.dataset.adminPage;
-    if (page === 'overview' || page === 'moderation' || page === 'chat-filter') showPage(page);
+    if (page === 'overview' || page === 'usage' || page === 'moderation' || page === 'chat-filter' || page === 'blocked-ips' || page === 'bug-reports') showPage(page);
   });
 
   wireChatFilterEvents();
+  wireBlockedIpsEvents();
 
   let searchTimer: number | null = null;
   $('account-search').addEventListener('input', (e) => {
@@ -500,6 +595,16 @@ function wireEvents(): void {
   $('characters-pager').addEventListener('click', (e) => {
     const page = pagerTarget(e);
     if (page !== null) { charactersState.page = page; void refreshCharacters(); }
+  });
+
+  $('bug-reports-pager').addEventListener('click', (e) => {
+    const page = pagerTarget(e);
+    if (page !== null) { bugReportsState.page = page; void refreshBugReports(); }
+  });
+
+  $('bug-reports').addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest('button[data-bug-shot]') as HTMLButtonElement | null;
+    if (btn) void showBugScreenshot(Number(btn.dataset.bugShot));
   });
 
   $('accounts').addEventListener('click', (e) => {
@@ -528,7 +633,7 @@ function wireEvents(): void {
       const endpoint = chatModBtn.dataset.liftMute !== undefined ? 'lift-mute' : 'reset-strikes';
       void apiPost(`/admin/api/moderation/accounts/${accountId}/${endpoint}`, {})
         .then(() => { if (Number.isFinite(accountId)) void openModerationAccount(accountId); })
-        .catch((err: unknown) => { if (!handleAuthFailure(err)) window.alert(err instanceof Error ? err.message : 'action failed'); });
+        .catch((err: unknown) => { if (!handleAuthFailure(err)) window.alert(err instanceof Error ? localizeAdminError(err.message) : t('alert.actionFailed')); });
       return;
     }
     const ignoreBtn = target.closest('button[data-ignore-report]') as HTMLButtonElement | null;
@@ -558,8 +663,8 @@ function wireEvents(): void {
   });
 }
 
-function chatFilterError(err: unknown, action: string): void {
-  if (!handleAuthFailure(err)) window.alert(err instanceof Error ? err.message : `${action} failed`);
+function chatFilterError(err: unknown, fallbackKey: string): void {
+  if (!handleAuthFailure(err)) window.alert(err instanceof Error ? localizeAdminError(err.message) : t(fallbackKey));
 }
 
 function wireChatFilterEvents(): void {
@@ -574,17 +679,27 @@ function wireChatFilterEvents(): void {
     if (!word || (tier !== 'soft' && tier !== 'hard')) return;
     void apiPost('/admin/api/chat-filter/words', { word, tier })
       .then(() => refreshChatFilter())
-      .catch((err: unknown) => chatFilterError(err, 'add word'));
+      .catch((err: unknown) => chatFilterError(err, 'alert.addWordFailed'));
   });
 
-  // Remove a word, or save the escalation config.
+  // Remove a word, save the escalation config, or lift/reset an account's chat mute.
   $('chat-filter').addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
+    const chatModBtn = target.closest('button[data-lift-mute], button[data-reset-strikes]') as HTMLButtonElement | null;
+    if (chatModBtn) {
+      const accountId = Number((chatModBtn.closest('[data-action-account-id]') as HTMLElement | null)?.dataset.actionAccountId);
+      if (!Number.isFinite(accountId)) return;
+      const endpoint = chatModBtn.dataset.liftMute !== undefined ? 'lift-mute' : 'reset-strikes';
+      void apiPost(`/admin/api/moderation/accounts/${accountId}/${endpoint}`, {})
+        .then(() => refreshChatFilter())
+        .catch((err: unknown) => chatFilterError(err, 'chat moderation'));
+      return;
+    }
     const del = target.closest('button[data-del-word]') as HTMLButtonElement | null;
     if (del) {
       void apiPost(`/admin/api/chat-filter/words/${Number(del.dataset.delWord)}/delete`, {})
         .then(() => refreshChatFilter())
-        .catch((err: unknown) => chatFilterError(err, 'remove word'));
+        .catch((err: unknown) => chatFilterError(err, 'alert.removeWordFailed'));
       return;
     }
     if (target.closest('button[data-save-config]')) {
@@ -595,8 +710,42 @@ function wireChatFilterEvents(): void {
         .filter((n) => Number.isFinite(n) && n > 0);
       void apiPost('/admin/api/chat-filter/config', { warningsBeforeMute, muteLadderSeconds })
         .then(() => refreshChatFilter())
-        .catch((err: unknown) => chatFilterError(err, 'save config'));
+        .catch((err: unknown) => chatFilterError(err, 'alert.saveConfigFailed'));
     }
+  });
+}
+
+// '' (forever) → undefined; otherwise now + N days as ISO.
+function blockExpiryIso(duration: string): string | undefined {
+  const days: Record<string, number> = { '1d': 1, '7d': 7, '30d': 30 };
+  const n = days[duration];
+  return n ? new Date(Date.now() + n * 86_400_000).toISOString() : undefined;
+}
+
+function wireBlockedIpsEvents(): void {
+  const blockedError = (err: unknown, fallbackKey: string): void => {
+    if (!handleAuthFailure(err)) window.alert(err instanceof Error ? localizeAdminError(err.message) : t(fallbackKey));
+  };
+  $('blocked-ips').addEventListener('submit', (e) => {
+    const form = (e.target as HTMLElement).closest('form.ip-add') as HTMLFormElement | null;
+    if (!form) return;
+    e.preventDefault();
+    const ip = (form.querySelector('.ip-add-ip') as HTMLInputElement | null)?.value.trim() ?? '';
+    const reason = (form.querySelector('.ip-add-reason') as HTMLInputElement | null)?.value.trim() ?? '';
+    const duration = (form.querySelector('.ip-add-expiry-select') as HTMLSelectElement | null)?.value ?? '';
+    if (!ip) return;
+    if (!window.confirm(`${t('blockedIps.confirmBlock', { ip })}\n\n${t('blockedIps.sharedIpWarning')} ${t('blockedIps.expiryHint')}`)) return;
+    const expiresAt = blockExpiryIso(duration);
+    void apiPost('/admin/api/blocked-ips', { ip, reason, expiresAt })
+      .then(() => refreshBlockedIps())
+      .catch((err: unknown) => blockedError(err, 'blockedIps.addFailed'));
+  });
+  $('blocked-ips').addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest('button[data-unblock-ip]') as HTMLButtonElement | null;
+    if (!btn) return;
+    void apiPost('/admin/api/blocked-ips/delete', { ip: btn.dataset.unblockIp })
+      .then(() => refreshBlockedIps())
+      .catch((err: unknown) => blockedError(err, 'blockedIps.removeFailed'));
   });
 }
 
@@ -619,10 +768,16 @@ function localizeStatic(): void {
   });
 }
 
-localizeStatic();
-wireEvents();
-if (getToken()) {
-  void showApp();
-} else {
-  showLogin();
-}
+// Async locale loader (parity seam): await the active locale before painting the static
+// admin UI. Admin keeps every locale static, so this resolves instantly; the await mirrors
+// the game client's bootstrap shape without flipping admin to lazy.
+void (async () => {
+  await ensureAdminLocaleLoaded(adminLanguage());
+  localizeStatic();
+  wireEvents();
+  if (getToken()) {
+    void showApp();
+  } else {
+    showLogin();
+  }
+})();

@@ -3,6 +3,7 @@
 // Pure data + dispatch — no three.js imports, no loading.
 import type { Entity } from '../../sim/types';
 import { MOBS } from '../../sim/data';
+import { MECH_CHROMAS, type MechChroma } from '../../sim/content/skins';
 import type { OverheadEmoteId } from '../../world_api';
 
 export interface EmoteClipSpec {
@@ -46,6 +47,8 @@ export interface AttachDef {
 
 export interface VisualDef {
   url: string;
+  /** Optional extra GLBs that provide animation clips for static rig files. */
+  animUrls?: string[];
   /** world-unit height (pivot->crown) at e.scale = 1 */
   height: number;
   clips: ClipMap;
@@ -66,6 +69,15 @@ export interface VisualDef {
   runRef?: number;
   attackTimeScale?: number;
   deathTimeScale?: number;
+  /** Skip the boot preload sweep (manifestUrls); the asset is fetched on demand
+   *  instead — e.g. the cosmetic-only Combat Mech, loaded via preloadMechAssets()
+   *  when the skin-select preview opens, so it never bloats every client's boot. */
+  lazyPreload?: boolean;
+  /** Post-load orientation fixups for weapon/prop nodes baked INTO a creature
+   *  GLB at the wrong angle (some KayKit handslot weapons ship without the grip
+   *  flip the standalone weapon files carry). Node name as authored in the GLB;
+   *  applied as a local-space rotation (radians) after the bind transform. */
+  weaponFix?: { node: string; rotX?: number; rotY?: number; rotZ?: number }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +121,15 @@ const skeletonClips = (attack: string[], flourish = 'Skeletons_Awaken_Standing')
   flourish,
 });
 
+const skeletonLargeClips = (attack: string[]): ClipMap => ({
+  idle: 'Idle',
+  walk: 'Walking_A',
+  run: 'Running_A',
+  attack,
+  hit: ['Hit_A'],
+  death: 'Death_A',
+});
+
 // Quaternius 2021 animal rig (wolf/bull/alpaca/fox/stag)
 const animal = (attack: string[]): ClipMap => ({
   idle: 'Idle', walk: 'Walk', run: 'Gallop', attack,
@@ -148,6 +169,13 @@ const SPIDER: ClipMap = {
   attack: ['Spider_Attack'], death: 'Spider_Death', // no hit-react in asset
 };
 
+// Chicken-cow rig (chicken_cow.glb, procedurally authored — see
+// scripts/gen_chicken_cow.mjs). Node-transform animations, no hit-react.
+const CHICKEN_COW: ClipMap = {
+  idle: 'Idle', walk: 'Walk', run: 'Run',
+  attack: ['Attack'], death: 'Death', jump: 'Jump',
+};
+
 // ---------------------------------------------------------------------------
 // Asset urls
 // ---------------------------------------------------------------------------
@@ -157,9 +185,32 @@ const ENEMIES = 'models/chars/enemies';
 const CREATURES = 'models/creatures';
 const WEAPONS = 'models/weapons';
 
+const LOW_URL_ALIAS: Record<string, string> = {
+  'models/chars/players/rogue_hooded.glb': 'models/chars/players/rogue.glb',
+};
+
 const HUMANOID_H = 2.6;
 
 const SKINS_DIR = 'textures/skins';
+
+// ---------------------------------------------------------------------------
+// Combat Mech — a class-agnostic cosmetic body. Unlike the per-class skins
+// below (which swap a body atlas onto an existing class rig), the mech is a
+// SEPARATE model with its own visual key (`player_mech`) and a set of chroma
+// textures grouped across the three skin-event rarity tiers. Epics additionally
+// ship an emissive glow map. Cosmetic preview only for now — lazy-loaded via
+// preloadMechAssets() so it never bloats every client's boot.
+// ---------------------------------------------------------------------------
+const MECH_DIR = `${PLAYERS}/Mech/textures`;
+
+function mechChromaUrl(c: MechChroma): string {
+  if (c.rank === 'uncommon') return `${MECH_DIR}/uncommon/combatmech_${c.id}.png`;
+  if (c.rank === 'rare') return `${MECH_DIR}/rares/combatmech_rare_${c.id}.png`;
+  return `${MECH_DIR}/epics/combatmech_epic_${c.id}.png`;
+}
+function mechEmissiveUrl(c: MechChroma): string | null {
+  return c.rank === 'epic' ? `${MECH_DIR}/epics/combatmech_epic_${c.id}_emis.png` : null;
+}
 
 // Per-class alternate body textures ("skins"). Index 0 = null = the model's
 // embedded default texture (no swap). Index >0 = a full-atlas alternate applied
@@ -175,6 +226,15 @@ export const SKINS: Record<string, (string | null)[]> = {
   player_warlock: [null, `${SKINS_DIR}/mage/alt_a.png`, `${SKINS_DIR}/mage/alt_b.png`, `${SKINS_DIR}/mage/alt_c.png`],
   player_shaman: [null, `${SKINS_DIR}/barbarian/alt_a.png`, `${SKINS_DIR}/barbarian/alt_b.png`, `${SKINS_DIR}/barbarian/alt_c.png`],
   player_druid: [null, `${SKINS_DIR}/druid/alt_a.png`, `${SKINS_DIR}/druid/alt_b.png`, `${SKINS_DIR}/druid/alt_c.png`],
+  // Combat Mech chromas — every index is a real full-model texture (no null
+  // default; the embedded base texture is not one of the rewards).
+  player_mech: MECH_CHROMAS.map(mechChromaUrl),
+};
+
+// Emissive (glow) maps keyed exactly like SKINS, applied to .emissiveMap when a
+// skin index has one. Only the Combat Mech epics glow; null entries mean no glow.
+export const SKIN_EMISSIVE: Record<string, (string | null)[]> = {
+  player_mech: MECH_CHROMAS.map(mechEmissiveUrl),
 };
 
 /** Number of skins (including the default) available for a visual key — min 1. */
@@ -266,6 +326,18 @@ export const VISUALS: Record<string, VisualDef> = {
     attach: [{ url: `${WEAPONS}/staff.glb`, bone: 'handslot.r' }],
   },
 
+  // -- cosmetic body skin (class-agnostic; both the skin preview and a live
+  //    player whose skinCatalog === 'mech', see visualKeyFor) ----------------
+  player_mech: {
+    url: `${PLAYERS}/Mech/characters/CombatMech.glb`, height: HUMANOID_H,
+    // The mech is rigged to the same KayKit Rig_Medium skeleton as every other
+    // player class; its GLB shipped with no clips, so the full KayKit set is
+    // baked in from knight.glb (scripts/bake_mech_anims.mjs) — these names now
+    // resolve like any other class. Lazy-loaded; see preloadMechAssets().
+    clips: kaykit(['1H_Melee_Attack_Chop']),
+    lazyPreload: true,
+  },
+
   // -- forms ---------------------------------------------------------------
   form_sheep: {
     url: `${CREATURES}/alpaca.glb`, height: 1.2,
@@ -279,6 +351,12 @@ export const VISUALS: Record<string, VisualDef> = {
     url: `${CREATURES}/wolf.glb`, height: 1.6,
     clips: animal(['Attack']), tint: 0xd08b45, tintStrength: 0.35,
   },
+  // Druid Travel Form: a daft chicken-cow hybrid (custom GLB). No tint — its
+  // authored cow-spots/comb/beak colours carry the look.
+  form_travel: {
+    url: `${CREATURES}/chicken_cow.glb`, height: 2.3,
+    clips: CHICKEN_COW,
+  },
 
   // -- mob families --------------------------------------------------------
   mob_wolf: {
@@ -288,6 +366,27 @@ export const VISUALS: Record<string, VisualDef> = {
   mob_boar: {
     url: `${CREATURES}/wild_boar.glb`, height: 1.45,
     clips: WILD_BOAR, tint: 'entity', tintStrength: 0.4,
+  },
+  // Quaternius animal rig (shares clip names with wolf) — fox/deer/critters that
+  // would otherwise fall back to mob_wolf via FAMILY_KEYS['beast'].
+  mob_fox: {
+    url: `${CREATURES}/fox.glb`, height: 1.0,
+    clips: animal(['Attack']), tint: 'entity', tintStrength: 0.35,
+  },
+  // smaller silhouette of the same rig for ground critters (hares, badgers);
+  // no dedicated rabbit/mustelid asset ships, so this is the closest small beast.
+  mob_critter: {
+    url: `${CREATURES}/fox.glb`, height: 0.7,
+    clips: animal(['Attack']), tint: 'entity', tintStrength: 0.35,
+  },
+  mob_stag: {
+    url: `${CREATURES}/stag.glb`, height: 1.9,
+    clips: animal(['Attack_Headbutt', 'Attack']), tint: 'entity', tintStrength: 0.35,
+  },
+  // brown-tinted yeti rig, same recipe as the druid Bear form.
+  mob_bear: {
+    url: `${CREATURES}/yetialt.glb`, height: 2.2,
+    clips: BIPED14, tint: 0x5a4030, tintStrength: 0.5,
   },
   mob_spider: {
     url: `${CREATURES}/spider.glb`, height: 1.4,
@@ -344,16 +443,11 @@ export const VISUALS: Record<string, VisualDef> = {
   skel_warrior: {
     url: `${ENEMIES}/skeleton_warrior.glb`, height: 2.5,
     clips: skeletonClips(['1H_Melee_Attack_Chop', '1H_Melee_Attack_Slice_Diagonal']),
-    attach: [
-      { url: `${WEAPONS}/skeleton_blade.glb`, bone: 'handslot.r' },
-      { url: `${WEAPONS}/skeleton_shield_large_a.glb`, bone: 'handslot.l' },
-    ],
     tint: 'entity', tintStrength: 0.25,
   },
   skel_rogue: {
     url: `${ENEMIES}/skeleton_rogue.glb`, height: 2.5,
     clips: skeletonClips(['1H_Melee_Attack_Chop', '1H_Melee_Attack_Slice_Diagonal']),
-    attach: [{ url: `${WEAPONS}/skeleton_axe.glb`, bone: 'handslot.r' }],
     tint: 'entity', tintStrength: 0.25,
   },
   skel_mage: {
@@ -366,6 +460,19 @@ export const VISUALS: Record<string, VisualDef> = {
     url: `${ENEMIES}/skeleton_mage.glb`, height: 2.5,
     clips: skeletonClips(['2H_Melee_Attack_Chop'], 'Taunt'),
     attach: [{ url: `${WEAPONS}/skeleton_staff.glb`, bone: 'handslot.r' }],
+    tint: 'entity', tintStrength: 0.25,
+  },
+  skel_necromancer: {
+    url: `${ENEMIES}/necromancer.glb`, height: 2.5,
+    clips: skeletonClips(['2H_Melee_Attack_Chop']),
+    tint: 'entity', tintStrength: 0.25,
+  },
+  skel_golem: {
+    url: `${ENEMIES}/skeleton_golem.glb`, height: 3.4,
+    clips: skeletonLargeClips(['2H_Melee_Attack_Chop', '1H_Melee_Attack_Chop']),
+    // the baked golem axe ships without the 180° grip flip the rig expects, so
+    // the blade faces backwards; spin it about its handle (local Y) to face out.
+    weaponFix: [{ node: 'Skeleton_Golem_Axe', rotY: Math.PI }],
     tint: 'entity', tintStrength: 0.25,
   },
 
@@ -412,6 +519,15 @@ export const VISUALS: Record<string, VisualDef> = {
     attach: [{ url: `${WEAPONS}/staff.glb`, bone: 'handslot.r' }],
     tint: 0xc9b98a, tintStrength: 0.3, // brown-robed brothers of the chapel
   },
+  // Brother Aldric keeps his pre-v0.7 model (the old chars/mage.glb, restored as
+  // mage_classic.glb with the staff built into the mesh). Aldric-only — every
+  // other npc_mage uses the new KayKit full-pack model from #396.
+  npc_aldric: {
+    url: `${PLAYERS}/mage_classic.glb`, height: HUMANOID_H,
+    clips: kaykit(['2H_Melee_Attack_Chop']),
+    show: ['2H_Staff'],
+    tint: 0xc9b98a, tintStrength: 0.3,
+  },
   npc_smith: {
     url: `${PLAYERS}/barbarian.glb`, height: HUMANOID_H,
     clips: kaykit(['1H_Melee_Attack_Chop']),
@@ -446,10 +562,23 @@ export const VISUALS: Record<string, VisualDef> = {
 const MOB_KEYS: Record<string, string> = {
   imp: 'mob_demon',
   voidwalker: 'mob_demon',
+  succubus: 'mob_demon',
   warlock_imp: 'mob_demon_flying',
   warlock_voidwalker: 'mob_demonalt',
   wild_boar: 'mob_boar',
   elder_bristleback: 'mob_boar',
+  grovetusk_boar: 'mob_boar',
+  // beasts that would otherwise fall back to the wolf model (FAMILY_KEYS.beast)
+  glade_fox: 'mob_fox',
+  brightwood_hare: 'mob_critter',
+  thornpelt_badger: 'mob_critter',
+  spotted_fawn: 'mob_stag',
+  dawnmane_doe: 'mob_stag',
+  brightwood_stag: 'mob_stag',
+  brightwood_monarch: 'mob_stag',
+  sunhide_bear: 'mob_bear',
+  old_cragmaw: 'mob_bear',
+  bog_bloat: 'mob_murloc',
   // gravecaller cult + necromancers: dark-robed casters
   gravecaller_cultist: 'mob_dark_caster',
   gravecaller_summoner: 'mob_dark_caster',
@@ -466,10 +595,19 @@ const MOB_KEYS: Record<string, string> = {
   bastion_revenant: 'skel_warrior',
   knight_commander_olen: 'skel_warrior',
   sanctum_boneguard: 'skel_warrior',
+  nythraxis_scourge_of_thornpeak: 'skel_golem',
+  nythraxis_skeleton_warrior: 'skel_warrior',
+  brother_aldric_raid: 'npc_aldric',
   hollow_acolyte: 'skel_mage',
   sexton_marrow: 'skel_mage',
   morthen: 'skel_boss',
   crypt_shambler: 'skel_rogue',
+  fallen_captain_aldren: 'skel_warrior',
+  corrupted_priest_malric: 'skel_necromancer',
+  deathstalker_voss: 'skel_rogue',
+  vision_aldren_warrior: 'player_warrior',
+  vision_malric_mage: 'player_mage',
+  vision_deathstalker_voss: 'player_rogue',
 };
 
 const FAMILY_KEYS: Record<string, string> = {
@@ -506,6 +644,7 @@ const NPC_KEYS: Record<string, string> = {
 
 export function visualKeyFor(e: Entity): string {
   if (e.kind === 'player') {
+    if (e.skinCatalog === 'mech') return 'player_mech';
     return VISUALS[`player_${e.templateId}`] ? `player_${e.templateId}` : 'player_warrior';
   }
   if (e.kind === 'mob') {
@@ -515,7 +654,7 @@ export function visualKeyFor(e: Entity): string {
     return (family && FAMILY_KEYS[family]) || 'mob_bandit';
   }
   // npcs — Brother Aldric recurs in every hub under suffixed ids
-  if (e.templateId.startsWith('brother_aldric')) return 'npc_mage';
+  if (e.templateId.startsWith('brother_aldric')) return 'npc_aldric';
   return NPC_KEYS[e.templateId] ?? 'npc_villager';
 }
 
@@ -523,8 +662,22 @@ export function visualKeyFor(e: Entity): string {
 export function manifestUrls(): string[] {
   const urls = new Set<string>();
   for (const def of Object.values(VISUALS)) {
+    if (def.lazyPreload) continue; // fetched on demand, not at boot
     urls.add(def.url);
+    for (const url of def.animUrls ?? []) urls.add(url);
     for (const a of def.attach ?? []) urls.add(a.url);
   }
   return [...urls];
+}
+
+export function visualAssetUrlForGraphics(url: string, standardMaterials: boolean): string {
+  return standardMaterials ? url : (LOW_URL_ALIAS[url] ?? url);
+}
+
+export function manifestUrlsForGraphics(standardMaterials: boolean): string[] {
+  return [...new Set(manifestUrls().map((url) => visualAssetUrlForGraphics(url, standardMaterials)))];
+}
+
+export function visibleAttachmentsForGraphics(def: Pick<VisualDef, 'attach'>): readonly AttachDef[] {
+  return def.attach ?? [];
 }

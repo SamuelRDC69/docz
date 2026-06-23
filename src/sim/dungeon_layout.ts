@@ -45,6 +45,10 @@ export interface DungeonLayout {
   stubs: WallStub[];
   /** boss dais — walkable, deliberately NO collider */
   dais: { x: number; z: number; r: number };
+  /** Optional room width override for oversized rooms. Defaults to the classic crypt width. */
+  wallX?: number;
+  endWallHw?: number;
+  floorHalfX?: number;
 }
 
 function grid(zFrom: number, zTo: number, zStep: number, xs: readonly number[]): GridPoint[] {
@@ -92,6 +96,33 @@ export const SANCTUM_LAYOUT: DungeonLayout = (() => {
   };
 })();
 
+// Nythraxis' Abandoned Crypt raid room: a long dark nave ending in one large
+// fighting arena. It stays within the shared wall-width contract, but leaves the
+// central floor open so ten players can spread, stack, and reach three wardstones.
+export const NYTHRAXIS_LAYOUT: DungeonLayout = (() => {
+  const pillars: GridPoint[] = [];
+  for (const z of [18, 38, 60, 82, 106]) {
+    for (const x of [-90, -45, 45, 90]) pillars.push({ x, z });
+  }
+  return {
+    zMin: -19,
+    zMax: 126,
+    sideWallZ: 53.5,
+    sideWallHd: 73,
+    wallX: 230,
+    endWallHw: 231,
+    floorHalfX: 228,
+    pillars,
+    tombs: [
+      { x: -210, z: 20 }, { x: 210, z: 20 },
+      { x: -210, z: 42 }, { x: 210, z: 42 },
+      { x: -210, z: 64 }, { x: 210, z: 64 },
+    ],
+    stubs: [],
+    dais: { x: 0, z: 96, r: 13.5 },
+  };
+})();
+
 // The Drowned Temple (interior 'temple'): a two-part flooded temple — a long
 // antechamber, a single chamber-waist arch at z 66 (10u centre passage), then
 // the moon-sanctum with Ysolei's great altar dais. Side walls at |x|=23 like
@@ -132,9 +163,18 @@ export const ARENA_LAYOUT: DungeonLayout = {
   pillars: [
     { x: -14, z: -10 }, { x: 14, z: -10 },
     { x: -14, z: 14 }, { x: 14, z: 14 },
+    // Cover/parkour posts, mirrored about the centre line (z=2) so neither side
+    // is favoured. They give the Fiesta something to juke around (and ranked a
+    // little cover too) without crowding the spawns at z=-14 / z=18.
+    { x: 0, z: -4 }, { x: 0, z: 8 },
+    { x: -9, z: -10 }, { x: 9, z: -10 },
+    { x: -9, z: 14 }, { x: 9, z: 14 },
   ],
   tombs: [],
-  stubs: [],
+  // Low flanking fences along the side lanes, also mirrored about z=2.
+  stubs: [
+    { x: -11, z: 2, hw: 0.6, hd: 4 }, { x: 11, z: 2, hw: 0.6, hd: 4 },
+  ],
   dais: { x: 0, z: 2, r: 8 },
 };
 
@@ -142,16 +182,28 @@ export const ARENA_LAYOUT: DungeonLayout = {
 export const ARENA_SPAWN_A = { x: 0, z: -14, facing: 0 }; // faces +z toward B
 export const ARENA_SPAWN_B = { x: 0, z: 18, facing: Math.PI }; // faces -z toward A
 
+// 2v2: two fighters per side, spread along x.
+export const ARENA_SPAWNS_A_2v2 = [
+  { x: -7, z: -14, facing: 0 },
+  { x: 7, z: -14, facing: 0 },
+];
+export const ARENA_SPAWNS_B_2v2 = [
+  { x: -7, z: 18, facing: Math.PI },
+  { x: 7, z: 18, facing: Math.PI },
+];
+
 /** Interior collision set for a layout, in instance-local coordinates. */
 export function layoutColliders(layout: DungeonLayout): Collider[] {
   const out: Collider[] = [];
+  const wallX = layout.wallX ?? DUNGEON_WALL_X;
+  const endWallHw = layout.endWallHw ?? DUNGEON_END_WALL_HW;
   // side walls
-  for (const sx of [-DUNGEON_WALL_X, DUNGEON_WALL_X]) {
+  for (const sx of [-wallX, wallX]) {
     out.push({ type: 'obb', x: sx, z: layout.sideWallZ, hw: DUNGEON_WALL_HW, hd: layout.sideWallHd, rot: 0 });
   }
   // back wall, then front wall (entrance porch: chase cam fits inside)
-  out.push({ type: 'obb', x: 0, z: layout.zMax, hw: DUNGEON_END_WALL_HW, hd: DUNGEON_WALL_HW, rot: 0 });
-  out.push({ type: 'obb', x: 0, z: layout.zMin, hw: DUNGEON_END_WALL_HW, hd: DUNGEON_WALL_HW, rot: 0 });
+  out.push({ type: 'obb', x: 0, z: layout.zMax, hw: endWallHw, hd: DUNGEON_WALL_HW, rot: 0 });
+  out.push({ type: 'obb', x: 0, z: layout.zMin, hw: endWallHw, hd: DUNGEON_WALL_HW, rot: 0 });
   // chamber waists
   for (const s of layout.stubs) out.push({ type: 'obb', x: s.x, z: s.z, hw: s.hw, hd: s.hd, rot: 0 });
   // pillar obstacles

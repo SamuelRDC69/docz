@@ -45,6 +45,8 @@ export const DUNGEON_MOBS: Record<string, MobTemplate> = {
       { itemId: 'quilted_trousers', chance: 0.33, rollGroup: 'morthen_guaranteed_uncommon' },
       { itemId: 'oiled_boots', chance: 0.33, rollGroup: 'morthen_guaranteed_uncommon' },
       { itemId: 'greyjaw_hide_boots', chance: 0.25, rollGroup: 'morthen_bonus' },
+      { itemId: 'cryptbone_helm', chance: 0.18, rollGroup: 'morthen_bonus' },
+      { itemId: 'cryptbone_pauldrons', chance: 0.18, rollGroup: 'morthen_bonus' },
     ],
     scale: 1.35, color: 0x4a235a,
   },
@@ -54,7 +56,7 @@ export const DUNGEON_MOBS: Record<string, MobTemplate> = {
     id: 'bastion_revenant', name: 'Bastion Revenant', minLevel: 12, maxLevel: 13, family: 'undead', elite: true,
     hpBase: 54, hpPerLevel: 21, dmgBase: 9, dmgPerLevel: 2.4, attackSpeed: 2.3,
     armorPerLevel: 18, moveSpeed: 6.5, aggroRadius: 12,
-    loot: [{ copper: 150, chance: 1 }, { itemId: 'bone_fragments', chance: 0.7 }],
+    loot: [{ copper: 150, chance: 1 }, { itemId: 'bone_fragments', chance: 0.7 }, { itemId: 'mistveil_cord', chance: 0.06, rollGroup: 'revenant_bonus' }],
     scale: 1.1, color: 0x7fa8a0,
     mortalStrike: { chance: 0.3, healReduction: 0.5, duration: 6, name: 'Mortal Strike' },
   },
@@ -62,7 +64,7 @@ export const DUNGEON_MOBS: Record<string, MobTemplate> = {
     id: 'tidebound_acolyte', name: 'Tidebound Acolyte', minLevel: 12, maxLevel: 13, family: 'humanoid', elite: true,
     hpBase: 50, hpPerLevel: 20, dmgBase: 10, dmgPerLevel: 2.5, attackSpeed: 2.0,
     armorPerLevel: 14, moveSpeed: 7, aggroRadius: 12,
-    loot: [{ copper: 170, chance: 1 }, { itemId: 'linen_scrap', chance: 0.5 }],
+    loot: [{ copper: 170, chance: 1 }, { itemId: 'linen_scrap', chance: 0.5 }, { itemId: 'mistveil_grips', chance: 0.06, rollGroup: 'acolyte_bonus' }],
     desperateHeal: { belowHpPct: 0.3, healPct: 0.25 },
     scale: 1.0, color: 0x1f618d,
   },
@@ -107,6 +109,8 @@ export const DUNGEON_MOBS: Record<string, MobTemplate> = {
       { itemId: 'drowned_prayer_leggings', chance: 0.10, rollGroup: 'vael_bonus' },
       { itemId: 'drowned_prayer_sandals', chance: 0.10, rollGroup: 'vael_bonus' },
       { itemId: 'eelscale_treads', chance: 0.10, rollGroup: 'vael_bonus' },
+      { itemId: 'mistveil_cord', chance: 0.12, rollGroup: 'vael_bonus' },
+      { itemId: 'mistveil_grips', chance: 0.12, rollGroup: 'vael_bonus' },
     ],
     scale: 1.35, color: 0x48c9b0,
   },
@@ -116,14 +120,14 @@ export const DUNGEON_MOBS: Record<string, MobTemplate> = {
     id: 'sanctum_boneguard', name: 'Sanctum Boneguard', minLevel: 19, maxLevel: 19, family: 'undead', elite: true,
     hpBase: 64, hpPerLevel: 23, dmgBase: 12, dmgPerLevel: 2.7, attackSpeed: 2.3,
     armorPerLevel: 22, moveSpeed: 6.5, aggroRadius: 12,
-    loot: [{ copper: 300, chance: 1 }, { itemId: 'bone_fragments', chance: 0.6 }],
+    loot: [{ copper: 300, chance: 1 }, { itemId: 'bone_fragments', chance: 0.6 }, { itemId: 'boundstone_helm', chance: 0.04, rollGroup: 'boneguard_bonus' }, { itemId: 'boundstone_girdle', chance: 0.04, rollGroup: 'boneguard_bonus' }],
     scale: 1.15, color: 0xcfc8b0,
   },
   sanctum_drakonid: {
     id: 'sanctum_drakonid', name: 'Sanctum Drakonid', minLevel: 19, maxLevel: 20, family: 'dragonkin', elite: true,
     hpBase: 68, hpPerLevel: 24, dmgBase: 13, dmgPerLevel: 2.8, attackSpeed: 2.2,
     armorPerLevel: 26, moveSpeed: 7, aggroRadius: 13,
-    loot: [{ copper: 350, chance: 1 }, { itemId: 'cracked_wyrm_scale', chance: 0.5 }],
+    loot: [{ copper: 350, chance: 1 }, { itemId: 'cracked_wyrm_scale', chance: 0.5 }, { itemId: 'gravewyrm_mantle', chance: 0.05, rollGroup: 'drakonid_bonus' }, { itemId: 'gravewyrm_gauntlets', chance: 0.05, rollGroup: 'drakonid_bonus' }],
     scale: 1.45, color: 0x567d46, // Korzul's rig at 0.8x his bulk
   },
   raised_bonewalker: {
@@ -152,6 +156,8 @@ export const DUNGEON_MOBS: Record<string, MobTemplate> = {
       { itemId: 'gravewyrm_sabatons', chance: 0.10, rollGroup: 'korgath_bonus' },
       { itemId: 'wyrmcult_soulsteps', chance: 0.10, rollGroup: 'korgath_bonus' },
       { itemId: 'wyrmshadow_treads', chance: 0.05, rollGroup: 'korgath_bonus' },
+      { itemId: 'boundstone_helm', chance: 0.08, rollGroup: 'korgath_bonus' },
+      { itemId: 'gravewyrm_mantle', chance: 0.08, rollGroup: 'korgath_bonus' },
     ],
     scale: 1.5, color: 0x8f6f46,
   },
@@ -195,8 +201,61 @@ export const DUNGEON_MOBS: Record<string, MobTemplate> = {
       { itemId: 'deathlord_warplate', chance: 0.05, rollGroup: 'korzul_bonus' },
       { itemId: 'necromancers_starshroud', chance: 0.05, rollGroup: 'korzul_bonus' },
       { itemId: 'wyrmshadow_harness', chance: 0.05, rollGroup: 'korzul_bonus' },
+      { itemId: 'boundstone_girdle', chance: 0.05, rollGroup: 'korzul_bonus' },
+      { itemId: 'gravewyrm_gauntlets', chance: 0.05, rollGroup: 'korzul_bonus' },
+      { itemId: 'deathlords_dread_visage', chance: 0.04, rollGroup: 'korzul_bonus' },
+      { itemId: 'necromancers_soulspire_mantle', chance: 0.04, rollGroup: 'korzul_bonus' },
+      { itemId: 'wyrmshadow_talongrips', chance: 0.04, rollGroup: 'korzul_bonus' },
     ],
     scale: 1.8, color: 0x3d5c45,
+  },
+
+  // ---- Abandoned Crypt raid encounter (10-player, Nythraxis) ----
+  nythraxis_skeleton_warrior: {
+    id: 'nythraxis_skeleton_warrior', name: 'Risen Royal Guard', minLevel: 20, maxLevel: 20, family: 'undead',
+    elite: true, ccImmune: true,
+    hpBase: 150, hpPerLevel: 28, dmgBase: 26, dmgPerLevel: 5.6, attackSpeed: 2.2,
+    armorPerLevel: 24, moveSpeed: 10, aggroRadius: 14,
+    loot: [],
+    scale: 1.25, color: 0xc7c0b2,
+  },
+  // Brother Aldric is now a dynamically-spawned NPC (see NPCS.brother_aldric_raid
+  // in zone3.ts and spawnNythraxisAldric in sim.ts), not a mob.
+  nythraxis_scourge_of_thornpeak: {
+    id: 'nythraxis_scourge_of_thornpeak', name: 'Nythraxis, Scourge of Thornpeak', minLevel: 20, maxLevel: 20, family: 'undead',
+    elite: true, boss: true, ccImmune: true,
+    hpBase: 51239 / 2.3, hpPerLevel: 0, dmgBase: 54, dmgPerLevel: 11.4, attackSpeed: 2.6,
+    armorPerLevel: 42, moveSpeed: 10.5, aggroRadius: 22,
+    loot: [
+      { copper: 150000, chance: 1 },
+      { itemId: 'deathless_heartwood', chance: 0.03, rollGroup: 'nythraxis_drop_1' },
+      { itemId: 'crownforged_dreadhelm', chance: 0.17, rollGroup: 'nythraxis_drop_1' },
+      { itemId: 'nighttalon_crown', chance: 0.16, rollGroup: 'nythraxis_drop_1' },
+      { itemId: 'soulflame_cowl', chance: 0.16, rollGroup: 'nythraxis_drop_1' },
+      { itemId: 'stormcallers_crown', chance: 0.16, rollGroup: 'nythraxis_drop_1' },
+      { itemId: 'nighttalon_shoulderguards', chance: 0.16, rollGroup: 'nythraxis_drop_1' },
+      { itemId: 'soulflame_mantle', chance: 0.16, rollGroup: 'nythraxis_drop_1' },
+      { itemId: 'kingsbane_last_oath', chance: 0.03, rollGroup: 'nythraxis_drop_2' },
+      { itemId: 'crownforged_warspaulders', chance: 0.17, rollGroup: 'nythraxis_drop_2' },
+      { itemId: 'nighttalon_shoulderguards', chance: 0.16, rollGroup: 'nythraxis_drop_2' },
+      { itemId: 'soulflame_mantle', chance: 0.16, rollGroup: 'nythraxis_drop_2' },
+      { itemId: 'crownforged_dreadhelm', chance: 0.16, rollGroup: 'nythraxis_drop_2' },
+      { itemId: 'nighttalon_crown', chance: 0.16, rollGroup: 'nythraxis_drop_2' },
+      { itemId: 'stormcallers_spaulders', chance: 0.16, rollGroup: 'nythraxis_drop_2' },
+      { itemId: 'crownforged_dreadhelm', chance: 0.17, rollGroup: 'nythraxis_drop_3' },
+      { itemId: 'nighttalon_crown', chance: 0.17, rollGroup: 'nythraxis_drop_3' },
+      { itemId: 'soulflame_cowl', chance: 0.17, rollGroup: 'nythraxis_drop_3' },
+      { itemId: 'stormcallers_crown', chance: 0.17, rollGroup: 'nythraxis_drop_3' },
+      { itemId: 'nighttalon_shoulderguards', chance: 0.16, rollGroup: 'nythraxis_drop_3' },
+      { itemId: 'soulflame_mantle', chance: 0.16, rollGroup: 'nythraxis_drop_3' },
+      { itemId: 'soulflame_mantle', chance: 0.17, rollGroup: 'nythraxis_drop_4' },
+      { itemId: 'crownforged_warspaulders', chance: 0.17, rollGroup: 'nythraxis_drop_4' },
+      { itemId: 'nighttalon_shoulderguards', chance: 0.17, rollGroup: 'nythraxis_drop_4' },
+      { itemId: 'stormcallers_spaulders', chance: 0.17, rollGroup: 'nythraxis_drop_4' },
+      { itemId: 'crownforged_dreadhelm', chance: 0.16, rollGroup: 'nythraxis_drop_4' },
+      { itemId: 'nighttalon_crown', chance: 0.16, rollGroup: 'nythraxis_drop_4' },
+    ],
+    scale: 3.1, color: 0x221b2d,
   },
 };
 
@@ -263,6 +322,10 @@ const SANCTUM_SPAWN_LIST: DungeonSpawn[] = [
   { mobId: 'sanctum_drakonid', x: 5, z: 144 },
 ];
 
+const NYTHRAXIS_RAID_SPAWN_LIST: DungeonSpawn[] = [
+  { mobId: 'nythraxis_scourge_of_thornpeak', x: 0, z: 96 },
+];
+
 export const DUNGEON_DEFS: Record<string, DungeonDef> = {
   hollow_crypt: {
     id: 'hollow_crypt',
@@ -302,5 +365,57 @@ export const DUNGEON_DEFS: Record<string, DungeonDef> = {
     suggestedPlayers: 5,
     enterText: 'The air goes cold. Something vast breathes below...',
     leaveText: 'You stagger back into the mountain wind.',
+  },
+  nythraxis_crypt: {
+    id: 'nythraxis_crypt',
+    name: 'Abandoned Crypt',
+    index: 4,
+    doorPos: { x: -152, z: 610 },
+    entry: { x: 0, z: 4 },
+    exitOffset: { x: 0, z: -6 },
+    spawns: [],
+    objects: [
+      // The three attunement relics: interacting raises the guardian undead
+      // (fallen_captain_aldren/corrupted_priest_malric/deathstalker_voss) that
+      // drop the keystone halves + diary — see activateNythraxisRelic in sim.ts.
+      // Spread down the nave so they read as the crypt's quest interactables.
+      // (The Royal Graves live in the overworld for q_nythraxis_graves; they do
+      // not belong inside the crypt, where that quest is already complete.)
+      { itemId: 'captains_crest', name: 'Crypt Keystone Upper', x: -7, z: 28 },
+      { itemId: 'priests_sigil', name: 'Crypt Keystone Lower', x: 0, z: 52 },
+      { itemId: 'royal_seal', name: 'Ancient Diary', x: 7, z: 76 },
+      // Sealed royal door to the raid: flush-centre on the crypt back wall.
+      // Back wall collider spans z 111-113 (centre 112, hd 1); sit the door just
+      // in front of its inner face so it reads as set into the wall but stays
+      // interactable (isBlocked r=0.5 needs centre z <= 110.5).
+      { itemId: '', name: 'Sealed Royal Door', x: 0, z: 110.4, templateId: 'dungeon_door', dungeonId: 'nythraxis_boss_arena' },
+    ],
+    interior: 'crypt',
+    suggestedPlayers: 1,
+    enterText: 'You cross the threshold of the Abandoned Crypt.',
+    leaveText: 'You return to the cold air of Thornpeak.',
+  },
+  nythraxis_boss_arena: {
+    id: 'nythraxis_boss_arena',
+    name: 'Nythraxis Raid Arena',
+    index: 5,
+    doorPos: { x: -152, z: 610 },
+    overworldDoor: false,
+    entry: { x: 0, z: 4 },
+    exitOffset: { x: 0, z: -6 },
+    spawns: NYTHRAXIS_RAID_SPAWN_LIST,
+    objects: [
+      // Three soul wardstones in a wide forward triangle in front of the boss
+      // (spawn 0,96), well clear of his body so all three read distinctly and
+      // raiders must split to channel them. Kept within the encounter's
+      // wardstone search radius (see nythraxisWardstones in sim.ts).
+      { itemId: 'bastion_ward_stone', name: 'Left Wardstone', x: -40, z: 79 },
+      { itemId: 'bastion_ward_stone', name: 'Right Wardstone', x: 40, z: 79 },
+      { itemId: 'bastion_ward_stone', name: 'Threshold Wardstone', x: 0, z: 63 },
+    ],
+    interior: 'nythraxis',
+    suggestedPlayers: 10,
+    enterText: 'You pass through the sealed royal door.',
+    leaveText: 'You return to the cold air of Thornpeak.',
   },
 };

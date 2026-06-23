@@ -9,6 +9,11 @@ docs
 tests
 scripts/*
 !scripts/build_media_manifest.mjs
+!scripts/build_server.mjs
+!scripts/build_sitemap.mjs
+!scripts/i18n_*.mjs
+!scripts/wiki/
+!scripts/wiki/*.mjs
 deploy
 *.md
 .venv

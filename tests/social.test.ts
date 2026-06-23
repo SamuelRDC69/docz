@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Sim } from '../src/sim/sim';
 import { ALL_CLASSES, MAX_LEVEL, dist2d } from '../src/sim/types';
-import { CLASSES, MOBS, abilitiesKnownAt, instanceOrigin, CRYPT_SPAWNS } from '../src/sim/data';
+import { CLASSES, MOBS, abilitiesKnownAt, instanceOrigin, CRYPT_SPAWNS, DUNGEON_X_THRESHOLD, dungeonAt } from '../src/sim/data';
 import { groundHeight } from '../src/sim/world';
 
 function makeWorld() {
@@ -19,6 +19,17 @@ function face(sim: Sim, pid: number, targetId: number) {
   const e = sim.entities.get(pid)!;
   const t = sim.entities.get(targetId)!;
   e.facing = Math.atan2(t.pos.x - e.pos.x, t.pos.z - e.pos.z);
+}
+
+function fillPartyToFive(sim: Sim, leader: number): number[] {
+  const added: number[] = [];
+  while ((sim.partyOf(leader)?.members.length ?? 1) < 5) {
+    const pid = sim.addPlayer('priest', `RaidFill${added.length}`);
+    sim.partyInvite(pid, leader);
+    sim.partyAccept(pid);
+    added.push(pid);
+  }
+  return added;
 }
 
 function nearestMob(sim: Sim, templateId: string, from: { x: number; z: number } = { x: 0, z: 0 }) {
@@ -117,11 +128,23 @@ describe('nine classes', () => {
     p.resource = p.maxResource;
     // wait out gcd then judge
     for (let i = 0; i < 35; i++) sim.tick();
-    face(sim, p.id, wolf.id);
-    const dealtBefore = sim.counters.damageDealt;
-    sim.castAbility('judgement');
-    sim.tick();
-    expect(sim.counters.damageDealt).toBeGreaterThan(dealtBefore);
+    // Judgement's spell hit is an RNG roll (capped at 99%), so a single cast can
+    // miss on some world seeds and deal no damage. Re-seal and retry until it
+    // lands, so this checks the mechanic (judgement hits and consumes the seal)
+    // rather than a lucky roll — robust to RNG-stream shifts from new content.
+    let landed = false;
+    for (let attempt = 0; attempt < 25 && !landed; attempt++) {
+      if (!p.auras.some((a) => a.kind === 'imbue')) { sim.castAbility('seal_of_righteousness'); sim.tick(); }
+      p.gcdRemaining = 0;
+      p.cooldowns.delete('judgement');
+      p.resource = p.maxResource;
+      face(sim, p.id, wolf.id);
+      const dealtBefore = sim.counters.damageDealt;
+      sim.castAbility('judgement');
+      sim.tick();
+      landed = sim.counters.damageDealt > dealtBefore;
+    }
+    expect(landed).toBe(true); // judgement connected and dealt damage
     expect(p.auras.some((a) => a.kind === 'imbue')).toBe(false); // consumed
   });
 
@@ -181,6 +204,9 @@ describe('nine classes', () => {
     sim.castAbility('lightning_shield');
     sim.tick();
     const wolf = nearestMob(sim, 'forest_wolf');
+    // The level-based miss curve means a L1-2 wolf almost never lands a hit on an L8
+    // player, so match its level to the player to actually exercise the reflect.
+    wolf.level = p.level;
     teleport(sim, p.id, wolf.pos.x + 2, wolf.pos.z);
     const wolfHpBefore = wolf.hp;
     let zapped = false;
@@ -322,6 +348,62 @@ describe('parties', () => {
     expect(info.z).toBeCloseTo(-23, 3);
   });
 
+  it('converts a party to a two-group raid with a ten player cap', () => {
+    const sim = makeWorld();
+    const leader = sim.addPlayer('warrior', 'Leader');
+    const pids = Array.from({ length: 10 }, (_, i) => sim.addPlayer('priest', `Raid${i}`));
+    for (const pid of pids.slice(0, 3)) {
+      sim.partyInvite(pid, leader);
+      sim.partyAccept(pid);
+    }
+    sim.convertPartyToRaid(leader);
+    expect(sim.partyOf(leader)?.raid).toBe(false);
+    sim.partyInvite(pids[3], leader);
+    sim.partyAccept(pids[3]);
+    sim.convertPartyToRaid(leader);
+    for (const pid of pids.slice(4, 9)) {
+      sim.partyInvite(pid, leader);
+      sim.partyAccept(pid);
+    }
+    const party = sim.partyOf(leader)!;
+    expect(party.raid).toBe(true);
+    expect(party.members).toHaveLength(10);
+    expect(party.members.filter((pid) => party.raidGroups.get(pid) === 1)).toHaveLength(5);
+    expect(party.members.filter((pid) => party.raidGroups.get(pid) === 2)).toHaveLength(5);
+
+    sim.partyInvite(pids[9], leader);
+    sim.partyAccept(pids[9]);
+    expect(sim.partyOf(pids[9])).toBeNull();
+    expect(party.members).toHaveLength(10);
+  });
+
+  it('only the raid leader can move members between raid groups', () => {
+    const { sim, a, b } = makeDuo();
+    const [c] = fillPartyToFive(sim, a);
+    sim.convertPartyToRaid(a);
+    sim.moveRaidMember(c, 2, b);
+    expect(sim.partyOf(a)?.raidGroups.get(c)).toBe(1);
+    sim.moveRaidMember(c, 2, a);
+    expect(sim.partyOf(a)?.raidGroups.get(c)).toBe(2);
+    expect(sim.partyInfo?.raid).toBe(true);
+    expect(sim.partyInfo?.members.find((m) => m.pid === c)?.group).toBe(2);
+  });
+
+  it('blocks raid groups from standard dungeons while requiring raid groups for Nythraxis entry', () => {
+    const sim = makeWorld();
+    const leader = sim.addPlayer('warrior', 'Leader');
+    sim.players.get(leader)!.questsDone.add('q_nythraxis_bound_guardian');
+    sim.enterDungeon('nythraxis_boss_arena', leader);
+    expect(sim.entities.get(leader)!.pos.x).toBeLessThan(DUNGEON_X_THRESHOLD);
+
+    fillPartyToFive(sim, leader);
+    sim.convertPartyToRaid(leader);
+    sim.enterDungeon('sunken_bastion', leader);
+    expect(sim.entities.get(leader)!.pos.x).toBeLessThan(DUNGEON_X_THRESHOLD);
+    sim.enterDungeon('nythraxis_boss_arena', leader);
+    expect(dungeonAt(sim.entities.get(leader)!.pos.x)?.id).toBe('nythraxis_boss_arena');
+  });
+
   it('party members share kill xp with the group bonus and quest credit', () => {
     const { sim, a, b } = makeDuo();
     // both accept the wolf quest
@@ -352,7 +434,7 @@ describe('parties', () => {
     expect(metaB.questLog.get('q_wolves')!.counts[0]).toBe(1);
   });
 
-  it('party members may loot each other\'s tapped kills', () => {
+  it('party members may loot each other\'s tapped kills and split copper', () => {
     const { sim, a, b } = makeDuo();
     const wolf = nearestMob(sim, 'forest_wolf');
     wolf.hp = 1;
@@ -363,9 +445,14 @@ describe('parties', () => {
     sim.startAutoAttack(a);
     for (let i = 0; i < 20 * 20 && !wolf.dead; i++) { face(sim, a, wolf.id); sim.tick(); }
     expect(wolf.lootable).toBe(true);
-    const copperBefore = sim.meta(b)!.copper;
+    const copper = wolf.loot!.copper;
+    const aBefore = sim.meta(a)!.copper;
+    const bBefore = sim.meta(b)!.copper;
     sim.lootCorpse(wolf.id, b);
-    expect(sim.meta(b)!.copper).toBeGreaterThan(copperBefore);
+    const aGain = sim.meta(a)!.copper - aBefore;
+    const bGain = sim.meta(b)!.copper - bBefore;
+    expect(aGain + bGain).toBe(copper);
+    expect(Math.abs(aGain - bGain)).toBeLessThanOrEqual(1);
   });
 
   it('non-party members cannot loot tapped kills', () => {
@@ -608,6 +695,25 @@ describe('trading', () => {
     sim.tradeAccept(b);
     sim.tradeSetOffer([{ itemId: 'boar_hide', count: 2 }], 0, a);
     expect(sim.tradeFor(a)!.offerA.items.length).toBe(0);
+  });
+
+  it('mech chroma plates can be traded directly', () => {
+    const sim = makeWorld();
+    const a = sim.addPlayer('warrior', 'Aleph');
+    const b = sim.addPlayer('mage', 'Bet');
+    teleport(sim, a, 0, -40);
+    teleport(sim, b, 3, -40);
+    sim.addItem('vanguard_chrome_armor_plate', 1, a);
+
+    sim.tradeRequest(b, a);
+    sim.tradeAccept(b);
+    sim.tradeSetOffer([{ itemId: 'vanguard_chrome_armor_plate', count: 1 }], 0, a);
+    sim.tradeConfirm(a);
+    sim.tradeConfirm(b);
+
+    expect(sim.tradeFor(a)).toBe(null);
+    expect(sim.countItem('vanguard_chrome_armor_plate', a)).toBe(0);
+    expect(sim.countItem('vanguard_chrome_armor_plate', b)).toBe(1);
   });
 });
 

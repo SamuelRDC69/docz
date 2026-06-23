@@ -50,6 +50,32 @@ export function clickMoveStep(player: Point2, target: Point2, stopDistance: numb
   return { facing: facingToward(player, target), forward: true, arrived: false };
 }
 
+export function latencyAdjustedStopDistance(
+  stopDistance: number,
+  latencyMs: number,
+  speedYardsPerSecond: number,
+  maxExtraDistance: number,
+): number {
+  if (!Number.isFinite(latencyMs) || !Number.isFinite(speedYardsPerSecond) || !Number.isFinite(maxExtraDistance)) {
+    return stopDistance;
+  }
+  const extra = Math.min(Math.max(0, maxExtraDistance), Math.max(0, speedYardsPerSecond) * Math.max(0, latencyMs) / 1000);
+  return stopDistance + extra;
+}
+
+// Only walk forward while roughly aimed at the destination. Movement is
+// applied along the player's (smoothed) facing at full speed, but facing turns
+// at a capped rate. Close to the target the bearing swings faster than we can
+// turn (the required angular rate is speed/distance), so walking forward while
+// badly misaligned makes the player orbit the destination at a radius larger
+// than the stop distance and never arrive. When the heading error exceeds this
+// cone we hold position and turn in place first, which collapses the orbit.
+export const CLICK_MOVE_FORWARD_CONE = Math.PI / 3; // 60° either side of the bearing
+
+export function clickMoveShouldWalk(facing: number, bearing: number, cone = CLICK_MOVE_FORWARD_CONE): boolean {
+  return Math.abs(angleDelta(facing, bearing)) <= cone;
+}
+
 // Any deliberate *directional* movement key cancels click-to-move, like every
 // ARPG: the player took manual control. Jump is deliberately excluded — jumping
 // is not a change of heading, so you keep travelling to the destination through
@@ -61,7 +87,18 @@ export function manualMovementOverrides(mi: {
   return mi.forward || mi.back || mi.turnLeft || mi.turnRight || mi.strafeLeft || mi.strafeRight;
 }
 
-export function clickMoveShouldCancel(mi: {
+// How an active click-to-move run should resolve this frame:
+// - 'cancel'  : a real interrupt (mouselook, death, feature disabled, or a manual
+//               directional key). The destination is discarded.
+// - 'pause'   : movement is suspended by an open game menu (or a load transition).
+//               The destination is kept and the player simply holds still, so the
+//               run resumes the moment the menu closes, the same way autorun
+//               survives the menu instead of being cancelled by it.
+// - 'continue': keep walking toward the destination.
+// Cancel wins over pause: a genuine interrupt during a menu still ends the run.
+export type ClickMoveAction = 'cancel' | 'pause' | 'continue';
+
+export function resolveClickMoveAction(mi: {
   forward: boolean; back: boolean; turnLeft: boolean; turnRight: boolean;
   strafeLeft: boolean; strafeRight: boolean; jump: boolean;
 }, state: {
@@ -69,10 +106,10 @@ export function clickMoveShouldCancel(mi: {
   movementSuspended: boolean;
   playerDead: boolean;
   enabled: boolean;
-}): boolean {
-  return state.mouselook
-    || state.movementSuspended
-    || state.playerDead
-    || !state.enabled
-    || manualMovementOverrides(mi);
+}): ClickMoveAction {
+  if (state.mouselook || state.playerDead || !state.enabled || manualMovementOverrides(mi)) {
+    return 'cancel';
+  }
+  if (state.movementSuspended) return 'pause';
+  return 'continue';
 }

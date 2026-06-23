@@ -82,7 +82,9 @@ const enText: TalentLocaleText = {
   reduce: (target, amount, perRank) => `Reduces ${target} by ${amount}${perRank}.`,
 };
 
-const localeText: Record<SupportedLanguage, TalentLocaleText> = {
+// The non-dialect locales. es_ES and fr_CA are not declared here; they are pure
+// dialect aliases assembled into `localeText` below (no `{} as` cast).
+const localeTextByBase = {
   en: enText,
   en_CA: enText,
   es: {
@@ -102,7 +104,6 @@ const localeText: Record<SupportedLanguage, TalentLocaleText> = {
     increase: (target, amount, perRank) => `Aumenta ${target} en ${amount}${perRank}.`,
     reduce: (target, amount, perRank) => `Reduce ${target} en ${amount}${perRank}.`,
   },
-  es_ES: {} as TalentLocaleText,
   fr_FR: {
     statLabels: {
       str: 'Force', agi: 'Agilité', sta: 'Endurance', int: 'Intelligence', spi: 'Esprit', armor: 'armure',
@@ -120,7 +121,6 @@ const localeText: Record<SupportedLanguage, TalentLocaleText> = {
     increase: (target, amount, perRank) => `Augmente ${target} de ${amount}${perRank}.`,
     reduce: (target, amount, perRank) => `Réduit ${target} de ${amount}${perRank}.`,
   },
-  fr_CA: {} as TalentLocaleText,
   it_IT: {
     statLabels: {
       str: 'Forza', agi: 'Agilità', sta: 'Tempra', int: 'Intelletto', spi: 'Spirito', armor: 'armatura',
@@ -253,10 +253,17 @@ const localeText: Record<SupportedLanguage, TalentLocaleText> = {
     increase: (target, amount, perRank) => `Увеличивает ${target} на ${amount}${perRank}.`,
     reduce: (target, amount, perRank) => `Снижает ${target} на ${amount}${perRank}.`,
   },
-};
+} satisfies Record<Exclude<SupportedLanguage, 'es_ES' | 'fr_CA'>, TalentLocaleText>;
 
-localeText.es_ES = localeText.es;
-localeText.fr_CA = localeText.fr_FR;
+// es_ES and fr_CA are pure dialect aliases of their base locale (declared base:
+// es_ES->es, fr_CA->fr_FR), matching the main translation table's dialect model.
+// They inherit the base's talent text verbatim, so the value is the base object
+// itself - no `{} as TalentLocaleText` cast and no post-hoc reassignment.
+const localeText: Record<SupportedLanguage, TalentLocaleText> = {
+  ...localeTextByBase,
+  es_ES: localeTextByBase.es,
+  fr_CA: localeTextByBase.fr_FR,
+};
 
 
 
@@ -4201,7 +4208,11 @@ function formatNumber(value: number, lang: SupportedLanguage): string {
 }
 
 function formatPercent(value: number, lang: SupportedLanguage): string {
-  return `${formatNumber(Math.abs(value) * 100, lang)}%`;
+  // Intl percent style applies the locale's percent spacing/placement (e.g. fr/de/es/ru
+  // render "5 %" with a no-break space, en/it/CJK render "5%"). `value` is a fraction, so
+  // pass it directly rather than pre-multiplying and appending a raw "%". Mirrors the HUD
+  // settings percent renderer in hud.ts.
+  return new Intl.NumberFormat(languageTag(lang), { style: 'percent', maximumFractionDigits: 1 }).format(Math.abs(value));
 }
 
 function statAmount(stat: StatKey, value: number, lang: SupportedLanguage): string {

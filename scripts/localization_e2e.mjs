@@ -60,7 +60,8 @@ const FOCUS_SELECTORS = [
   '#header-logo-btn',
   '#lang-select',
   '#nav-btn-play',
-  '#btn-offline',
+  '#server-select-trigger',
+  '#btn-play',
   '#btn-start-offline',
   '#actionbar .action-btn:not(.empty)',
   '#options-menu .btn',
@@ -658,7 +659,7 @@ async function runMobileHomepageAudit(page, locale, viewport) {
 }
 
 async function enterOfflineGame(page, locale, viewport) {
-  await page.click('#btn-offline');
+  await page.evaluate(() => document.querySelector('#btn-offline').click());
   await page.waitForSelector('#offline-select:not([hidden])', { timeout: WAIT_TIMEOUT });
   await page.click('#btn-start-offline');
   await page.waitForFunction(() => {
@@ -762,7 +763,7 @@ async function runChatAndCombat(page, scene, locale, viewport) {
     sim.targetEntity(wolf.id);
     sim.castAbility('fire_blast');
   }, scene.wolfId);
-  await page.evaluate(() => document.querySelector('[data-log-tab="combat"]')?.click());
+  await page.evaluate(() => document.querySelector('[data-tab="combat"]')?.click());
   await page.waitForFunction(() => document.querySelectorAll('#combatlog div').length > 0, { timeout: WAIT_TIMEOUT });
   await assertAuditBasics(page, `chat and combat ${locale} ${viewport.name}`, { mobile: viewport.isMobile });
 }
