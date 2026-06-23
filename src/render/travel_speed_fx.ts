@@ -17,6 +17,14 @@ import { RUN_SPEED } from '../sim/types';
 export const FX_SPEED_FLOOR = RUN_SPEED * 1.02; // a hair above run, avoids idle jitter
 export const FX_SPEED_FULL = RUN_SPEED * 1.4; // classic +40% travel-form top speed
 
+// A single render frame can report an implausible speed when the local player is
+// displaced rather than running: a zone transition, knockback, or respawn moves
+// the interpolated self position a large distance in one frame. Anything beyond a
+// few multiples of run speed is not real travel, so we reject it and draw nothing
+// (otherwise the cue flashes to full for that one frame). Travel Form tops out at
+// RUN_SPEED * 1.4, so RUN_SPEED * 4 sits well above any legitimate movement.
+export const FX_SPEED_MAX_PLAUSIBLE = RUN_SPEED * 4;
+
 // How quickly the visible intensity follows the target (per second). Keeps the
 // cue from popping on/off across single frames as speed crosses the floor.
 export const FX_INTENSITY_LERP = 8;
@@ -50,6 +58,9 @@ export interface SpeedStreak {
 export function targetIntensity(i: TravelSpeedFxInputs): number {
   if (i.reducedMotion || !i.inTravelForm) return 0;
   if (i.speed <= FX_SPEED_FLOOR) return 0;
+  // Reject teleport / displacement spikes rather than flashing the cue (see
+  // FX_SPEED_MAX_PLAUSIBLE).
+  if (i.speed > FX_SPEED_MAX_PLAUSIBLE) return 0;
   const t = (i.speed - FX_SPEED_FLOOR) / (FX_SPEED_FULL - FX_SPEED_FLOOR);
   const clamped = t < 0 ? 0 : t > 1 ? 1 : t;
   // ease-out so the cue swells quickly then plateaus near top speed.
@@ -72,8 +83,19 @@ export function stepIntensity(current: number, target: number, dt: number): numb
  * shimmer so the field feels alive without per-frame allocation churn in math.
  */
 export function speedStreaks(intensity: number, phase: number, count = 28): SpeedStreak[] {
-  const out: SpeedStreak[] = [];
-  if (intensity <= 0) return out;
+  return speedStreaksInto([], intensity, phase, count);
+}
+
+/**
+ * Fill `out` with the streak layout for this frame, reusing the streak objects
+ * already in `out` (and trimming it to `count`) so a per-frame caller allocates
+ * nothing. Returns `out`. Output is identical to `speedStreaks` for the same
+ * inputs; the renderer drives this with a persistent buffer.
+ */
+export function speedStreaksInto(
+  out: SpeedStreak[], intensity: number, phase: number, count = 28,
+): SpeedStreak[] {
+  if (intensity <= 0) { out.length = 0; return out; }
   const reach = 0.18 + 0.32 * intensity; // longer streaks the faster you go
   for (let n = 0; n < count; n++) {
     // even spread plus a tiny deterministic jitter so streaks don't look combed.
@@ -84,8 +106,11 @@ export function speedStreaks(intensity: number, phase: number, count = 28): Spee
     const inner = 0.55 - 0.1 * intensity; // streaks start nearer center at speed
     const outer = Math.min(1, inner + reach * (0.7 + 0.3 * shimmer));
     const alpha = intensity * (0.45 + 0.55 * shimmer);
-    out.push({ angle, inner, outer, alpha });
+    const s = out[n];
+    if (s) { s.angle = angle; s.inner = inner; s.outer = outer; s.alpha = alpha; }
+    else out[n] = { angle, inner, outer, alpha };
   }
+  out.length = count;
   return out;
 }
 

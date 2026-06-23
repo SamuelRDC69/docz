@@ -600,6 +600,13 @@ export class Renderer {
   private travelSpeedFx: TravelSpeedFxPainter;
   // Last local-player XZ, to derive ground speed for the speed cue (yd/s).
   private lastLocalPos: { x: number; z: number } | null = null;
+  // Cached prefers-reduced-motion query. `.matches` stays live as the OS setting
+  // changes, so we read it per frame without re-allocating a MediaQueryList
+  // (matchMedia allocates a new object on every call) in the render hot path.
+  private reduceMotionMql: MediaQueryList | null =
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)')
+      : null;
   selectionRing: THREE.Group;
   selectionRingMesh: THREE.Mesh;
   selectionRingTicks: THREE.Group;
@@ -3509,8 +3516,7 @@ export class Renderer {
   }
 
   private reducedMotion(): boolean {
-    return typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    return this.reduceMotionMql?.matches ?? false;
   }
 
   // Grab a JPEG screenshot of the live scene for a bug report. The main

@@ -5,7 +5,7 @@
 // pure core (travel_speed_fx.ts) lays out. All gameplay/easing decisions live
 // in the pure core; this file only turns a state into pixels.
 
-import { speedStreaks, stepIntensity, vignetteAlpha } from './travel_speed_fx';
+import { speedStreaksInto, stepIntensity, vignetteAlpha, type SpeedStreak } from './travel_speed_fx';
 
 export class TravelSpeedFxPainter {
   private canvas: HTMLCanvasElement;
@@ -15,6 +15,11 @@ export class TravelSpeedFxPainter {
   private cssW = 0;
   private cssH = 0;
   private dpr = 1;
+  // Persistent streak buffer, refilled in place each frame (no per-frame alloc).
+  private streaks: SpeedStreak[] = [];
+  // Vignette geometry depends only on canvas size, so cache it across frames and
+  // modulate per-frame darkness via globalAlpha instead of rebuilding a gradient.
+  private vignetteGrad: CanvasGradient | null = null;
 
   constructor(parent: HTMLElement) {
     const c = document.createElement('canvas');
@@ -58,6 +63,22 @@ export class TravelSpeedFxPainter {
     this.dpr = dpr;
     this.canvas.width = Math.max(1, Math.round(w * dpr));
     this.canvas.height = Math.max(1, Math.round(h * dpr));
+    this.rebuildVignette();
+  }
+
+  // Rebuild the cached transparent-center to opaque-rim radial used for the
+  // vignette. Only the canvas geometry feeds it, so this runs on resize, not per
+  // frame; paint() scales the rim darkness with globalAlpha.
+  private rebuildVignette(): void {
+    const ctx = this.ctx;
+    if (!ctx) { this.vignetteGrad = null; return; }
+    const cx = this.canvas.width / 2;
+    const cy = this.canvas.height / 2;
+    const half = Math.hypot(cx, cy);
+    const grad = ctx.createRadialGradient(cx, cy, half * 0.45, cx, cy, half);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,1)');
+    this.vignetteGrad = grad;
   }
 
   private paint(): void {
@@ -70,18 +91,19 @@ export class TravelSpeedFxPainter {
     const cy = h / 2;
     const half = Math.hypot(cx, cy); // half-diagonal in device px
 
-    // soft edge vignette: transparent center to a darkened rim.
+    // soft edge vignette: cached transparent-center to opaque-rim gradient, scaled
+    // to this frame's darkness with globalAlpha (no per-frame gradient alloc).
     const va = vignetteAlpha(this.intensity);
-    if (va > 0.001) {
-      const grad = ctx.createRadialGradient(cx, cy, half * 0.45, cx, cy, half);
-      grad.addColorStop(0, 'rgba(0,0,0,0)');
-      grad.addColorStop(1, `rgba(0,0,0,${va.toFixed(3)})`);
-      ctx.fillStyle = grad;
+    if (va > 0.001 && this.vignetteGrad) {
+      ctx.save();
+      ctx.globalAlpha = va;
+      ctx.fillStyle = this.vignetteGrad;
       ctx.fillRect(0, 0, w, h);
+      ctx.restore();
     }
 
     // radial speed streaks fanning outward from screen center.
-    const streaks = speedStreaks(this.intensity, this.phase);
+    const streaks = speedStreaksInto(this.streaks, this.intensity, this.phase);
     ctx.lineCap = 'round';
     ctx.lineWidth = Math.max(1, this.dpr);
     for (const s of streaks) {

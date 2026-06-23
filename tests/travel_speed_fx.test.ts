@@ -4,9 +4,11 @@ import {
   targetIntensity,
   stepIntensity,
   speedStreaks,
+  speedStreaksInto,
   vignetteAlpha,
   FX_SPEED_FLOOR,
   FX_SPEED_FULL,
+  FX_SPEED_MAX_PLAUSIBLE,
 } from '../src/render/travel_speed_fx';
 
 describe('travel speed fx (pure core)', () => {
@@ -34,6 +36,15 @@ describe('travel speed fx (pure core)', () => {
 
   it('is fully suppressed under prefers-reduced-motion', () => {
     expect(targetIntensity({ inTravelForm: true, speed: FX_SPEED_FULL, reducedMotion: true })).toBe(0);
+  });
+
+  it('rejects implausible teleport / displacement speed spikes', () => {
+    // A one-frame zone transition or knockback reads as an enormous speed; the cue
+    // must draw nothing rather than flash to full for that frame.
+    expect(targetIntensity({ inTravelForm: true, speed: FX_SPEED_MAX_PLAUSIBLE + 0.01, reducedMotion: false })).toBe(0);
+    expect(targetIntensity({ inTravelForm: true, speed: 10_000, reducedMotion: false })).toBe(0);
+    // Just below the ceiling still reads as (clamped) real travel.
+    expect(targetIntensity({ inTravelForm: true, speed: FX_SPEED_MAX_PLAUSIBLE - 0.01, reducedMotion: false })).toBeCloseTo(1, 5);
   });
 
   it('eases intensity toward the target and is frame-rate independent in direction', () => {
@@ -65,6 +76,21 @@ describe('travel speed fx (pure core)', () => {
 
   it('streak layout is deterministic for the same inputs', () => {
     expect(speedStreaks(0.6, 2.0)).toEqual(speedStreaks(0.6, 2.0));
+  });
+
+  it('speedStreaksInto reuses the buffer in place and matches speedStreaks', () => {
+    const buf: ReturnType<typeof speedStreaks> = [];
+    const first = speedStreaksInto(buf, 0.7, 1.0, 28);
+    expect(first).toBe(buf); // returns the same array, no new allocation
+    const firstObjs = [...buf];
+    const second = speedStreaksInto(buf, 0.4, 3.0, 28);
+    expect(second).toBe(buf);
+    // the streak objects are reused (mutated in place), not reallocated.
+    for (let n = 0; n < buf.length; n++) expect(buf[n]).toBe(firstObjs[n]);
+    // and the filled values match the allocating reference for the same inputs.
+    expect(speedStreaksInto([], 0.4, 3.0, 28)).toEqual(speedStreaks(0.4, 3.0));
+    // intensity 0 empties the buffer.
+    expect(speedStreaksInto(buf, 0, 0)).toHaveLength(0);
   });
 
   it('vignette scales with intensity', () => {
