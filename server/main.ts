@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import {
   ensureSchema, pool, createAccount, findAccount, getAccountsCount, touchLogin, saveToken, accountForToken,
-  listCharacters, getCharacter, createCharacterCapped, deleteCharacter, closeOrphanSessions,
+  listCharacters, getCharacter, createCharacterCapped, reclaimDeactivatedName, deleteCharacter, closeOrphanSessions,
   pruneChatLogs, pruneClientPerfReports, searchCharacters, characterCountsByRealm, moderationStatusForAccount, renameCharacter,
   findCharacterReportTargetByName, topArenaRatings, topLifetimeXp, chatMuteStatusForAccount, loadAccountCosmetics,
   referralCountForAccount, primarySlugForAccount, lifetimeXpStanding, isAdminAccount,
@@ -481,13 +481,28 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse): P
         const validClasses = ['warrior', 'paladin', 'hunter', 'rogue', 'priest', 'shaman', 'mage', 'warlock', 'druid'];
         if (!validClasses.includes(body.class)) return json(res, 400, { error: 'invalid class' });
         const skin = Math.max(0, Math.min(7, Math.floor(typeof body.skin === 'number' ? body.skin : 0)));
+        const create = () => createCharacterCapped(accountId, name, body.class, 10, initialCharacterState(body.class, name, skin));
+        const created = (c: NonNullable<Awaited<ReturnType<typeof createCharacterCapped>>>) =>
+          json(res, 200, { id: c.id, name: c.name, class: c.class, level: c.level, skin: c.state?.skin ?? skin, forceRename: c.force_rename });
         try {
-          const c = await createCharacterCapped(accountId, name, body.class, 10, initialCharacterState(body.class, name, skin));
+          const c = await create();
           if (!c) return json(res, 400, { error: 'character limit reached' });
-          return json(res, 200, { id: c.id, name: c.name, class: c.class, level: c.level, skin: c.state?.skin ?? skin, forceRename: c.force_rename });
+          return created(c);
         } catch (err: any) {
-          if (isUniqueViolation(err)) return json(res, 409, { error: 'that name is taken' });
-          throw err;
+          if (!isUniqueViolation(err)) throw err;
+          // The name collided. If it is held only by a deactivated ("invalid")
+          // account, free it (the orphaned character is archived) and retry once;
+          // otherwise it is genuinely taken. This is the self-service path that
+          // replaces the hidden admin-only reactivate/force-rename recovery.
+          if (!(await reclaimDeactivatedName(name))) return json(res, 409, { error: 'that name is taken' });
+          try {
+            const c = await create();
+            if (!c) return json(res, 400, { error: 'character limit reached' });
+            return created(c);
+          } catch (err2: any) {
+            if (isUniqueViolation(err2)) return json(res, 409, { error: 'that name is taken' });
+            throw err2;
+          }
         }
       }
     }
