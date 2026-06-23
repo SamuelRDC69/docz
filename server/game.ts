@@ -1702,6 +1702,7 @@ export class GameServer {
     if (!party) return null;
     return {
       leader: party.leader,
+      raid: party.raid,
       members: party.members.map((mPid) => {
         const meta = this.sim.meta(mPid);
         const e = this.sim.entities.get(mPid);
@@ -1709,6 +1710,7 @@ export class GameServer {
           pid: mPid, name: meta.name, cls: meta.cls, level: e.level,
           hp: e.hp, mhp: e.maxHp, res: Math.round(e.resource), mres: e.maxResource, rtype: e.resourceType,
           x: round2(e.pos.x), z: round2(e.pos.z), dead: e.dead ? 1 : 0, inCombat: e.inCombat ? 1 : 0,
+          group: party.raidGroups.get(mPid) ?? 1,
         } : null;
       }).filter(Boolean),
     };
