@@ -5,9 +5,16 @@ Produced 2026-06-24 by a deep recon Workflow (6 parallel subsystem readers over 
 is the authoritative data the re-authored phase files are built from. It does not replace the
 existing FB packet; it supersedes it for the v0.16.0 restart.
 
-> AMENDED 2026-06-24 (post-recon, per user direction). The 16-phase table below is the original
-> recon. `state.md` (decisions 9-14 + the 18-phase ledger) is now the SOURCE OF TRUTH where they
-> differ. The amendments: (1) P10/P11 build ONE parameterized `unit_frame` FAMILY core+painter
+> AMENDED 2026-06-24 (post-recon, per user direction; then DEEP-REVIEWED + RESTRUCTURED the same
+> day). The 16-phase table below is the original recon. `state.md` (the locked decisions + the
+> 30-phase ledger, after the deep-review restructure split 18 -> 30 phases via sub-letter suffixes)
+> is now the SOURCE OF TRUTH where they differ; this file is the LINE-NUMBER recon only. The
+> deep review also corrected the stale line-refs in the original per-phase detail below (the slider
+> `--range-fill`, the cast core in `src/render/`, the party selector in `src/ui/party_frames.ts`, the
+> 8th FCT site `showSelfNote`, the 10-dash css_corpus markers, the orphan CSS band, the
+> non-existent `EFFECTS_QUALITY_LOW_CUTOFF`); read the per-phase line-refs here against state.md's
+> corrected "Key file paths". Open-decision 4 (the allocation-budget proxy) is pulled forward into
+> P12a. The amendments: (1) P10/P11 build ONE parameterized `unit_frame` FAMILY core+painter
 > reused across player/target/party (ready for focus/raid/boss) instead of bespoke per-frame cores;
 > (2) P12's action bar is INSTANCE-PARAMETERIZED for multiple bars (the refactor builds one bar
 > through the seam; adding bars is a follow-on feature); (3) NEW P15 Accessibility (WCAG 2.2 AA

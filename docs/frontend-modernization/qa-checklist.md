@@ -1,7 +1,8 @@
 # Frontend Modernization v0.16.0: QA
 
 Two parts: (1) the per-phase QA starter every implementation phase runs immediately after it, and
-(2) the whole-feature integration checklist verified once at packet completion (P15 QA). This is a
+(2) the whole-feature integration checklist verified once at packet completion (the P17b QA, the
+packet's final QA). This is a
 client-presentation packet: sim/server/net/headless are untouched, so the parity/persistence rows
 are "confirm no drift," not "exercise new behavior." The NEW surface vs FB is the per-frame layer
 and per-element tiering, which add real PERF rows.
@@ -17,12 +18,14 @@ and per-element tiering, which add real PERF rows.
    any consequential finding before acting.
 5. Update progress.md + state.md; record surprising rules in memory. Name the next phase.
 
-PER-FRAME PERF GATE (P10-P14 QA): re-run the perf_tour harness desktop+mobile and assert
+PER-FRAME PERF GATE (P10a-P14b QA): re-run the perf_tour harness desktop+mobile and assert
 frameP95 <= the P0 baseline AND hudHotDomSkipRate >= the P0 baseline; assert the painter routes all
-writes through the host's elided writers (no raw `style`/`textContent`/`setAttribute`); P12 also
-asserts the allocation budget; P13 asserts bounded node count under a scripted AoE burst.
+writes through the host's elided writers that EXIST (no raw `style`/`textContent`/`setAttribute`
+beyond a documented allowed write; canvas painters are gated on cadence + cached background +
+frameP95, not the routing test); P12a/P12b also assert the allocation budget; P13b asserts bounded
+node count under a scripted AoE burst.
 
-## Part 2: whole-feature integration checklist (P15 QA)
+## Part 2: whole-feature integration checklist (P17b QA, the packet's final QA)
 
 ### Vanilla / dependency discipline
 - [ ] No JS framework added (no Svelte/React/Tailwind/Lit/signals). Only new dependency is
@@ -31,13 +34,16 @@ asserts the allocation budget; P13 asserts bounded node count under a scripted A
 - [ ] Dependency count did not balloon.
 
 ### CSS pipeline + build
-- [ ] All inline `<style>` CSS extracted into `src/styles/*.css` imported per entry; index.html /
-      play.html no longer carry duplicated CSS; both inline blocks are empty (or import-only).
+- [ ] All inline `<style>` CSS for the GAME HUD extracted into `src/styles/*.css` imported per entry;
+      index.html / play.html no longer carry duplicated CSS; their inline blocks are empty (or
+      import-only). admin.html / guide.html keep their current CSS shape (extraction is HUD-only,
+      state.md decision 18); they are verified to still BUILD, not extracted.
 - [ ] `@layer` ordering + tiered tokens in place; the `css_corpus` completeness guard reports 100%
       section coverage across both entries (no rule silently dropped).
 - [ ] Lightning CSS is the transformer + minifier; `.browserslistrc` is the single big-3 targets
       source; every `backdrop-filter` survives minification `-webkit-`-first with a solid fallback
-      (the blocking survival check is green, guide chunk included).
+      (the blocking survival check is green across ALL 4 entries, incl admin's inline block and
+      guide's styles.css backdrop-filters, since the project-wide transformer reprocesses them).
 - [ ] The i18n modulepreload `<link>` still resolves after the transformer flip.
 - [ ] `biome ci --changed` passes on every new `.css` and `.ts` module (the V16 ratchet).
 
@@ -93,11 +99,40 @@ asserts the allocation budget; P13 asserts bounded node count under a scripted A
       to the opener on close; Esc closes; logical tab order; skip links present.
 - [ ] Visible `:focus-visible` on every interactive element, never animated/blurred away.
 - [ ] Live regions announce chat + combat text (politeness chosen per type).
-- [ ] Target-size: every control >=24px or adequate spacing (SC 2.5.8).
+- [ ] Target-size: every control >=24px or adequate spacing (SC 2.5.8); mobile touch controls keep
+      the existing >=40x40px floor (do not weaken it).
 - [ ] `forced-colors: active` (Windows high-contrast): borders/focus survive; meaning is never
       carried by a background-image alone (snapshot test passes).
 - [ ] A minimal `@media print` reset hides the game (no broken print layout).
 - [ ] A standing axe regression gate runs in CI.
+- [ ] Per-window roles/aria/labels/target-size were built IN during P7a-P14b (the MANDATORY
+      WINDOW/CONTROL validation row), not deferred wholesale to P15; P15a/P15b add only the GLOBAL
+      pieces (focus manager, skip links, live regions, forced-colors, print) and the chrome-wide audit.
+- [ ] The `user-scalable=no` / `maximum-scale=1.0` viewport lock is removed (index.html:5,
+      play.html:5); the 16px input-font floor is the anti-zoom guard (SC 1.4.4 / 1.4.10).
+
+### Responsive / mobile (NEW)
+- [ ] The V16 mobile E2E scripts pass as a blocking gate (`mobile_input_zoom_check`,
+      `mobile_button_size`, `mobile_joystick_size`, `mobile_chat_safe_area`,
+      `mobile_minimap_safe_area`, `mobile_community_hud_safe_area`); css_corpus text-completeness is
+      NOT a substitute (it cannot catch a dvh->100vh swap, a dropped safe-area-inset, or a lost
+      `@media` breakpoint).
+- [ ] Mobile-landscape layout, the breakpoint system, dynamic-viewport units, notch/safe-area, and
+      orientation handling render unchanged after the CSS move (P4a/P4b), proven on a real-CDP
+      mobile profile, not a CSS-text assertion.
+- [ ] The iOS real-device pass (manual, cannot run in CI) is recorded as done or explicitly deferred
+      with an owner.
+
+### Cross-world parity (Sim vs ClientWorld) (NEW)
+- [ ] Every `*_view` core test feeds BOTH a Sim-shaped and a ClientWorld-mirror-shaped `IWorld` stub
+      (decision 15); no core assumes a Sim-only field shape or cadence (target cast remaining, combo
+      pips, party out-of-range, async leaderboard/market) that the perf harness, which exercises only
+      the offline Sim, would not catch.
+
+### Visual regression (NEW)
+- [ ] A screenshot baseline captured in P0 (the `scripts/*_shot.mjs` suite); the CSS phases (P2-P4b),
+      the canvas windows (P9a), and the lazy-load loading states (P17b) assert a screenshot-diff, so a
+      silent cascade/render change is caught beyond the CSS-text guard.
 
 ### Bundle / browser matrix (NEW)
 - [ ] A JS bundle-budget CI gate exists; the measured-heavy rarely-opened cold windows
