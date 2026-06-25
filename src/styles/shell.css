@@ -5002,15 +5002,6 @@
   }
 
   @media (max-width: 860px) {
-    #community-hud {
-      top: auto;
-    }
-    #quest-tracker {
-      top: 260px;
-      right: 12px;
-      width: 190px;
-    }
-
     /* Mobile First Homepage Header and Hamburger Menu */
     .mobile-menu-toggle {
       display: flex;

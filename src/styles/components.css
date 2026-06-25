@@ -3990,4 +3990,49 @@
     background: linear-gradient(90deg, #ff3df0, #1b9fff);
     color: #fff;
   }
+  /* ---------- paperdoll unequip + bags drop-target ---------- */
+  /* Character-window / bags chrome that rode inline past P3 (P4a surfaced it); P4b
+     homes it here beside the other window bodies under @layer components. */
+  /* Per-slot Unequip affordance in the character window (paperdoll): a corner ×
+     glyph revealed on hover/focus (always shown on touch). Also right-click the
+     slot, or drag the piece onto the bags window. */
+  .equip-slot .equip-unequip-btn {
+    margin-inline-start: auto;
+    flex: none;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: 1px solid rgba(202, 164, 114, 0.42);
+    background: rgba(60, 38, 28, 0.42);
+    color: var(--color-text-secondary, #d6c1a0);
+    font-size: 20px;
+    line-height: 1;
+    font-weight: 600;
+    cursor: var(--cursor-point);
+    opacity: 0;
+    transition: border-color 0.12s, box-shadow 0.12s, color 0.12s, opacity 0.12s;
+  }
+  .equip-slot:hover .equip-unequip-btn,
+  .equip-slot:focus-within .equip-unequip-btn,
+  body.mobile-touch .equip-slot .equip-unequip-btn {
+    opacity: 1;
+  }
+  .equip-slot .equip-unequip-btn:hover,
+  .equip-slot .equip-unequip-btn:focus-visible {
+    border-color: rgba(255, 218, 160, 0.8);
+    color: #fff;
+    box-shadow: 0 0 7px rgba(202, 164, 114, 0.4);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .equip-slot .equip-unequip-btn { transition: none; }
+  }
+  /* Bags window lights up as a drop target while dragging a piece off the paperdoll. */
+  #bags.drop-target {
+    outline: 2px dashed rgba(255, 218, 160, 0.85);
+    outline-offset: -4px;
+    box-shadow: 0 0 14px rgba(202, 164, 114, 0.5);
+  }
 }

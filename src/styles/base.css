@@ -576,4 +576,8 @@
     margin-right: 3px;
     border-radius: 3px;
   }
+  /* Hide all other UI components while the start screen is visible to prevent keyboard focus leakage */
+  body:has(#start-screen:not([style*="display: none"])) #ui {
+    display: none !important;
+  }
 }

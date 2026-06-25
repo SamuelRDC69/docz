@@ -3082,4 +3082,97 @@
     text-shadow: 2px 2px 8px #000;
     font-family: var(--title-font);
   }
+  /* Chrome cluster (chat input, party frames, context menu, prompts, trade window,
+     elite target frame): P2-era in-world chrome that was never extracted with the
+     rest of the HUD (P4a surfaced it inline); P4b homes it here under @layer
+     components, completing the chrome extraction. The per-section ten-dash banners
+     below are the tracked css_corpus sections. */
+  /* ---------- chat ---------- */
+  /* The bar is anchored by its BOTTOM edge and JS re-anchors it just above the
+     chat box on focus (see anchorChatInput in src/main.ts); the 220px default
+     clears the tab strip + 184px frame before the first measurement lands. As a
+     textarea it grows upward (away from the chat log) up to max-height, then
+     scrolls. */
+  #chat-input { position: absolute; left: 12px; bottom: 220px; width: 370px; display: none; z-index: 25;
+    background: #0d0d14ee; color: #e8e8e8; border: 2px solid var(--border); outline: 1px solid #000;
+    border-radius: 4px; padding: 7px 10px; font-size: 13px; line-height: 1.35;
+    font-family: inherit; user-select: text; box-sizing: border-box; resize: none;
+    overflow-y: hidden; max-height: 110px; white-space: pre-wrap; word-break: break-word; }
+
+  /* ---------- party frames ---------- */
+  #party-frames { position: absolute; left: 12px; top: 12px; display: flex; flex-direction: column; gap: 6px; z-index: 5; }
+  #party-frames.below-target { top: 96px; }
+  .party-frame { --cls: #7fb8ff; width: 170px; padding: 4px 8px 5px; cursor: var(--cursor-point);
+    transition: opacity 0.2s ease, box-shadow 0.2s ease; }
+  .party-frame .pfm-name { font-size: 12px; font-family: var(--title-font); display: flex;
+    justify-content: space-between; align-items: center; gap: 6px; }
+  .party-frame .pfm-id { color: var(--cls); letter-spacing: 0.3px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; text-shadow: 1px 1px 1px #000; }
+  .party-frame .pfm-meta { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .party-frame .pfm-name .lead { color: var(--gold); font-size: 10px; }
+  .party-frame .pf-badge { font-size: 10px; line-height: 1; filter: drop-shadow(0 0 2px #000); }
+  .party-frame .pf-badge.combat { animation: pf-combat-pulse 1s ease-in-out infinite; }
+  .party-frame .bar { height: 9px; margin-top: 2px; }
+  .party-frame.combat { box-shadow: 0 0 7px #e74c3c99; }
+  .party-frame.dead { opacity: 0.7; }
+  .party-frame.dead .pfm-id { color: #888 !important; text-shadow: none; }
+  .party-frame.oor { opacity: 0.45; }
+  .party-frame:hover { outline: 1px solid var(--gold-dim); opacity: 1; }
+  @keyframes pf-combat-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  #party-leave { font-size: 10px; padding: 2px 8px; margin: 0; }
+
+  /* ---------- context menu ---------- */
+  #ctx-menu { position: absolute; z-index: 90; padding: 6px; min-width: 150px; display: none; }
+  #ctx-menu .ctx-title { font-family: var(--title-font); color: var(--gold); font-size: 13px; padding: 3px 8px; border-bottom: 1px solid #463a1c; margin-bottom: 4px; }
+  #ctx-menu .ctx-item { padding: 5px 10px; font-size: 12.5px; color: var(--color-text-light); cursor: var(--cursor-point); border-radius: 4px; }
+  #ctx-menu .ctx-item:hover { background: #ffffff18; color: #fff; }
+  #ctx-menu .ctx-item:focus-visible { background: #ffffff18; color: #fff; outline: 2px solid var(--color-border-focus); outline-offset: 2px; }
+  #ctx-menu .ctx-mark { display: inline-block; width: 18px; height: 18px; vertical-align: middle;
+    margin-right: 8px; background-size: contain; background-repeat: no-repeat; background-position: center; }
+
+  /* ---------- prompts (invite/trade/duel) ---------- */
+  #prompt-stack { position: absolute; left: 50%; top: 34%; transform: translateX(-50%); z-index: 80;
+    display: flex; flex-direction: column; gap: 10px; }
+  .prompt { padding: 14px 18px; text-align: center; min-width: 300px; }
+  .prompt .prompt-text { font-size: 13.5px; color: var(--color-text-light); margin-bottom: 4px; font-family: Georgia, serif; }
+  .prompt .prompt-number {
+    width: 82px; margin: 8px 8px 6px 0; padding: 5px 7px; border: 1px solid #5d4a25;
+    border-radius: 3px; background: #08080d; color: #f4e6bd; font: 12px var(--ui-font);
+    text-align: center; box-shadow: inset 0 1px 3px #000;
+  }
+  .prompt .prompt-number:focus { outline: 1px solid var(--gold-dim); }
+
+  /* ---------- trade window ---------- */
+  #trade-window { width: 460px; box-sizing: border-box; overflow-x: hidden; }
+  .trade-cols { display: flex; gap: 12px; }
+  .trade-col { flex: 1; }
+  .trade-col h4 { font-family: var(--title-font); font-size: 12.5px; color: var(--gold); margin-bottom: 6px; }
+  .trade-col.accepted h4::after { content: ' ✓'; color: #1eff00; }
+  .trade-items { min-height: 120px; border: 1px solid #463a1c; border-radius: 4px; padding: 4px; background: #0c0c12; }
+  .trade-item { display: flex; gap: 6px; align-items: center; width: 100%; font-size: 11.5px; padding: 3px; border: 0;
+    border-radius: 3px; background: transparent; color: inherit; font-family: var(--ui-font); text-align: left; }
+  .trade-item.mine { cursor: var(--cursor-point); }
+  .trade-item.mine:hover { background: #ffffff14; }
+  .trade-empty { color: var(--color-text-muted); font-size: 11px; padding: 4px; }
+  .trade-money { margin-top: 6px; font-size: 12px; }
+  .trade-money-label { display: block; margin-bottom: 4px; }
+  .trade-coins { display: flex; gap: 4px; align-items: center; }
+  /* The coin disc sits between its input and the g/s/c tag; flex gap handles spacing, so drop the disc's own margins here. The tag hugs the disc (no preceding gap). */
+  .trade-coins .coin { margin: 0; }
+  .trade-coins .coin + .mkt-coin-tag { margin-left: -2px; }
+  .trade-money input.coininput { width: 52px; }
+  .trade-money input { width: 80px; background: #0d0d14; color: #ffd100; border: 1px solid var(--border); border-radius: 3px; padding: 3px 6px; user-select: text; }
+  .trade-money .mkt-coin-tag { margin-right: 2px; }
+  .trade-hint { font-size: 10.5px; color: #887c5c; margin-top: 8px; }
+
+  /* ---------- elite target frame ---------- */
+  #target-frame.elite .portrait { border-color: var(--gold); box-shadow: 0 0 12px #ffd10066, 0 2px 8px #000c; }
+  #tf-elite-tag { font-size: 9px; color: var(--gold); font-family: var(--title-font); letter-spacing: 1px; text-align: center; display: none; }
+  #target-frame.elite #tf-elite-tag { display: block; }
+
+  #tf-debuffs {
+    display: flex;
+    gap: 3px;
+    margin-top: 3px;
+  }
 }
