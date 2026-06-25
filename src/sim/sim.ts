@@ -14,6 +14,14 @@ import {
   updateTimers,
 } from './combat/auras';
 import {
+  cancelCast as cancelCastImpl,
+  castAbility as castAbilityImpl,
+  castAbilityBySlot as castAbilityBySlotImpl,
+  pushbackCast as pushbackCastImpl,
+  spendResource as spendResourceImpl,
+  updateCasting as updateCastingImpl,
+} from './combat/casting_lifecycle';
+import {
   blindMissBonus,
   isDisarmed,
   isLockedOut,
@@ -226,9 +234,7 @@ import {
   type AuraKind,
   angleTo,
   armorReduction,
-  CAST_COMPLETE_EPS,
-  CAST_PUSHBACK_SEC,
-  CHANNEL_PUSHBACK_FRACTION,
+  DEMON_HEAL_CAST_ID,
   CONSUME_DURATION,
   CONSUME_TICKS,
   type CrowdControlDrCategory,
@@ -264,6 +270,7 @@ import {
   type LootSlot,
   type LootStrategies,
   MAX_LEVEL,
+  MELEE_ARC,
   MELEE_RANGE,
   type MobFamily,
   type MoveInput,
@@ -317,7 +324,6 @@ const FLEE_HELP_RADIUS = 8;
 const FLEEING_FAMILIES: ReadonlySet<MobFamily> = new Set(['humanoid', 'kobold', 'murloc', 'troll']);
 const GRAVITY = 16;
 const JUMP_VELOCITY = 6; // apex = v^2/2g ≈ 1.125 yd
-const MELEE_ARC = 2.2; // radians half-arc within which melee swings connect
 const FALL_SAFE_DISTANCE = 12; // yards of free fall before damage
 const OBJECT_RESPAWN = 30;
 const NYTHRAXIS_RELIC_SUMMONS: Record<string, string> = {
@@ -394,12 +400,9 @@ const PVP_FEAR_DR_RESET = 60;
 const PVP_CC_DR_MULTIPLIERS = [1, 0.5, 0.25] as const;
 const PVP_POLYMORPH_DR_DURATIONS = [10, 5, 1] as const;
 const PVP_FEAR_DR_DURATIONS = [8, 4, 2, 1] as const;
-const SHAMAN_SHOCK_COOLDOWN_IDS = ['earth_shock', 'flame_shock', 'frost_shock'] as const;
-const DEMON_HEAL_CAST_ID = 'demon_heal';
 const SAY_RANGE = 25; // /say carries a short distance; /yell across a camp
 const YELL_RANGE = 100;
 const OVERHEAD_EMOTE_DURATION = 3.2;
-// CAST_COMPLETE_EPS moved to types.ts (shared with entity_roster.ts); imported above.
 
 // Predefined social emotes. Each entry maps a command (and its aliases) to the
 // third-person action text shown to everyone in /say range. `solo` is used with
@@ -976,43 +979,12 @@ function freshCounters(): RewardCounters {
   };
 }
 
-// Shapeshifts stay castable while shapeshifted (that's how you shift out).
-function isFormToggle(ability: AbilityDef): boolean {
-  return ability.effects.some(
-    (e) =>
-      e.type === 'selfBuff' &&
-      (e.kind === 'form_bear' || e.kind === 'form_cat' || e.kind === 'form_travel'),
-  );
-}
-
-// Forms, stances and stealth are toggles: re-casting cancels the aura, and
-// cancelling is never gated by cost or cooldown (the cooldown gates re-entry).
-function isToggleBuff(ability: AbilityDef): boolean {
-  if (ability.id === 'ghost_wolf') return true;
-  return ability.effects.some(
-    (e) =>
-      e.type === 'selfBuff' &&
-      (e.kind === 'form_bear' ||
-        e.kind === 'form_cat' ||
-        e.kind === 'form_travel' ||
-        e.kind === 'defensive_stance' ||
-        e.kind === 'stealth'),
-  );
-}
-
 function isStealthToggle(ability: AbilityDef): boolean {
   return ability.effects.some((e) => e.type === 'selfBuff' && e.kind === 'stealth');
 }
 
 function preservesStealth(ability: AbilityDef): boolean {
   return isStealthToggle(ability) || ability.id === 'sprint';
-}
-
-function isShamanShock(abilityId: string): boolean {
-  return (
-    (SHAMAN_SHOCK_COOLDOWN_IDS as readonly string[]).includes(abilityId) ||
-    abilityId === 'lightning_shock'
-  );
 }
 
 function isPetClass(cls: PlayerClass): boolean {
@@ -2000,7 +1972,6 @@ export class Sim {
         return sim.utcDay;
       },
       emit: sim.emit.bind(sim),
-      error: sim.error.bind(sim),
       dealDamage: sim.dealDamage.bind(sim),
       handleDeath: sim.handleDeath.bind(sim),
       cancelCast: sim.cancelCast.bind(sim),
@@ -2166,6 +2137,25 @@ export class Sim {
       delveDetectMult: (player) => sim.delveDetectMult(player),
       startDelveRaiseDeadChannel: (run, boss, mobId, count) =>
         sim.startDelveRaiseDeadChannel(run, boss, mobId, count),
+      resolvedAbility: sim.resolvedAbility.bind(sim),
+      playerGcdFor: sim.playerGcdFor.bind(sim),
+      // LATE-bound (not .bind(sim)): the moved cast guards emit through ctx.error, and
+      // several tests swap (sim as any).error post-construction to observe the message.
+      // A .bind(sim) would early-capture the original method and bypass that stub,
+      // breaking the `this.error` dynamic-dispatch semantics the pre-move code had.
+      error: (pid, text, reason) => sim.error(pid, text, reason),
+      isFriendlyTo: sim.isFriendlyTo.bind(sim),
+      isHostileTo: sim.isHostileTo.bind(sim),
+      lineOfSightBlocked: sim.lineOfSightBlocked.bind(sim),
+      stopFollow: sim.stopFollow.bind(sim),
+      tameError: sim.tameError.bind(sim),
+      standUp: sim.standUp.bind(sim),
+      breakGhostWolf: sim.breakGhostWolf.bind(sim),
+      startAutoAttack: sim.startAutoAttack.bind(sim),
+      revivePet: sim.revivePet.bind(sim),
+      completeFishing: sim.completeFishing.bind(sim),
+      applyDemonHealTick: sim.applyDemonHealTick.bind(sim),
+      runEffects: sim.runEffects.bind(sim),
     };
     return createSimContext(host);
   }
@@ -2957,69 +2947,20 @@ export class Sim {
   // Casting, channeling & abilities
   // -------------------------------------------------------------------------
 
+  // Casting lifecycle (cast start/progress/finish, GCD, resource+cost+talent mods,
+  // cooldown arming) moved to src/sim/combat/casting_lifecycle.ts (C4a). These stay
+  // as thin delegates so the tick() updateCasting call, the public castAbility /
+  // castAbilityBySlot entry points (server/game.ts, hud.ts, obs.ts, tests), the
+  // dealDamage spell-pushback arms (cancelCast/pushbackCast via the SimContext seam),
+  // the despawn/demon-channel cancelCast callers, and the demon-heal/queued-swing
+  // spendResource callers all resolve unchanged. runEffects STAYS on Sim (C4b); the
+  // moved module reaches it (and every other helper) only through SimContext.
   private updateCasting(p: Entity, meta: PlayerMeta): void {
-    if (!p.castingAbility) return;
-    if (isStunned(p)) {
-      this.cancelCast(p);
-      return;
-    }
-    // a silence breaks an in-progress spell, but never the fishing cast or a
-    // physical channel (e.g. an aimed-shot kind) — those aren't spells.
-    if (isSilenced(p) && p.castingAbility !== FISHING_CAST_ID) {
-      const cast = this.resolvedAbility(p.castingAbility, p.id);
-      if (cast && cast.def.school !== 'physical') {
-        this.cancelCast(p);
-        return;
-      }
-    }
-    // a school lockout breaks an in-progress spell only when it matches the locked school.
-    if (p.castingAbility !== FISHING_CAST_ID) {
-      const cast = this.resolvedAbility(p.castingAbility, p.id);
-      if (cast && cast.def.school !== 'physical' && isLockedOut(p, cast.def.school)) {
-        this.cancelCast(p);
-        return;
-      }
-    }
-    p.castRemaining -= DT;
-
-    if (p.channeling) {
-      p.channelTickTimer -= DT;
-      if (p.channelTickTimer <= 0) {
-        p.channelTickTimer += p.channelTickEvery;
-        if (p.castingAbility === DEMON_HEAL_CAST_ID) {
-          this.applyDemonHealTick(p);
-        } else {
-          const res = this.resolvedAbility(p.castingAbility, p.id);
-          if (res) this.applyChannelTick(p, res);
-        }
-      }
-      if (p.castRemaining <= CAST_COMPLETE_EPS) {
-        p.castingAbility = null;
-        p.channeling = false;
-        this.emit({ type: 'castStop', entityId: p.id, success: true });
-      }
-      return;
-    }
-
-    if (p.castRemaining <= CAST_COMPLETE_EPS) {
-      const castId = p.castingAbility;
-      p.castingAbility = null;
-      p.castRemaining = 0;
-      this.emit({ type: 'castStop', entityId: p.id, success: true });
-      if (castId === FISHING_CAST_ID) {
-        this.completeFishing(p, meta);
-        return;
-      }
-      const res = this.resolvedAbility(castId, p.id);
-      if (res) this.applyAbility(p, meta, res);
-    }
+    updateCastingImpl(this.ctx, p, meta);
   }
 
   private cancelCast(p: Entity): void {
-    p.castingAbility = null;
-    p.castRemaining = 0;
-    p.channeling = false;
-    this.emit({ type: 'castStop', entityId: p.id, success: false });
+    cancelCastImpl(this.ctx, p);
   }
 
   private abilityNeedsLineOfSight(ability: AbilityDef): boolean {
@@ -3036,340 +2977,19 @@ export class Sim {
   }
 
   private pushbackCast(p: Entity): void {
-    if (p.channeling) {
-      p.castRemaining = Math.max(0, p.castRemaining - p.castTotal * CHANNEL_PUSHBACK_FRACTION);
-    } else {
-      p.castRemaining += CAST_PUSHBACK_SEC;
-      p.castTotal += CAST_PUSHBACK_SEC;
-    }
+    pushbackCastImpl(p);
   }
 
   castAbilityBySlot(slot: number, pid?: number): void {
-    const r = this.resolve(pid);
-    if (!r) return;
-    const known = r.meta.known[slot];
-    if (known) this.castAbility(known.def.id, pid);
+    castAbilityBySlotImpl(this.ctx, slot, pid);
   }
 
   castAbility(abilityId: string, pid?: number): void {
-    const r = this.resolve(pid);
-    if (!r) return;
-    const { meta, e: p } = r;
-    const res = this.resolvedAbility(abilityId, p.id);
-    if (!res || p.dead) return;
-    meta.lastActiveTick = this.tickCount; // a cast attempt is a deliberate action
-    const ability = res.def;
-    if (isStunned(p)) {
-      this.error(p.id, 'You are stunned!');
-      return;
-    }
-    if (ability.school !== 'physical' && isSilenced(p)) {
-      this.error(p.id, 'You are silenced!');
-      return;
-    }
-    if (ability.school !== 'physical' && isLockedOut(p, ability.school)) {
-      this.error(p.id, 'You are silenced!');
-      return;
-    }
-    if (p.castingAbility) {
-      this.error(p.id, 'You are busy.');
-      return;
-    }
-    if (!ability.offGcd && p.gcdRemaining > 0) return; // silent, classic spams this
-    const togglingOff = isToggleBuff(ability) && p.auras.some((a) => a.id === ability.id);
-    const sharedCooldown = isShamanShock(ability.id)
-      ? SHAMAN_SHOCK_COOLDOWN_IDS.find((id) => p.cooldowns.has(id))
-      : undefined;
-    if ((p.cooldowns.has(ability.id) || sharedCooldown) && !togglingOff) {
-      this.error(p.id, 'That ability is not ready yet.');
-      return;
-    }
-    // shifting out of a form is free; shifting across forms bills the parked
-    // mana (the live bar is rage/energy in a form) — see spendAbilityCost
-    if (p.resource < res.cost && !togglingOff && !this.formShiftKind(p, ability)) {
-      this.error(
-        p.id,
-        p.resourceType === 'rage'
-          ? 'Not enough rage!'
-          : p.resourceType === 'energy'
-            ? 'Not enough energy!'
-            : 'Not enough mana!',
-      );
-      return;
-    }
-    // casting is deliberate action — drop any active follow so you don't drift
-    this.stopFollow(p);
-    if (ability.requiresDodgeProc && this.time > p.overpowerUntil) {
-      this.error(p.id, 'Your target must dodge first.');
-      return;
-    }
-    if (ability.spendsCombo && (p.comboPoints <= 0 || p.comboTargetId !== p.targetId)) {
-      this.error(p.id, 'That ability requires combo points.');
-      return;
-    }
-    // druid forms gate their kit both ways: form abilities need the form, and
-    // everything else (the caster kit) is locked while shapeshifted
-    const form = p.auras.find(
-      (a) => a.kind === 'form_bear' || a.kind === 'form_cat' || a.kind === 'form_travel',
-    );
-    if (ability.requiresForm) {
-      const need = ability.requiresForm === 'bear' ? 'form_bear' : 'form_cat';
-      if (!form || form.kind !== need) {
-        this.error(
-          p.id,
-          `You must be in ${ability.requiresForm === 'bear' ? 'Bear' : 'Wolf'} Form.`,
-        );
-        return;
-      }
-    } else if (form && !isFormToggle(ability)) {
-      this.error(p.id, "You can't do that while shapeshifted.");
-      return;
-    }
-    if (ability.requiresStealth && !p.auras.some((a) => a.kind === 'stealth')) {
-      this.error(p.id, 'You must be stealthed.');
-      return;
-    }
-    if (ability.requiresOutOfCombat && p.inCombat) {
-      this.error(p.id, "You can't do that while in combat.");
-      return;
-    }
-
-    let target: Entity | null = null;
-    if (ability.requiresTarget && ability.targetType === 'friendly') {
-      // heals/buffs: current friendly target, else yourself
-      const cur = p.targetId !== null ? (this.entities.get(p.targetId) ?? null) : null;
-      target = cur && !cur.dead && this.isFriendlyTo(p, cur) ? cur : p;
-      const d = dist2d(p.pos, target.pos);
-      if (d > Math.max(ability.range, 5)) {
-        this.error(p.id, 'Out of range.');
-        return;
-      }
-      if (this.lineOfSightBlocked(p, target, ability)) {
-        this.error(p.id, 'Line of sight.');
-        return;
-      }
-    } else if (ability.requiresTarget) {
-      target = p.targetId !== null ? (this.entities.get(p.targetId) ?? null) : null;
-      if (!target || target.dead || !this.isHostileTo(p, target)) {
-        this.error(p.id, 'You have no target.', target?.dead ? 'target_dead' : undefined);
-        return;
-      }
-      const d = dist2d(p.pos, target.pos);
-      const maxRange = ability.range > 0 ? ability.range : MELEE_RANGE;
-      if (d > maxRange) {
-        this.error(p.id, 'Out of range.');
-        return;
-      }
-      if (ability.minRange && d < ability.minRange) {
-        this.error(p.id, 'Too close!');
-        return;
-      }
-      if (this.lineOfSightBlocked(p, target, ability)) {
-        this.error(p.id, 'Line of sight.');
-        return;
-      }
-      const facingDiff = Math.abs(normAngle(angleTo(p.pos, target.pos) - p.facing));
-      if (facingDiff > MELEE_ARC) {
-        this.error(p.id, 'You must be facing your target.');
-        return;
-      }
-      // execute-style gate: only usable while the target is nearly dead
-      if (
-        ability.requiresTargetHpBelow !== undefined &&
-        target.hp > target.maxHp * ability.requiresTargetHpBelow
-      ) {
-        this.error(
-          p.id,
-          `That ability requires the target below ${Math.round(ability.requiresTargetHpBelow * 100)}% health.`,
-        );
-        return;
-      }
-      for (const eff of res.effects) {
-        if (eff.type === 'weaponStrike' && eff.requiresBehind) {
-          if (!p.weapon.dagger) {
-            this.error(p.id, 'You must wield a dagger.');
-            return;
-          }
-          const behindDiff = Math.abs(normAngle(angleTo(target.pos, p.pos) - target.facing));
-          if (behindDiff < Math.PI / 2) {
-            this.error(p.id, 'You must be behind your target.');
-            return;
-          }
-        }
-        if (eff.type === 'polymorph') {
-          if (target.kind === 'mob') {
-            const fam = MOBS[target.templateId]?.family;
-            if (fam === 'undead' || target.templateId === 'gorrak') {
-              this.error(p.id, 'This creature cannot be polymorphed.');
-              return;
-            }
-          } else if (target.kind !== 'player') {
-            this.error(p.id, 'This creature cannot be polymorphed.');
-            return;
-          }
-        }
-        if (
-          eff.type === 'judgement' &&
-          !p.auras.some((a) => a.kind === 'imbue' && a.value2 !== undefined)
-        ) {
-          this.error(p.id, 'You have no active Seal.');
-          return;
-        }
-        if (eff.type === 'taunt' && target.kind !== 'mob') {
-          this.error(p.id, 'You cannot taunt that.');
-          return;
-        }
-        if (eff.type === 'tamePet') {
-          const err = this.tameError(p, target);
-          if (err) {
-            this.error(p.id, err);
-            return;
-          }
-        }
-      }
-    }
-    if (p.sitting) this.standUp(p);
-    if (ability.id !== 'ghost_wolf' && p.auras.some((a) => a.id === 'ghost_wolf')) {
-      this.breakGhostWolf(p);
-    }
-
-    // Heroic-strike style: queue on next swing, pay cost on the swing itself.
-    if (ability.onNextSwing) {
-      p.queuedOnSwing = p.queuedOnSwing === ability.id ? null : ability.id;
-      if (!p.autoAttack && target) this.startAutoAttack(p.id);
-      return;
-    }
-
-    const gcd = this.playerGcdFor(meta.cls);
-
-    if (ability.channel) {
-      this.spendResource(p, res.cost);
-      this.armAbilityCooldown(p, ability.id, res.cooldown);
-      p.castingAbility = ability.id;
-      p.castTotal = ability.channel.duration;
-      p.castRemaining = ability.channel.duration;
-      p.channeling = true;
-      p.channelTickEvery = ability.channel.duration / ability.channel.ticks;
-      p.channelTickTimer = p.channelTickEvery;
-      p.gcdRemaining = Math.max(p.gcdRemaining, gcd);
-      this.emit({
-        type: 'castStart',
-        entityId: p.id,
-        ability: ability.id,
-        time: ability.channel.duration,
-      });
-      return;
-    }
-
-    if (res.castTime > 0 && !togglingOff) {
-      // Curse of Tongues stretches the resolved (already haste-adjusted) cast time.
-      const castTime = res.castTime * tonguesMult(p);
-      p.castingAbility = ability.id;
-      p.castTotal = castTime;
-      p.castRemaining = castTime;
-      p.gcdRemaining = Math.max(p.gcdRemaining, gcd);
-      this.emit({ type: 'castStart', entityId: p.id, ability: ability.id, time: castTime });
-      return;
-    }
-
-    if (!ability.offGcd) p.gcdRemaining = Math.max(p.gcdRemaining, gcd);
-    this.applyAbility(p, meta, res);
+    castAbilityImpl(this.ctx, abilityId, pid);
   }
 
   private spendResource(p: Entity, cost: number): void {
-    p.resource = Math.max(0, p.resource - cost);
-    if (p.resourceType === 'mana' && cost > 0) p.fiveSecondRule = 0;
-  }
-
-  /** Is this cast a form toggle while already shapeshifted? 'off' = leaving
-   *  the form (free, classic), 'cross' = bear<->cat (costs the parked mana). */
-  private formShiftKind(p: Entity, ability: AbilityDef): 'off' | 'cross' | null {
-    if (!isFormToggle(ability)) return null;
-    if (p.auras.some((a) => a.id === ability.id)) return 'off';
-    if (
-      p.auras.some(
-        (a) => a.kind === 'form_bear' || a.kind === 'form_cat' || a.kind === 'form_travel',
-      )
-    )
-      return 'cross';
-    return null;
-  }
-
-  private spendAbilityCost(p: Entity, res: ResolvedAbility): void {
-    if (isToggleBuff(res.def) && p.auras.some((a) => a.id === res.def.id)) return;
-    const shift = this.formShiftKind(p, res.def);
-    if (shift === 'off') return;
-    if (shift === 'cross') {
-      p.savedMana = Math.max(0, p.savedMana - res.cost);
-      return;
-    }
-    this.spendResource(p, res.cost);
-  }
-
-  private armAbilityCooldown(
-    p: Entity,
-    abilityId: string,
-    cooldown: number,
-    togglingOff = false,
-  ): void {
-    if (cooldown <= 0 || togglingOff) return;
-    if (isShamanShock(abilityId)) {
-      for (const id of SHAMAN_SHOCK_COOLDOWN_IDS) p.cooldowns.set(id, cooldown);
-      return;
-    }
-    p.cooldowns.set(abilityId, cooldown);
-  }
-
-  private applyChannelTick(p: Entity, res: ResolvedAbility): void {
-    const target = p.targetId !== null ? this.entities.get(p.targetId) : null;
-    if (!target || target.dead || !this.isHostileTo(p, target)) {
-      this.cancelCast(p);
-      return;
-    }
-    const maxRange = res.def.range > 0 ? res.def.range : MELEE_RANGE;
-    if (dist2d(p.pos, target.pos) > maxRange) {
-      this.error(p.id, 'Out of range.');
-      this.cancelCast(p);
-      return;
-    }
-    if (this.lineOfSightBlocked(p, target, res.def)) {
-      this.error(p.id, 'Line of sight.');
-      this.cancelCast(p);
-      return;
-    }
-    this.emit({
-      type: 'spellfx',
-      sourceId: p.id,
-      targetId: target.id,
-      school: res.def.school,
-      fx: 'projectile',
-    });
-    for (const eff of res.effects) {
-      if (eff.type === 'directDamage') {
-        const crit = this.rng.chance(this.spellCrit(p));
-        let dmg = this.rng.range(eff.min, eff.max);
-        if (crit) dmg *= 1.5;
-        this.dealDamage(p, target, Math.round(dmg), crit, res.def.school, res.def.name, 'hit');
-      } else if (eff.type === 'drainTick') {
-        const dmg = Math.round(this.rng.range(eff.min, eff.max));
-        this.dealDamage(p, target, dmg, false, res.def.school, res.def.name, 'hit');
-        if (!p.dead) {
-          const healed = Math.min(Math.round(dmg * eff.healFrac), p.maxHp - p.hp);
-          if (healed > 0) {
-            p.hp += healed;
-            this.emit({
-              type: 'heal2',
-              sourceId: p.id,
-              targetId: p.id,
-              amount: healed,
-              crit: false,
-              ability: res.def.name,
-            });
-            this.healingThreat(p, p, healed);
-          }
-        }
-      }
-    }
+    spendResourceImpl(p, cost);
   }
 
   private spellCrit(p: Entity): number {
@@ -3405,114 +3025,6 @@ export class Sim {
 
   private healingThreat(source: Entity, target: Entity, healed: number): void {
     healingThreatImpl(this.ctx, source, target, healed);
-  }
-
-  private applyAbility(p: Entity, meta: PlayerMeta, res: ResolvedAbility): void {
-    const ability = res.def;
-    const togglingOff = isToggleBuff(ability) && p.auras.some((a) => a.id === ability.id);
-    if (ability.id === 'conjure_water') {
-      this.spendResource(p, res.cost);
-      // higher ranks conjure better water (falls back if the item isn't defined)
-      const tiered = `conjured_water${res.rank}`;
-      this.addItem(res.rank > 1 && ITEMS[tiered] ? tiered : 'conjured_water', 2, p.id);
-      return;
-    }
-    if (ability.id === 'conjure_food') {
-      this.spendResource(p, res.cost);
-      // higher ranks conjure heartier fare (falls back if the item isn't defined)
-      const tiered = `conjured_bread${res.rank}`;
-      this.addItem(res.rank > 1 && ITEMS[tiered] ? tiered : 'conjured_bread', 2, p.id);
-      return;
-    }
-    if (ability.id === 'revive_pet') {
-      const pet = this.petOf(p.id, true);
-      if (!pet) {
-        this.error(p.id, 'You have no pet.');
-        return;
-      }
-      if (!pet.dead) {
-        this.error(p.id, 'Your pet is already alive.');
-        return;
-      }
-      this.spendResource(p, res.cost);
-      this.armAbilityCooldown(p, ability.id, res.cooldown);
-      this.revivePet(p.id);
-      return;
-    }
-
-    let target: Entity | null = null;
-    if (ability.requiresTarget && ability.targetType === 'friendly') {
-      const cur = p.targetId !== null ? (this.entities.get(p.targetId) ?? null) : null;
-      target = cur && !cur.dead && this.isFriendlyTo(p, cur) ? cur : p;
-      if (dist2d(p.pos, target.pos) > Math.max(ability.range, 5) + 2) {
-        this.error(p.id, 'Out of range.');
-        return;
-      }
-      if (this.lineOfSightBlocked(p, target, ability)) {
-        this.error(p.id, 'Line of sight.');
-        return;
-      }
-    } else if (ability.requiresTarget) {
-      target = p.targetId !== null ? (this.entities.get(p.targetId) ?? null) : null;
-      if (!target || target.dead || !this.isHostileTo(p, target)) {
-        this.error(p.id, 'You have no target.');
-        return;
-      }
-      const d = dist2d(p.pos, target.pos);
-      const maxRange = ability.range > 0 ? ability.range : MELEE_RANGE;
-      if (d > maxRange + 2) {
-        this.error(p.id, 'Out of range.');
-        return;
-      }
-      if (this.lineOfSightBlocked(p, target, ability)) {
-        this.error(p.id, 'Line of sight.');
-        return;
-      }
-    }
-    if (p.resource < res.cost && !togglingOff && !this.formShiftKind(p, ability)) {
-      this.error(p.id, `Not enough ${p.resourceType ?? 'resource'}!`);
-      return;
-    }
-
-    // helpful spells never miss
-    if (ability.targetType === 'friendly') {
-      this.spendAbilityCost(p, res);
-      this.armAbilityCooldown(p, ability.id, res.cooldown, togglingOff);
-      this.runEffects(p, meta, target, res);
-      return;
-    }
-
-    if (target && ability.school !== 'physical') {
-      this.spendAbilityCost(p, res);
-      this.armAbilityCooldown(p, ability.id, res.cooldown, togglingOff);
-      this.emit({
-        type: 'spellfx',
-        sourceId: p.id,
-        targetId: target.id,
-        school: ability.school,
-        fx: 'projectile',
-      });
-      if (!this.rng.chance(spellHitChance(p.level, target.level))) {
-        this.emit({
-          type: 'damage',
-          sourceId: p.id,
-          targetId: target.id,
-          amount: 0,
-          crit: false,
-          school: ability.school,
-          ability: ability.name,
-          kind: 'miss',
-        });
-        this.enterCombat(p, target);
-        return;
-      }
-      this.runEffects(p, meta, target, res);
-      return;
-    }
-
-    this.spendAbilityCost(p, res);
-    this.armAbilityCooldown(p, ability.id, res.cooldown, togglingOff);
-    this.runEffects(p, meta, target, res);
   }
 
   private runEffects(

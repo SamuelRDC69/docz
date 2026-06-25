@@ -412,4 +412,19 @@ describe('coverage: each scenario fires its subsystem', () => {
     );
     expect(aoeMobIds.filter((id) => consTargets.has(id)).length).toBeGreaterThanOrEqual(2);
   });
+
+  it('c4a_casting_lifecycle: casts start, a timed cast completes, and interrupts cancel', () => {
+    const rec = run('c4a_casting_lifecycle');
+    const ev = rec.allEvents as Ev[];
+    // castAbility started the timed casts + the channel (mage fireball, priest heal,
+    // warlock drain_life).
+    expect(ev.some((e) => e.type === 'castStart')).toBe(true);
+    // a timed cast ran to completion (the mage fireball -> updateCasting finish branch).
+    expect(ev.some((e) => e.type === 'castStop' && e.success === true)).toBe(true);
+    // an interrupt cancelled a cast (priest silence + warlock fishing -> cancelCast).
+    expect(ev.some((e) => e.type === 'castStop' && e.success === false)).toBe(true);
+    // the warlock drain channel ticked and dealt shadow damage (applyChannelTick).
+    const wl = rec.notes.warlockId as number;
+    expect(ev.some((e) => e.type === 'damage' && e.sourceId === wl && e.school === 'shadow')).toBe(true);
+  });
 });

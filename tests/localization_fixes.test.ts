@@ -697,12 +697,13 @@ function scanEmitCandidates(simSrc: string, serverSrc: string): Cand[] {
   }
   // `this.error` on Sim, `this.ctx.error` from class modules (A1+ social/*.ts), and
   // bare `ctx.error` from free-function modules (G1a progression/talents.ts, I1
-  // instances/dungeons.ts) are the same player-facing error sink. `(?:this|ctx)\.error`
-  // matches all three (it catches this.ctx.error via the trailing ctx.error).
+  // instances/dungeons.ts, C4a combat/casting_lifecycle.ts) are the same player-facing
+  // error sink. `(?:this|ctx)\.error` matches all three (it catches this.ctx.error via
+  // the trailing ctx.error).
   const er = new RegExp(`(?:this|ctx)\\.error\\([^,]+,\\s*${lit}\\s*\\)`, 'g');
   for (const m of simSrc.matchAll(er)) cands.push({ type: 'error', tmpl: unq(m[1]) });
-  // Variable-routed sim emits: this.notice(pid, '<lit>') (emits 'log') and
-  // this.stopFollow(p, '<lit>') (arg2 routes through this.error) — blind spots.
+  // Variable-routed sim emits: this/ctx.notice(pid, '<lit>') (emits 'log') and
+  // this/ctx.stopFollow(p, '<lit>') (arg2 routes through error) — blind spots.
   // The first-arg class excludes ),(,newline so a single-arg call (e.g.
   // `this.stopFollow(p);`) cannot span into the NEXT call's literal.
   const nr = new RegExp(`(?:this|ctx)\\.(?:notice|stopFollow)\\([^,()\\n]+,\\s*${lit}`, 'g');
@@ -754,7 +755,9 @@ describe('S3: every sim.ts emit is recognized (drift guard)', () => {
   const hudSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/ui/hud.ts'), 'utf8');
   // Extraction sessions moved player-facing emits out of sim.ts into sibling sim
   // modules: C1 -> src/sim/combat/damage.ts (the frenzy proc + pet "<name> dies."
-  // line), A1+ -> src/sim/social/*.ts (the party machine, later duel/arena/fiesta/
+  // line), C4a -> src/sim/combat/casting_lifecycle.ts (the cast guards in castAbility/
+  // applyChannelTick: "You are stunned!", "Out of range.", etc., emitted via ctx.error),
+  // A1+ -> src/sim/social/*.ts (the party machine, later duel/arena/fiesta/
   // markers), G1a -> src/sim/progression/talents.ts (talent validation toasts),
   // M2 -> src/sim/mob/locomotion.ts (the boss "unleashes" lines), M3 ->
   // src/sim/mob/mob_swing.ts (the knockback "unleashes" line), I1 ->
@@ -775,6 +778,7 @@ describe('S3: every sim.ts emit is recognized (drift guard)', () => {
   const simSrc = [
     fs.readFileSync(path.resolve(process.cwd(), 'src/sim/sim.ts'), 'utf8'),
     fs.readFileSync(path.resolve(process.cwd(), 'src/sim/combat/damage.ts'), 'utf8'),
+    fs.readFileSync(path.resolve(process.cwd(), 'src/sim/combat/casting_lifecycle.ts'), 'utf8'),
     fs.readFileSync(path.resolve(process.cwd(), 'src/sim/progression/talents.ts'), 'utf8'),
     fs.readFileSync(path.resolve(process.cwd(), 'src/sim/mob/locomotion.ts'), 'utf8'),
     fs.readFileSync(path.resolve(process.cwd(), 'src/sim/mob/mob_swing.ts'), 'utf8'),

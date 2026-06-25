@@ -24,10 +24,12 @@ import type {
   Party,
   PetState,
   PlayerMeta,
+  ResolvedAbility,
   TradeSession,
 } from './sim';
 import type { SpatialGrid } from './spatial';
 import type {
+  AbilityDef,
   Aura,
   CrowdControlDrCategory,
   DelveRun,
@@ -368,6 +370,26 @@ export interface SimContextCallbacks {
   abandonLockpick(run: DelveRun): void;
   tickLockpickTimeout(run: DelveRun): void;
   startDelveRaiseDeadChannel(run: DelveRun, boss: Entity, mobId: string, count: number): boolean;
+
+  // C4a casting lifecycle (src/sim/combat/casting_lifecycle.ts) consumes these; all
+  // still on Sim. `runEffects` is the C4b boundary (the moved applyAbility +
+  // applyChannelTick reach the actual ability resolution only through here).
+  // `cancelCast`/`pushbackCast` (declared above, S0b) flip points-at to this slice.
+  // (error + addItem are already declared above; not redeclared here.)
+  resolvedAbility(abilityId: string, pid?: number): ResolvedAbility | null;
+  playerGcdFor(cls: PlayerClass): number;
+  isFriendlyTo(caster: Entity, target: Entity): boolean;
+  isHostileTo(attacker: Entity, target: Entity): boolean;
+  lineOfSightBlocked(source: Entity, target: Entity, ability: AbilityDef): boolean;
+  stopFollow(p: Entity, msg?: string): void;
+  tameError(p: Entity, target: Entity): string | null;
+  standUp(p: Entity): void;
+  breakGhostWolf(e: Entity): void;
+  startAutoAttack(pid?: number): void;
+  revivePet(pid?: number): void;
+  completeFishing(p: Entity, meta: PlayerMeta): void;
+  applyDemonHealTick(owner: Entity): void;
+  runEffects(p: Entity, meta: PlayerMeta, target: Entity | null, res: ResolvedAbility): void;
 }
 
 // The seam consumed by extracted modules.
@@ -617,5 +639,19 @@ export function createSimContext(host: SimContextHost): SimContext {
     abandonLockpick: host.abandonLockpick,
     tickLockpickTimeout: host.tickLockpickTimeout,
     startDelveRaiseDeadChannel: host.startDelveRaiseDeadChannel,
+    resolvedAbility: host.resolvedAbility,
+    playerGcdFor: host.playerGcdFor,
+    isFriendlyTo: host.isFriendlyTo,
+    isHostileTo: host.isHostileTo,
+    lineOfSightBlocked: host.lineOfSightBlocked,
+    stopFollow: host.stopFollow,
+    tameError: host.tameError,
+    standUp: host.standUp,
+    breakGhostWolf: host.breakGhostWolf,
+    startAutoAttack: host.startAutoAttack,
+    revivePet: host.revivePet,
+    completeFishing: host.completeFishing,
+    applyDemonHealTick: host.applyDemonHealTick,
+    runEffects: host.runEffects,
   };
 }

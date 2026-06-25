@@ -1920,6 +1920,109 @@ function c3AuraRunner(): Scenario {
   };
 }
 
+// C4a casting lifecycle: drives the player cast lifecycle end to end across three
+// caster classes plus a fishing cast, so the cast-start / updateCasting-progress /
+// pushback / cancel / channel-tick / finish branches and their rng draws are all
+// pinned in one trace. Forks no behavior off castAbility -> updateCasting; every
+// interrupt rides the real dealDamage spell-pushback block (cancel vs pushback).
+//  - mage fireball: timed-cast START (gcd arm) -> a mid-cast melee hit takes the
+//    pushbackCast timed branch (+CAST_PUSHBACK_SEC) -> the cast FINISHES ->
+//    applyAbility spell-hit roll (rng.chance(spellHitChance)) -> runEffects.
+//  - priest lesser_heal (self): timed-cast START -> a silence aura lands ->
+//    updateCasting's silence branch CANCELS it (cancelCast, castStop success:false).
+//  - warlock drain_life: channel START (spend+arm at START) -> applyChannelTick
+//    fires (drainTick rng.range draw + dealDamage + self-heal + healingThreat) ->
+//    a mid-channel hit takes the pushbackCast channel-fraction branch.
+//  - warlock fishing cast: a non-lethal hit CANCELS it (the FISHING_CAST_ID arm of
+//    dealDamage's spell-pushback block -> cancelCast, not pushback).
+function c4aCastingLifecycle(): Scenario {
+  return {
+    name: 'c4a_casting_lifecycle',
+    coverage: [
+      'castAbility timed-cast START (mage fireball) + Math.max gcd arm',
+      'updateCasting progress + finish -> applyAbility spell-hit roll (rng) -> runEffects',
+      'pushbackCast timed branch (+CAST_PUSHBACK_SEC) via dealDamage mid-cast',
+      'updateCasting silence branch -> cancelCast (priest lesser_heal, holy)',
+      'castAbility channel START (warlock drain_life): spend+arm at START',
+      'applyChannelTick drainTick (rng.range draw + dealDamage + self-heal + healingThreat)',
+      'pushbackCast channel-fraction branch via dealDamage mid-channel',
+      'cancelCast fishing arm via dealDamage (FISHING_CAST_ID, not pushback)',
+      'multi-class casters: mage/priest/warlock',
+    ],
+    sampleEvery: 5,
+    build: () => new Sim({ seed: 1017, playerClass: 'mage', noPlayer: true }),
+    drive(rec: Recorder) {
+      const sim = rec.sim as AnySim;
+      const mage = sim.addPlayer('mage', 'Mg') as number;
+      const priest = sim.addPlayer('priest', 'Pr') as number;
+      const warlock = sim.addPlayer('warlock', 'Wl') as number;
+      const eMage = sim.entities.get(mage) as AnyEntity;
+      const ePriest = sim.entities.get(priest) as AnyEntity;
+      const eWarlock = sim.entities.get(warlock) as AnyEntity;
+      // Level 12: fireball rank 3 (2.5s), lesser_heal rank 3 (2.0s, holy),
+      // drain_life rank 1 (5s channel / 5 ticks = 1s per tick). drain_life needs >=10.
+      for (const pid of [mage, priest, warlock]) sim.setPlayerLevel(12, pid);
+      teleport(sim, eMage, -3, -45);
+      teleport(sim, ePriest, 0, -45);
+      teleport(sim, eWarlock, 3, -45);
+      for (const e of [eMage, ePriest, eWarlock]) beef(e, 20000);
+
+      // An idle (un-aggroed) hostile dummy the casters target; hostile=true so
+      // isHostileTo passes, aiState idle so it does not retaliate mid-cast.
+      const mob = spawnMob(sim, 'forest_wolf', 8, 0, eMage.pos.y, -40);
+      beef(mob, 200000);
+      mob.hostile = true;
+      mob.aiState = 'idle';
+      rec.track(mob.id);
+      rec.notes.mageId = mage;
+      rec.notes.priestId = priest;
+      rec.notes.warlockId = warlock;
+      rec.notes.mobId = mob.id;
+
+      // --- mage: timed-cast start -> mid-cast pushback -> finish -> applyAbility ---
+      eMage.resource = eMage.maxResource;
+      face(eMage, mob);
+      sim.targetEntity(mob.id, mage);
+      sim.castAbility('fireball', mage); // timed-cast START (castStart)
+      rec.tick(1); // updateCasting progress one tick
+      sim.dealDamage(mob, eMage, 40, false, 'physical', null, 'hit'); // pushbackCast timed branch
+      rec.snapshot('mage-pushback');
+      rec.tick(120); // let the 2.5s cast (+ pushback) finish -> applyAbility -> runEffects
+
+      // --- priest: timed self-heal start -> silence lands -> updateCasting cancel ---
+      ePriest.hp = Math.max(1, ePriest.maxHp - 1000);
+      ePriest.resource = ePriest.maxResource;
+      sim.castAbility('lesser_heal', priest); // self (friendly fallback), timed START
+      rec.tick(1); // progress one tick (no interrupt yet)
+      ePriest.auras.push(
+        aura({ id: 'c4a_silence', name: 'Silenced', kind: 'silence', value: 0, sourceId: mob.id, duration: 4 }),
+      );
+      rec.tick(1); // updateCasting silence branch -> cancelCast (castStop success:false)
+      rec.snapshot('priest-silence-cancel');
+
+      // --- warlock: channel start -> channel tick -> channel-fraction pushback ---
+      eWarlock.hp = Math.max(1, eWarlock.maxHp - 500); // so the drain self-heal lands
+      eWarlock.resource = eWarlock.maxResource;
+      face(eWarlock, mob);
+      sim.targetEntity(mob.id, warlock);
+      sim.castAbility('drain_life', warlock); // channel START (spend+arm at START)
+      rec.tick(22); // first channel tick fires at ~1s (20 ticks): applyChannelTick draws rng
+      sim.dealDamage(mob, eWarlock, 40, false, 'physical', null, 'hit'); // pushbackCast channel branch
+      rec.snapshot('warlock-channel-pushback');
+      rec.tick(8);
+
+      // --- warlock: a fishing cast cancelled by a hit (cancelCast fishing arm) ---
+      eWarlock.castingAbility = FISHING_CAST_ID;
+      eWarlock.castRemaining = 5;
+      eWarlock.castTotal = 5;
+      eWarlock.channeling = false;
+      sim.dealDamage(mob, eWarlock, 20, false, 'physical', null, 'hit'); // cancelCast, not pushback
+      rec.snapshot('warlock-fishing-cancel');
+      rec.tick(5);
+    },
+  };
+}
+
 export const SCENARIOS: Scenario[] = [
   soloWarrior(),
   soloMage(),
@@ -1951,4 +2054,5 @@ export const SCENARIOS: Scenario[] = [
   dungeonInstances(),
   dungeonRaidLockout(),
   c3AuraRunner(),
+  c4aCastingLifecycle(),
 ];

@@ -7,15 +7,15 @@ export const DT = 1 / TICK_RATE;
 export const RUN_SPEED = 7; // yards/sec, classic run speed
 export const TURN_SPEED = Math.PI; // rad/sec keyboard turning
 export const MELEE_RANGE = 5; // yards
+export const MELEE_ARC = 2.2; // radians half-arc within which melee swings connect
 export const INTERACT_RANGE = 5;
 // Leash distance: how far a pulled mob may be dragged from its leash anchor before
 // it evades home. Shared between the mob-locomotion slice (chase/flee leash checks)
 // and the profiled-combat path that stays on Sim, so it lives in this neutral module.
 export const LEASH_DISTANCE = 45;
 export const DUNGEON_LEASH_DISTANCE = 70;
-// Nythraxis encounter template ids. Shared between the mob-locomotion slice (the
-// boss/add branches of updateMob) and the Nythraxis encounter code still on Sim.
-export const NYTHRAXIS_BOSS_ID = 'nythraxis_scourge_of_thornpeak';
+// Nythraxis add template id. Used by the mob-locomotion slice (the add branch of
+// updateMob); the boss id NYTHRAXIS_BOSS_ID lives lower in this file (C1 relocation).
 export const NYTHRAXIS_ADD_ID = 'nythraxis_skeleton_warrior';
 export const GCD = 1.5; // seconds
 export const CAST_PUSHBACK_SEC = 0.5; // vanilla: each hit delays a cast by 0.5s
@@ -26,12 +26,9 @@ export const CAST_COMPLETE_EPS = 1e-9;
 export const FISHING_CAST_ID = 'fishing';
 export const FISHING_CAST_NAME = 'Fishing';
 export const FISHING_CAST_TIME = 5;
-// Nythraxis raid-boss template id. Shared: the Nythraxis encounter loop (sim.ts)
-// and the dungeon raid-door seal (instances/dungeons.ts) both key off it.
-// (Also relocated here by C1 with the same value; dedupe to one at integration.)
-export const NYTHRAXIS_BOSS_ID = 'nythraxis_scourge_of_thornpeak';
 // Seconds an empty instance idles before it resets. Shared by the dungeon instance
-// reaper (instances/dungeons.ts) and the delve reaper (sim.ts).
+// reaper (instances/dungeons.ts) and the delve reaper (sim.ts). NYTHRAXIS_BOSS_ID
+// (the dungeon raid-door seal also keys off it) lives lower in this file (C1 relocation).
 export const INSTANCE_EMPTY_TIMEOUT = 300;
 // Delve pressure-plate trigger radius (yards). Shared by the I2a run module
 // (delves/runs.ts: plate stepping + chest/exit proximity) and the I2b lockpick
@@ -40,6 +37,7 @@ export const DELVE_PLATE_RADIUS = 2.5;
 // Max purchasable companion rank. Shared by the I2a run module (companionUpgrade cap)
 // and the I2c companion AI still on Sim (updateDelveCompanion heal-pct index).
 export const DELVE_COMPANION_MAX_RANK = 3;
+export const DEMON_HEAL_CAST_ID = 'demon_heal';
 
 export type PlayerClass =
   | 'warrior'
