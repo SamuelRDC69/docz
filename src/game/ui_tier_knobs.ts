@@ -149,6 +149,36 @@ export function nonSelfRepaintDue(
 }
 
 // ---------------------------------------------------------------------------
+// Nameplate refresh cadence (Slice E, P14b): how often the renderer re-projects +
+// repaints the overhead nameplates. Unlike the shed-on-low knobs above, this is a
+// BASE cadence that throttles on EVERY tier (projecting and DOM-writing every rig
+// every frame is wasteful even at full effects), so it always returns a positive
+// interval rather than 0. It REPLACES the old mobile-vs-desktop runtime fork
+// (renderer.ts: isMobileRuntime() ? 1/15 : 1/24) with a static-preset read: the
+// lowest tier keeps the old mobile cadence as a FLOOR (never slower than 1/15s),
+// the richer tiers keep the old desktop cadence. Seconds, not ms: the renderer
+// accumulates dt (seconds) against this, so it is NOT gated through cadenceDue().
+// Two-controller invariant (decision 6): the renderer derives the tier from the
+// static data-fx-level (coerceFxTier), never the FPS governor.
+// ---------------------------------------------------------------------------
+
+/** Nameplate refresh interval on the lowest tier (seconds): the pre-P14b mobile
+ *  cadence (1/15s ~ 66.7ms). This is the mobile FLOOR the extraction must not
+ *  regress below (a tier may refresh faster, never slower than this). */
+export const NAMEPLATE_INTERVAL_LOW_SEC = 1 / 15;
+/** Nameplate refresh interval at the full tiers (seconds): the pre-P14b desktop
+ *  cadence (1/24s ~ 41.7ms). */
+export const NAMEPLATE_INTERVAL_FULL_SEC = 1 / 24;
+
+/** Seconds between full nameplate refreshes for `tier`: the lowest tier holds the
+ *  1/15s mobile floor, every richer tier runs the 1/24s desktop cadence. Always
+ *  positive (nameplates throttle on every tier), so the renderer compares it
+ *  directly against its accumulated dt, not through cadenceDue(). */
+export function nameplateIntervalSec(tier: UiEffectsTier): number {
+  return tier === 'low' ? NAMEPLATE_INTERVAL_LOW_SEC : NAMEPLATE_INTERVAL_FULL_SEC;
+}
+
+// ---------------------------------------------------------------------------
 // Shared cadence predicate + tier coercion.
 // ---------------------------------------------------------------------------
 

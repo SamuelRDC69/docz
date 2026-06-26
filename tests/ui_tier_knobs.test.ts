@@ -18,6 +18,9 @@ import {
   fctTtlScale,
   MINIMAP_REDRAW_INTERVAL_LOW_MS,
   minimapRedrawIntervalMs,
+  NAMEPLATE_INTERVAL_FULL_SEC,
+  NAMEPLATE_INTERVAL_LOW_SEC,
+  nameplateIntervalSec,
   nonSelfRepaintDue,
   TARGET_FRAME_NONSELF_INTERVAL_LOW_MS,
   targetFrameNonSelfIntervalMs,
@@ -120,6 +123,49 @@ describe('ui_tier_knobs - LOW shed magnitudes are pinned to literals (perf-gate 
     expect(MINIMAP_REDRAW_INTERVAL_LOW_MS).toBe(250);
     expect(AURA_REFRESH_INTERVAL_LOW_MS).toBe(250);
     expect(TARGET_FRAME_NONSELF_INTERVAL_LOW_MS).toBe(100);
+  });
+});
+
+describe('ui_tier_knobs - nameplate refresh cadence (P14b, static-preset tiered, seconds)', () => {
+  // Replaces the renderer's old mobile-vs-desktop runtime fork (isMobileRuntime()
+  // ? 1/15 : 1/24) with a static-tier read. Unlike the shed-on-low knobs, this is
+  // a BASE cadence that throttles on EVERY tier, so it always returns a positive
+  // interval (never the 0 = always-due the ms knobs use). Seconds, not ms: the
+  // renderer compares it directly against accumulated dt.
+  it('is deterministic and always positive on every tier', () => {
+    for (const tier of ALL_TIERS) {
+      expect(nameplateIntervalSec(tier)).toBe(nameplateIntervalSec(tier));
+      expect(nameplateIntervalSec(tier)).toBeGreaterThan(0);
+    }
+  });
+
+  it('the lowest tier holds the old mobile 1/15s cadence; richer tiers the 1/24s desktop one', () => {
+    expect(nameplateIntervalSec('low')).toBe(NAMEPLATE_INTERVAL_LOW_SEC);
+    for (const tier of FULL_TIERS) {
+      expect(nameplateIntervalSec(tier)).toBe(NAMEPLATE_INTERVAL_FULL_SEC);
+    }
+  });
+
+  // MOBILE FLOOR (the PR901 WebGL-context lesson): the lowest/mobile tier must
+  // never refresh SLOWER than the pre-extraction 1/15s mobile cadence. Interval is
+  // in seconds, so "no slower" means the interval is <= 1/15s for EVERY tier.
+  it('never regresses the mobile 1/15s floor: every tier interval is <= 1/15s', () => {
+    const FLOOR_SEC = 1 / 15;
+    for (const tier of ALL_TIERS) {
+      expect(nameplateIntervalSec(tier)).toBeLessThanOrEqual(FLOOR_SEC);
+    }
+    // the slowest tier (the largest interval) is exactly the floor, not slower.
+    const slowest = Math.max(...ALL_TIERS.map(nameplateIntervalSec));
+    expect(slowest).toBe(NAMEPLATE_INTERVAL_LOW_SEC);
+    expect(slowest).toBeLessThanOrEqual(FLOOR_SEC);
+  });
+
+  it('pins the per-tier interval literals (retuning is a deliberate, test-touching change)', () => {
+    expect(NAMEPLATE_INTERVAL_LOW_SEC).toBe(1 / 15);
+    expect(NAMEPLATE_INTERVAL_FULL_SEC).toBe(1 / 24);
+    // a slower cadence is a LARGER number of seconds: the low/floor interval is the
+    // larger of the two (mobile refreshes less often than desktop).
+    expect(NAMEPLATE_INTERVAL_LOW_SEC).toBeGreaterThan(NAMEPLATE_INTERVAL_FULL_SEC);
   });
 });
 
