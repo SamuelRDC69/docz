@@ -129,7 +129,7 @@
     border-bottom-color: var(--gold);
   }
   #delve-board .delve-tab:focus-visible {
-    outline: 2px solid var(--gold);
+    outline: 2px solid var(--color-border-focus);
     outline-offset: -2px;
   }
   #delve-board .delve-shop-list {
@@ -188,7 +188,7 @@
     cursor: not-allowed;
   }
   #delve-board .delve-shop-buy:focus-visible {
-    outline: 2px solid var(--gold);
+    outline: 2px solid var(--color-border-focus);
     outline-offset: 1px;
   }
   #delve-board .delve-shop-req {
@@ -1008,6 +1008,7 @@
   .ql-item {
     display: block;
     width: 100%;
+    min-height: 24px;
     padding: 4px 6px;
     border: 0;
     background: transparent;
@@ -1232,7 +1233,12 @@
   .lb-page-btn:focus-visible {
     border-color: #cc9a3c;
     color: #ffe6a8;
-    outline: 0;
+  }
+  /* P15b: a steady, tokenized focus ring (was outline:0, which also defeated the
+     forced-colors Highlight net). The hover border accent stays above. */
+  .lb-page-btn:focus-visible {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
   }
   .lb-page-btn:disabled {
     opacity: 0.45;
@@ -1771,7 +1777,8 @@
     color: var(--gold);
   }
   .ui-dd-item:focus-visible {
-    outline: none;
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: -2px;
     background: #ffffff1f;
     color: var(--gold);
     box-shadow: inset 0 0 0 1px var(--color-border-focus);
@@ -2281,7 +2288,7 @@
     font-weight: 600;
   }
   .bag-chip:focus-visible {
-    outline: 2px solid #d9c27a;
+    outline: 2px solid var(--color-border-focus);
     outline-offset: 1px;
   }
   body.mobile-touch .bag-chip {
@@ -2311,7 +2318,7 @@
     color: inherit;
   }
   .bag-search:focus-visible {
-    outline: 2px solid #d9c27a;
+    outline: 2px solid var(--color-border-focus);
     outline-offset: 1px;
   }
   .bag-sort {
@@ -3006,9 +3013,9 @@
     font-style: italic;
   }
   .mkt-search:focus-visible {
-    outline: 2px solid #cc9a3c;
+    outline: 2px solid var(--color-border-focus);
     outline-offset: 1px;
-    border-color: #cc9a3c;
+    border-color: var(--color-border-focus);
   }
   .mkt-filters {
     display: grid;
@@ -3123,9 +3130,14 @@
   }
   .mkt-select-option:hover,
   .mkt-select-option:focus-visible {
-    outline: 0;
     background: #ffffff14;
     color: var(--color-accent);
+  }
+  /* P15b: focus must not rely on background alone (was outline:0); add a steady,
+     tokenized inset ring that also survives forced-colors. */
+  .mkt-select-option:focus-visible {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: -2px;
   }
   .mkt-select-option.sel {
     background: #cc9a3c2e;
@@ -3230,7 +3242,11 @@
   .mkt-page-btn:focus-visible {
     border-color: #cc9a3c;
     color: var(--color-accent);
-    outline: 0;
+  }
+  /* P15b: restore a steady, tokenized focus ring (was outline:0). */
+  .mkt-page-btn:focus-visible {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
   }
   .mkt-page-btn:disabled {
     opacity: 0.45;
@@ -3319,6 +3335,13 @@
     background: #ffffff0a;
     border-radius: 6px;
     margin-bottom: 8px;
+  }
+  /* The icon + name cluster inside a collect row (P15b: was an inline flex literal in
+     market_window.ts; moved here so the painter carries no layout px, decision 12). */
+  .mkt-collect-item {
+    display: flex;
+    gap: 8px;
+    align-items: center;
   }
   #map-canvas {
     border: 2px solid var(--border);

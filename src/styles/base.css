@@ -632,9 +632,14 @@
      may be carried by a background alone, so system-color keywords are pinned where
      the forced palette applies. */
   @media (forced-colors: active) {
-    /* Keep every focus ring visible against the forced palette. */
+    /* Keep every focus ring visible against the forced palette. The !important is
+       load-bearing: this net lives in @layer base, but per-control focus rules live
+       in the later @layer components, so a normal Highlight outline here would lose
+       the cascade to any component outline. An !important in an earlier layer beats
+       a normal declaration in a later layer, so every focusable keeps a system ring
+       in forced-colors regardless of its component styling (P15b). */
     :focus-visible {
-      outline: 2px solid Highlight;
+      outline: 2px solid Highlight !important;
       outline-offset: 2px;
     }
     /* Panels / windows / skip links keep a real border (forced-colors drops box-shadow

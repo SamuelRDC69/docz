@@ -673,16 +673,16 @@ describe('client HTML shell', () => {
       'body.mobile-touch #party-frames.below-target {\n    top: calc(max(8px, env(safe-area-inset-top)) + 130px);',
     );
     expect(hudMobileCss).toContain(
-      'body.mobile-touch #party-frames .party-frame {\n    width: 132px;\n    min-height: 30px;',
+      'body.mobile-touch #party-frames .party-frame {\n    width: 132px;\n    min-height: 40px;',
     );
     expect(hudMobileCss).toContain(
       'body.mobile-touch #party-frames .party-frame:not(:first-child) {\n    margin-top: -1px;',
     );
     expect(hudMobileCss).toContain(
-      'body.mobile-touch #party-frames #party-leave {\n    width: 132px;\n    min-height: 32px;',
+      'body.mobile-touch #party-frames #party-leave {\n    width: 132px;\n    min-height: 40px;',
     );
     expect(hudMobileCss).toContain(
-      'body.mobile-touch #party-frames .party-frame {\n      width: 118px;\n      min-height: 25px;',
+      'body.mobile-touch #party-frames .party-frame {\n      width: 118px;\n      min-height: 40px;',
     );
     expect(hudMobileCss).toContain(
       'body.mobile-touch #target-frame {\n      left: max(6px, env(safe-area-inset-left));\n      top: calc(max(6px, env(safe-area-inset-top)) + 56px);',

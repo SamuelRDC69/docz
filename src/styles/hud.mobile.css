@@ -354,8 +354,10 @@
     touch-action: none;
   }
   body.mobile-touch #mobile-extra-controls .panel-title .x-btn {
-    min-width: 32px;
-    min-height: 28px;
+    /* P15b: meet the 40x40 mobile touch floor (was 32x28), matching the general
+       body.mobile-touch .x-btn rule. */
+    min-width: 40px;
+    min-height: 40px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -728,9 +730,12 @@
   body.mobile-touch #party-frames.below-target {
     top: calc(max(8px, env(safe-area-inset-top)) + 130px);
   }
+  /* P15b: party rows are role="button" tap targets (tap to target a member), so they
+     must clear the 40x40 mobile touch floor (decision 10), not the compact desktop
+     raid-frame height. Base and landscape both move 30/25px up to 40px; #party-leave too. */
   body.mobile-touch #party-frames .party-frame {
     width: 132px;
-    min-height: 30px;
+    min-height: 40px;
     padding: 3px 6px;
     border-radius: 0;
     border-bottom-width: 1px;
@@ -774,7 +779,7 @@
   }
   body.mobile-touch #party-frames #party-leave {
     width: 132px;
-    min-height: 32px;
+    min-height: 40px;
     margin: -1px 0 0;
     padding: 4px 6px;
     border-top-left-radius: 0;
@@ -1316,6 +1321,13 @@
     right: 5px;
     top: 5px;
   }
+  /* P15b: the map +/- zoom buttons are touch controls on mobile; raise them to the
+     40x40 floor (desktop is 32x32). box-sizing keeps the 2px border inside the box. */
+  body.mobile-touch .map-zoom-btn {
+    min-width: 40px;
+    min-height: 40px;
+    box-sizing: border-box;
+  }
   body.mobile-touch #controls-hint {
     max-width: min(360px, 92vw);
     margin-top: 18px;
@@ -1701,9 +1713,10 @@
     body.mobile-touch #party-frames.below-target {
       top: calc(max(6px, env(safe-area-inset-top)) + 100px);
     }
+    /* P15b: keep the 40x40 touch floor in landscape too (was 25px). */
     body.mobile-touch #party-frames .party-frame {
       width: 118px;
-      min-height: 25px;
+      min-height: 40px;
       padding: 2px 5px;
     }
     body.mobile-touch #party-frames .party-frame .pfm-name {
@@ -1719,7 +1732,7 @@
     }
     body.mobile-touch #party-frames #party-leave {
       width: 118px;
-      min-height: 28px;
+      min-height: 40px;
       font-size: 9px;
     }
     body.mobile-touch #buff-bar {
