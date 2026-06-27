@@ -26,14 +26,20 @@ const desktop: GfxRuntimeHints = {
 };
 
 describe('graphics tier resolution', () => {
-  it('keeps the pre-persist module-load best-guess (unset preset) device-agnostic at ultra', () => {
-    // graphicsPresetLabel + tierFromHints stay device-agnostic (the options-UI label resolver
-    // and the module-load best-guess). The device-aware FIRST-RUN default lives in
-    // resolveDefaultGraphicsPreset (tested below) + main.ts persist, which writes a concrete
-    // preset before the renderer re-resolves, so this unset path is only the transient guess.
+  it('resolves an unset preset device-aware, matching the medium data-fx-level fallback', () => {
+    // The 3D tier (tierFromHints) and the HUD data-fx-level (graphicsPresetLabel(settings def))
+    // must agree on the unset/first-run default so they never diverge. An unrecognized device
+    // falls to MEDIUM on BOTH paths (settings.ts graphicsPreset def is 2 = medium); the old code
+    // fell back to ultra here while the HUD stayed medium, which this guards against.
     expect(desktop.graphicsPreset).toBeUndefined();
-    expect(graphicsPresetLabel(desktop.graphicsPreset)).toBe('ultra');
-    expect(tierFromHints(desktop, false)).toBe('ultra');
+    expect(tierFromHints(desktop, false)).toBe('medium'); // unknown GPU -> medium fallback
+    expect(graphicsPresetLabel(2)).toBe('medium'); // settings def -> same tier, no divergence
+    // A recognized strong desktop GPU lifts the unset 3D tier to ultra...
+    expect(
+      tierFromHints({ ...desktop, gpuRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 4080)' }, false),
+    ).toBe('ultra');
+    // ...and a recognized weak GPU drops it to low (the cost ceiling), not the old ultra default.
+    expect(tierFromHints({ ...desktop, gpuRenderer: 'Adreno (TM) 330' }, false)).toBe('low');
   });
 
   it('honors explicit URL tier overrides', () => {
@@ -55,13 +61,15 @@ describe('graphics tier resolution', () => {
     expect(isConstrainedBrowser(desktop)).toBe(false);
   });
 
-  it('defaults missing presets to ultra while preserving legacy low and forced high', () => {
-    expect(tierFromHints(desktop, false)).toBe('ultra');
-    expect(tierFromHints({ ...desktop, graphicsPreset: 0 }, false)).toBe('low');
-    expect(tierFromHints(desktop, true)).toBe('ultra');
+  it('resolves an unset preset by device, honoring legacy explicit values and URL force', () => {
+    expect(tierFromHints(desktop, false)).toBe('medium'); // unknown device -> medium fallback
+    expect(tierFromHints({ ...desktop, graphicsPreset: 0 }, false)).toBe('low'); // legacy explicit 0
+    expect(tierFromHints(desktop, true)).toBe('low'); // software GL with no preset -> low floor
+    // unset + unknown mobile -> medium (not the old unset -> ultra default)
     expect(tierFromHints({ ...desktop, maxTouchPoints: 1, coarsePointer: true }, false)).toBe(
-      'ultra',
+      'medium',
     );
+    // a URL-forced tier always wins, even on a touch device or software GL
     expect(
       tierFromHints(
         { ...desktop, search: '?gfx=high', maxTouchPoints: 1, coarsePointer: true },
@@ -80,7 +88,7 @@ describe('graphics tier resolution', () => {
     expect(tierFromHints({ ...desktop, search: '?gfx=low', graphicsPreset: 3 }, false)).toBe('low');
   });
 
-  it('labels presets and runs the budget governor unless Ultra or URL-forced', () => {
+  it('labels presets and runs the budget governor on every tier except ultra', () => {
     expect(graphicsPresetLabel(undefined)).toBe('ultra');
     expect(graphicsPresetLabel(0)).toBe('low');
     expect(graphicsPresetLabel(1)).toBe('low');
@@ -88,21 +96,17 @@ describe('graphics tier resolution', () => {
     expect(graphicsPresetLabel(3)).toBe('high');
     expect(graphicsPresetLabel(4)).toBe('ultra');
     expect(graphicsPresetLabel(5)).toBe('advanced');
-    expect(shouldUseAutoGovernor({ search: '', graphicsPreset: 0 })).toBe(true);
-    expect(shouldUseAutoGovernor({ search: '', graphicsPreset: undefined })).toBe(false);
-    expect(shouldUseAutoGovernor({ search: '', graphicsPreset: 1 })).toBe(true);
-    expect(shouldUseAutoGovernor({ search: '', graphicsPreset: 2 })).toBe(true);
-    expect(shouldUseAutoGovernor({ search: '', graphicsPreset: 3 })).toBe(true);
-    expect(shouldUseAutoGovernor({ search: '', graphicsPreset: 4 })).toBe(false);
-    expect(shouldUseAutoGovernor({ search: '', graphicsPreset: 5 })).toBe(true);
-    expect(shouldUseAutoGovernor({ search: '?gfx=low', graphicsPreset: 0 })).toBe(true);
-    expect(shouldUseAutoGovernor({ search: '?gfx=high', graphicsPreset: 0 })).toBe(true);
-    expect(shouldUseAutoGovernor({ search: '?gfx=ultra', graphicsPreset: 0 })).toBe(false);
-    expect(shouldUseAutoGovernor({ search: '?gfx=ultra', graphicsPreset: 4 })).toBe(false);
-    expect(shouldUseAutoGovernor({ search: '?governor=0', graphicsPreset: 1 })).toBe(false);
-    expect(shouldUseAutoGovernor({ search: '?gfx=ultra&governor=1', graphicsPreset: 0 })).toBe(
-      true,
-    );
+    // The governor follows the RESOLVED tier: ON for low/medium/high, OFF only at ultra. A
+    // first-run inconclusive device (the medium fallback) now keeps the governor ON to adapt; the
+    // old unset-preset -> ultra label used to opt it out (no runtime adaptation on weak devices).
+    expect(shouldUseAutoGovernor('low', '')).toBe(true);
+    expect(shouldUseAutoGovernor('medium', '')).toBe(true);
+    expect(shouldUseAutoGovernor('high', '')).toBe(true);
+    expect(shouldUseAutoGovernor('ultra', '')).toBe(false);
+    // The URL governor override beats the tier (force on even at ultra, off below it).
+    expect(shouldUseAutoGovernor('ultra', '?gfx=ultra&governor=1')).toBe(true);
+    expect(shouldUseAutoGovernor('low', '?governor=0')).toBe(false);
+    expect(shouldUseAutoGovernor('ultra', '?gfx=ultra')).toBe(false);
   });
 
   it('keeps every quality tier bounded by explicit runtime budgets', () => {
@@ -198,19 +202,21 @@ describe('graphics tier resolution', () => {
     );
   });
 
-  it('detects older Intel integrated GPUs without overriding the ultra default', () => {
+  it('detects older Intel integrated GPUs and lows the unset 3D tier instead of defaulting ultra', () => {
     expect(
       isWeakIntegratedGpu(
         'ANGLE (Intel, ANGLE Metal Renderer: Intel(R) Iris(TM) Plus Graphics 655)',
       ),
     ).toBe(true);
     expect(isWeakIntegratedGpu('ANGLE (Apple, ANGLE Metal Renderer: Apple M2)')).toBe(false);
+    // A recognized weak iGPU with no explicit preset now resolves the 3D tier to LOW (the cost
+    // ceiling), instead of the old unset -> ultra default that ignored the GPU string entirely.
     expect(
       tierFromHints(
         { ...desktop, gpuRenderer: 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 655)' },
         false,
       ),
-    ).toBe('ultra');
+    ).toBe('low');
   });
 
   it('classifies GPU renderer strings into device-capability buckets', () => {
@@ -229,9 +235,12 @@ describe('graphics tier resolution', () => {
     expect(classifyGpuRenderer('Adreno (TM) 730')).toBe('flagshipMobile');
     expect(classifyGpuRenderer('Mali-G715')).toBe('flagshipMobile');
     expect(classifyGpuRenderer('Apple A17 Pro GPU')).toBe('flagshipMobile');
-    // software rasterizers (both common names) -> software
+    // software rasterizers -> software. The bare "software" token stays in lockstep with
+    // isSoftwareGL so a string like "Apple Software Renderer" lows BOTH the 3D tier and the HUD
+    // data-fx-level (never one low, one medium).
     expect(classifyGpuRenderer('Google SwiftShader')).toBe('software');
     expect(classifyGpuRenderer('Mesa llvmpipe (LLVM 15.0.7, 256 bits)')).toBe('software');
+    expect(classifyGpuRenderer('Apple Software Renderer')).toBe('software');
     // the codebase's named weak-integrated parts stay weak (checked before mid-integrated)
     expect(classifyGpuRenderer('ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 655)')).toBe('weak');
     expect(classifyGpuRenderer('Adreno (TM) 330')).toBe('weak');
@@ -284,6 +293,19 @@ describe('graphics tier resolution', () => {
     it('drops a software or weak GPU to LOW (only the GPU class can low, never RAM/cores)', () => {
       expect(resolveDefaultGraphicsPreset({ ...desktop, gpuRenderer: 'Google SwiftShader' })).toBe(
         1,
+      );
+      // a bare "software" renderer (e.g. Apple's GPU-disabled fallback) lows on BOTH paths, even on
+      // a Chrome box with ample mem+cores (where the old asymmetry would have persisted it HIGH).
+      expect(
+        resolveDefaultGraphicsPreset({
+          ...desktop,
+          gpuRenderer: 'Apple Software Renderer',
+          deviceMemory: 8,
+          hardwareConcurrency: 16,
+        }),
+      ).toBe(1);
+      expect(tierFromHints({ ...desktop, gpuRenderer: 'Apple Software Renderer' }, false)).toBe(
+        'low',
       );
       expect(resolveDefaultGraphicsPreset({ ...desktop, gpuRenderer: 'Adreno (TM) 330' })).toBe(1);
       // entry-level Mali-G52 budget phone -> LOW (must not be shadowed into the mid Mali bucket)

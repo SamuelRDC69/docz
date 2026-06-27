@@ -8,7 +8,10 @@ import { EFFECTS_QUALITY_LOW_CUTOFF } from '../game/ui_effects_profile';
 //   1. '?lowgfx' (legacy flag) or '?gfx=low'  -> low
 //   2. '?gfx=medium' / '?gfx=high' / '?gfx=ultra' -> that tier, EVEN on software GL
 //      (headless screenshot verification: stills render slowly but correctly)
-//   3. otherwise: persisted graphics preset, with missing values -> ultra
+//   3. an explicit persisted graphics preset -> that tier
+//   4. no persisted preset (first boot / inconclusive detection) -> DEVICE-AWARE default via
+//      resolveDefaultGraphicsPreset (recognized weak/software -> low, strong desktop -> high/ultra,
+//      anything unrecognized -> medium), so the 3D tier matches the medium data-fx-level fallback
 
 export type GfxTier = 'low' | 'medium' | 'high' | 'ultra';
 export const GFX_CONFIG_VERSION = 14;
@@ -291,16 +294,16 @@ export function graphicsPresetLabel(
   }
 }
 
-export function shouldUseAutoGovernor(
-  hints?: Pick<GfxRuntimeHints, 'search' | 'graphicsPreset'>,
-): boolean {
-  if (!hints) return false;
-  const params = new URLSearchParams(hints.search);
+export function shouldUseAutoGovernor(tier: GfxTier, search: string): boolean {
+  const params = new URLSearchParams(search);
   const override = params.get('governor') ?? params.get('autoGovernor');
   if (override === '1' || override === 'true' || override === 'on') return true;
   if (override === '0' || override === 'false' || override === 'off') return false;
-  if (forcedTierFromSearch(hints.search) === 'ultra') return false;
-  return graphicsPresetLabel(hints.graphicsPreset) !== 'ultra';
+  // The runtime governor adapts every non-ultra tier; ultra opts out (the player explicitly maxed
+  // it, or a recognized strong desktop auto-resolved there). Keying off the RESOLVED tier, not the
+  // raw preset, keeps the governor ON for a first-run inconclusive device (the medium fallback) so
+  // it can step quality down, instead of being silently opted out by an unset-preset -> ultra label.
+  return tier !== 'ultra';
 }
 
 export function configureMaskedDoubleSidedVegetationMaterial<T extends THREE.Material>(mat: T): T {
@@ -334,7 +337,7 @@ function settingsFor(
     bucketBands,
     bucketBaselines: bucketBaselines(bucketBands),
     budget: GFX_BUDGETS[tier],
-    autoGovernor: shouldUseAutoGovernor(hints),
+    autoGovernor: shouldUseAutoGovernor(tier, hints?.search ?? ''),
     composer: tier === 'high' || tier === 'ultra',
     // N8AO runs on both composer tiers: half-res + Low quality on high keeps
     // it ~1ms-class on real GPUs; ultra gets full-res Medium
@@ -474,8 +477,12 @@ export type GpuClass =
 export function classifyGpuRenderer(name: string | undefined): GpuClass {
   const n = (name ?? '').toLowerCase();
   if (!n) return 'unknown';
-  // Software rasterizers (no real GPU): always the lowest tier.
-  if (/swiftshader|llvmpipe|basic render|softpipe|microsoft basic/.test(n)) return 'software';
+  // Software rasterizers (no real GPU): always the lowest tier. The bare "software" token is kept
+  // in lockstep with isSoftwareGL below so the two software detectors never disagree: a string like
+  // "Apple Software Renderer" must classify as software here (-> low) so the device-aware 3D tier and
+  // the data-fx-level HUD tier both land on low, never one low and one medium.
+  if (/swiftshader|llvmpipe|basic render|softpipe|microsoft basic|software/.test(n))
+    return 'software';
   // The older Intel integrated parts the codebase already names as weak (kept AHEAD of the
   // mid-integrated bucket so an Iris Plus 6xx / UHD 6xx / HD 5xx-6xx stays weak, consistent with
   // the existing leanFoliage treatment in settingsFor).
@@ -589,7 +596,18 @@ export function firstRunGraphicsPreset(defaultAlreadyApplied: boolean): number |
 export function tierFromHints(hints: GfxRuntimeHints, softwareGl: boolean): GfxTier {
   const forced = forcedTierFromSearch(hints.search);
   if (forced) return forced;
-  switch (Math.round(hints.graphicsPreset ?? DEFAULT_PRESET)) {
+  // An explicit stored preset wins. An UNSET preset (a player's first boot before main.ts persists,
+  // OR a device whose detection stays inconclusive so nothing is ever persisted) resolves
+  // DEVICE-AWARE through resolveDefaultGraphicsPreset (medium fallback), so the 3D render tier lands
+  // on the SAME tier the data-fx-level applier derives from the medium settings default, instead of
+  // silently diverging to ultra (the pre-P18e bug: an unrecognized first-run device rendered 3D at
+  // ultra while the HUD/nameplate tier stayed medium). Software GL with no explicit preset drops to
+  // the low floor (resolveDefaultGraphicsPreset already lows recognized software/weak GPUs; this
+  // backstops a generic "software" renderer string the name classifier does not name). An explicit
+  // preset is honored EVEN on software GL (headless screenshot verification forces a tier).
+  const preset =
+    hints.graphicsPreset ?? (softwareGl ? PRESET_LOW : resolveDefaultGraphicsPreset(hints));
+  switch (Math.round(preset)) {
     case PRESET_LOW:
       return 'low';
     case PRESET_MEDIUM:
