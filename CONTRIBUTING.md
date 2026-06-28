@@ -139,10 +139,12 @@ the same of you.
 World of ClaudeCraft ships in many languages, and we keep it that way as the game
 grows. Every player-visible string is translated into every supported locale.
 
-- All user-facing text is a `t()` key defined in [`src/ui/i18n.ts`](src/ui/i18n.ts).
-  Add a new string to the `en` locale first, then provide a real translation in
-  every other locale in `supportedLanguages`. No English placeholders, and no
-  `// TODO`.
+- All user-facing text is a `t()` key. Add new English copy to the matching
+  per-domain module under [`src/ui/i18n.catalog/`](src/ui/i18n.catalog/) (new HUD
+  chrome goes in `hud_chrome.ts`), then render it with `t('dotted.key', values)`.
+  English-only is exactly right for a feature PR: the maintainer fills the other
+  locales at release, so you do not edit the `src/ui/i18n.locales/` overlays and you
+  never leave an English placeholder or a `// TODO` in one.
 - Numbers, money, dates, units, and percentages go through the formatters
   (`formatNumber`, `formatMoney`, `formatDateTime`, `Intl`) rather than manual
   string building.
@@ -151,9 +153,8 @@ grows. Every player-visible string is translated into every supported locale.
   change. The guard test `npx vitest run tests/localization_fixes.test.ts`
   enforces this.
 
-If your change adds a string and you can only write it in some languages, that's
-okay. Open the PR and ask for help with the rest in the description. We'd much
-rather help you finish than have you hold back.
+So add your strings in English and open the PR; you do not need to translate them
+yourself. If you would like to help with translations, see the next section.
 
 <a id="translating-the-game"></a>
 
@@ -162,8 +163,9 @@ rather help you finish than have you hold back.
 Want to improve a language, or help bring the game to a new one? You don't need to
 write any game code to do it:
 
-1. Open [`src/ui/i18n.ts`](src/ui/i18n.ts) and find the locale you want to work
-   on. Each locale object lists the same keys as `en`.
+1. Translations live in the per-language overlay files under
+   [`src/ui/i18n.locales/`](src/ui/i18n.locales/) (one per locale); the English keys
+   they mirror are defined in [`src/ui/i18n.catalog/`](src/ui/i18n.catalog/).
 2. Improve existing translations, or fill in any that read awkwardly.
 3. Run `npx tsc --noEmit` to confirm nothing is missing, then open a PR.
 
