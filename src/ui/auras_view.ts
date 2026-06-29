@@ -28,6 +28,7 @@
 // mirror aura {stacks:undefined} derive identical output.
 
 import type { AuraKind } from '../sim/types';
+import type { AuraSchool } from './aura_effect';
 
 // The aura kinds that read as a DEBUFF even when they reuse a buff_* kind is handled
 // separately below. Lifted verbatim from the old inline `renderAuras` allowlist; a
@@ -76,6 +77,13 @@ export interface AuraInput {
   kind: AuraKind;
   remaining: number;
   value: number;
+  // Optional effect-descriptor inputs (DoT/HoT tick interval, secondary values, magic
+  // school). Present on the offline Sim aura; the online ClientWorld mirror may omit
+  // them, in which case auraEffectDescriptor falls back to its defaults.
+  value2?: number;
+  value3?: number;
+  tickInterval?: number;
+  school?: AuraSchool;
   stacks?: number;
 }
 
@@ -96,6 +104,10 @@ export interface AurasDeps {
   auraName(aura: AuraInput): string;
   /** The formatted stack count (host: `formatNumber(stacks, {maximumFractionDigits:0})`). */
   formatStacks(stacks: number): string;
+  /** The one-line aura effect-summary HTML the tooltip prepends (or '' when the aura has
+   *  no descriptor). Injected so the i18n-free core never calls t(): the host builds the
+   *  localized, esc'd HTML from the pure aura_effect descriptor. */
+  auraEffectHtml(aura: AuraInput): string;
   /** The localized duration unit suffix appended to the remaining-seconds count (host:
    *  `t('hudChrome.unitFrame.durationUnitSeconds')`, English 's'). Frame-constant: tick() reads
    *  it ONCE per frame (not per aura, unlike the per-aura deps above), and re-reads each frame so
@@ -126,6 +138,9 @@ export interface AuraSlotState {
   name: string;
   /** Raw seconds remaining, for the tooltip (read live by the pooled closure). */
   remaining: number;
+  /** The one-line effect-summary HTML for the tooltip (or '' when none), read live by the
+   *  pooled closure. */
+  effectHtml: string;
 }
 
 /** The whole strip's derived state: the reused slot pool plus the active count. Both
@@ -168,6 +183,7 @@ function makeSlotState(): AuraSlotState {
     stacksText: '',
     name: '',
     remaining: 0,
+    effectHtml: '',
   };
 }
 
@@ -203,6 +219,7 @@ export function createAurasView(mode: AuraMode, deps: AurasDeps): AurasView {
         slot.stacksText = a.stacks && a.stacks > 1 ? deps.formatStacks(a.stacks) : '';
         slot.name = deps.auraName(a);
         slot.remaining = a.remaining;
+        slot.effectHtml = deps.auraEffectHtml(a);
         count++;
       }
       state.count = count;

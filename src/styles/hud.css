@@ -2120,6 +2120,12 @@
     color: var(--color-text-muted);
     font-size: 11px;
   }
+  /* One-line aura effect summary under the tooltip title (buff/debuff hover). */
+  #tooltip .tt-effect {
+    color: var(--color-accent, #d4b483);
+    font-size: 11.5px;
+    margin-top: 1px;
+  }
   .tt-opt-icon {
     width: 16px;
     height: 16px;
@@ -2289,6 +2295,9 @@
   }
   #tooltip .tt-sub {
     font-size: calc(11px * var(--tooltip-scale, 1));
+  }
+  #tooltip .tt-effect {
+    font-size: calc(11.5px * var(--tooltip-scale, 1));
   }
   #tooltip .tt-desc,
   #tooltip .tt-stat,

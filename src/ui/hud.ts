@@ -94,6 +94,7 @@ import {
   OVERHEAD_EMOTES,
   type OverheadEmoteId,
 } from '../world_api';
+import { absorbBarView } from './absorb_bar';
 import { ActionBarPainter } from './action_bar_painter';
 import {
   ABILITY_ICON_PREFIX,
@@ -104,6 +105,7 @@ import {
   ITEM_ICON_PREFIX,
 } from './action_bar_view';
 import { ArenaWindow } from './arena_window';
+import { type AuraEffectInput, auraEffectDescriptor } from './aura_effect';
 import { AurasPainter, type AurasPainterDeps } from './auras_painter';
 import { type AurasDeps, createAurasView } from './auras_view';
 import { BagsWindow } from './bags_window';
@@ -2449,11 +2451,12 @@ export class Hud {
       ABILITIES[a.id] ? abilityDisplayName(ABILITIES[a.id]) : auraDisplayNameFromSource(a.name),
     formatStacks: (n) => formatNumber(n, { maximumFractionDigits: 0 }),
     durationUnitSuffix: () => t('hudChrome.unitFrame.durationUnitSeconds'),
+    auraEffectHtml: (a) => this.auraEffectTooltipHtml(a),
   };
   private readonly aurasPainterDeps: AurasPainterDeps = {
     resolveIconUrl: (iconKey) => `url(${iconDataUrl('aura', iconKey)})`,
-    renderTooltip: (name, remaining) =>
-      `<div class="tt-title">${esc(name)}</div><div class="tt-sub">${esc(tPlural('hudChrome.plurals.secondsRemaining', Math.ceil(remaining)))}</div>`,
+    renderTooltip: (name, remaining, effectHtml) =>
+      `<div class="tt-title">${esc(name)}</div>${effectHtml}<div class="tt-sub">${esc(tPlural('hudChrome.plurals.secondsRemaining', Math.ceil(remaining)))}</div>`,
     attachTooltip: (el, html) => this.attachTooltip(el, html),
   };
   // Player auras split across two rows (classic layout): buffs in #buff-bar, debuffs in
@@ -2817,6 +2820,24 @@ export class Hud {
       ? t('wallet.balanceAria', { balance })
       : t('wallet.balancePreviewAria', { balance });
     return `<span class="woc-balance ${verified ? 'is-verified' : 'is-preview'}" title="${esc(title)}" aria-label="${esc(aria)}"><span class="woc-coin" aria-hidden="true"></span>${esc(balance)}</span>`;
+  }
+
+  // One-line aura effect summary HTML for the buff/debuff tooltip: the pure descriptor
+  // (aura_effect.ts) resolved to localized, esc'd text. Empty when the aura has no
+  // descriptor. Injected into the auras view so the i18n-free core never calls t().
+  private auraEffectTooltipHtml(a: AuraEffectInput): string {
+    const effect = auraEffectDescriptor(a);
+    if (!effect) return '';
+    const values: Record<string, string> = {};
+    if (effect.nums) {
+      for (const [k, n] of Object.entries(effect.nums)) {
+        values[k] = formatNumber(n, { maximumFractionDigits: 0 });
+      }
+    }
+    if (effect.school) {
+      values.school = t(`hudChrome.auraEffect.school.${effect.school}` as TranslationKey);
+    }
+    return `<div class="tt-effect">${esc(t(effect.key as TranslationKey, values))}</div>`;
   }
 
   attachTooltip(el: HTMLElement, html: () => string): void {
