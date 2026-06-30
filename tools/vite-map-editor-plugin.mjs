@@ -29,23 +29,69 @@ export function mapEditorPlugin() {
         if (!req.url || !req.url.startsWith('/__editor/')) return next();
         try {
           if (req.method === 'GET' && req.url.startsWith('/__editor/data')) {
-            const [z1, z2, z3, data] = await Promise.all([
+            const [z1, z2, z3, data, dungeonLayout] = await Promise.all([
               server.ssrLoadModule('/src/sim/content/zone1.ts'),
               server.ssrLoadModule('/src/sim/content/zone2.ts'),
               server.ssrLoadModule('/src/sim/content/zone3.ts'),
               server.ssrLoadModule('/src/sim/data.ts'),
+              server.ssrLoadModule('/src/sim/dungeon_layout.ts'),
             ]);
             const zoneMods = [z1, z2, z3];
             const zones = [z1.ZONE1_ZONE, z2.ZONE2_ZONE, z3.ZONE3_ZONE];
-            const camps = [], buildings = [], roads = [];
+            const camps = [], buildings = [], roads = [], groundObjects = [];
             zoneMods.forEach((m, i) => {
               for (const c of m[`ZONE${i + 1}_CAMPS`]) camps.push({ ...c, zid: i });
               for (const b of m[`ZONE${i + 1}_PROPS`].buildings) buildings.push({ ...b, zid: i });
               for (const r of m[`ZONE${i + 1}_ROADS`]) roads.push(r);
+              for (const o of m[`ZONE${i + 1}_OBJECTS`]) groundObjects.push({ ...o, zid: i });
+            });
+            // Map interior type -> layout object from dungeon_layout.ts
+            const LAYOUT_BY_INTERIOR = {
+              crypt: dungeonLayout.CRYPT_LAYOUT,
+              sanctum: dungeonLayout.SANCTUM_LAYOUT,
+              temple: dungeonLayout.TEMPLE_LAYOUT,
+              nythraxis: dungeonLayout.NYTHRAXIS_LAYOUT,
+            };
+            // Build dungeon list with full interior layout from dungeon_layout.ts
+            const DUNGEON_LIST = (data.DUNGEON_LIST || []).map((d) => {
+              const dl = LAYOUT_BY_INTERIOR[d.interior];
+              return {
+                id: d.id,
+                name: d.name,
+                index: d.index,
+                doorPos: d.doorPos,
+                entry: d.entry,
+                exitOffset: d.exitOffset,
+                interior: d.interior,
+                suggestedPlayers: d.suggestedPlayers,
+                enterText: d.enterText,
+                leaveText: d.leaveText,
+                spawns: (d.spawns || []).map((s) => ({
+                  mobId: s.mobId, x: s.x, z: s.z,
+                })),
+                objects: (d.objects || []).map((o) => ({
+                  itemId: o.itemId, name: o.name, x: o.x, z: o.z,
+                  templateId: o.templateId, dungeonId: o.dungeonId,
+                })),
+                layout: dl ? {
+                  zMin: dl.zMin, zMax: dl.zMax,
+                  sideWallZ: dl.sideWallZ, sideWallHd: dl.sideWallHd,
+                  pillars: dl.pillars || [],
+                  tombs: dl.tombs || [],
+                  stubs: dl.stubs || [],
+                  dais: dl.dais || null,
+                } : null,
+              };
             });
             sendJson(res, 200, {
               seed: WORLD_SEED,
-              zones, camps, buildings, roads,
+              zones, camps, buildings, roads, groundObjects,
+              dungeons: DUNGEON_LIST,
+              mobs: data.MOBS || {},
+              npcs: data.NPCS || {},
+              quests: data.QUESTS || {},
+              questOrder: data.QUEST_ORDER || [],
+              items: data.ITEMS || {},
               playerStart: data.PLAYER_START,
               terrainEdits: data.TERRAIN_EDITS,
             });

@@ -123,9 +123,13 @@
       <span><span class="sw" style="background:#d8b46a"></span>building</span>
     </div>
 
+    <h2>Overlays</h2>
+    <div class="row" id="overlayToggles"></div>
+    <div class="hint">Toggle map overlays. Data always loads live from source.</div>
+
     <h2>Dungeons</h2>
     <div class="row" id="sceneBtns"></div>
-    <div class="hint">View-only (defined in code). Entrances ⬣ show on the map.</div>
+    <div class="hint">Click to view interior. Entrances ⬣ on map.</div>
 
     <h2>Export — paste into the noted files</h2>
     <textarea id="exportTxt" readonly></textarea>
@@ -212,28 +216,11 @@ function recompute(){
 }
 recompute();
 
-// ----- Dungeons (instance interiors) from dungeon_layout.ts + content/dungeons.ts -----
+// ----- Dungeons (live data — replaced on loadLive()) ---------------------
 const DWALL_X=23, DWALL_HW=1, DEND_HW=24, DPILLAR_R=1.0, DTOMB_HW=1.1, DTOMB_HD=2.1, DWALL_H=8;
-function dgrid(zFrom,zTo,zStep,xs){const o=[];for(let z=zFrom;z<=zTo;z+=zStep)for(const x of xs)o.push({x,z});return o;}
-const LAYOUTS={
-  crypt:{ zMin:-19,zMax:112,sideWallZ:47,sideWallHd:66, pillars:dgrid(10,100,15,[-14,14]), tombs:dgrid(16,92,19,[-19,19]), stubs:[], dais:{x:0,z:96,r:9.5} },
-  sanctum:(()=>{ const pillars=[]; for(const z of [10,25,40,55,85,100,125,140]) for(const x of [-14,14]) pillars.push({x,z});
-    const stubs=[]; for(const sx of [-14,14]){ stubs.push({x:sx,z:67,hw:9,hd:5}); stubs.push({x:sx,z:115,hw:9,hd:3}); }
-    return { zMin:-19,zMax:158,sideWallZ:69.5,sideWallHd:89, pillars, tombs:[], stubs, dais:{x:0,z:146,r:11.5} }; })(),
-};
-const mkSpawns=a=>a.map(s=>({mobId:s[0],x:s[1],z:s[2]}));
-const DUNGEONS=[
-  {id:'hollow_crypt',name:'The Hollow Crypt',interior:'crypt',doorPos:{x:80,z:90},entry:{x:0,z:4},spawns:mkSpawns([
-    ['crypt_shambler',-3,18],['crypt_shambler',3,19],['crypt_shambler',-9,38],['hollow_acolyte',-5,39],['crypt_shambler',9,54],['hollow_acolyte',5,55],
-    ['bonechill_widow',-5,68],['bonechill_widow',-1,70],['sexton_marrow',-4,82],['hollow_acolyte',1,83],['morthen',0,98],['crypt_shambler',-4,96],['crypt_shambler',4,96]])},
-  {id:'sunken_bastion',name:'The Sunken Bastion',interior:'crypt',doorPos:{x:45,z:515},entry:{x:0,z:4},spawns:mkSpawns([
-    ['bastion_revenant',-3,18],['bastion_revenant',3,19],['bastion_revenant',-9,38],['tidebound_acolyte',-5,39],['tidebound_acolyte',9,54],['bastion_revenant',5,55],
-    ['bastion_revenant',-5,68],['tidebound_acolyte',-1,70],['knight_commander_olen',-4,82],['bastion_revenant',1,83],['vael_the_mistcaller',0,98],['tidebound_acolyte',-4,96],['bastion_revenant',4,96]])},
-  {id:'gravewyrm_sanctum',name:'Gravewyrm Sanctum',interior:'sanctum',doorPos:{x:0,z:880},entry:{x:0,z:4},spawns:mkSpawns([
-    ['sanctum_boneguard',-3,16],['sanctum_boneguard',3,17],['sanctum_boneguard',-8,30],['sanctum_drakonid',-4,31],['sanctum_drakonid',7,44],['sanctum_boneguard',3,45],
-    ['sanctum_boneguard',-6,58],['sanctum_drakonid',-2,59],['korgath_the_bound',0,72],['sanctum_drakonid',-7,86],['sanctum_boneguard',-3,87],['sanctum_boneguard',6,100],['sanctum_drakonid',2,101],
-    ['grand_necromancer_velkhar',0,114],['sanctum_boneguard',-4,112],['sanctum_boneguard',4,112],['sanctum_drakonid',-5,130],['sanctum_drakonid',-1,132],['korzul_the_gravewyrm',0,146],['sanctum_drakonid',-5,144],['sanctum_drakonid',5,144]])},
-];
+let DUNGEONS=[]; // populated from /__editor/data -> dungeons (with .layout)
+let MOBS={}, NPCS={}, QUESTS={}, QUEST_ORDER=[], ITEMS={}, GROUND_OBJECTS=[];
+const overlayState={camps:true,buildings:true,npcs:true,quests:false,items:false,groundObjects:true};
 
 function shapeAt(z){let hill=BIOME_SHAPE[ZONES[0].biome].hill,base=BIOME_SHAPE[ZONES[0].biome].base;for(let i=0;i+1<ZONES.length;i++){const t=smoothstep(ZONES[i].zMax-30,ZONES[i].zMax+35,z);const n=BIOME_SHAPE[ZONES[i+1].biome];hill=lerp(hill,n.hill,t);base=lerp(base,n.base,t);}return{hill,base};}
 function baseHeight(x,z,seed){
@@ -300,8 +287,13 @@ function draw(){
   for(const b of BUILDINGS)drawBuilding(b, b===selBuilding);
   for(const zn of ZONES){marker(zn.graveyard.x,zn.graveyard.z,'#c9c9d6','✝');const[hx,hz]=W2S(zn.hub.x,zn.hub.z);circle(zn.hub.x,zn.hub.z,zn.hub.radius,'rgba(255,220,120,.18)','rgba(255,220,120,.9)');ctx.fillStyle='#ffe08a';ctx.font='bold 13px ui-monospace';ctx.fillText('★ '+zn.hub.name,hx+6,hz-6);}
   marker(PLAYER_START.x,PLAYER_START.z,'#7CFF9B','◎');
-  for(const d of DUNGEONS){ marker(d.doorPos.x,d.doorPos.z,'#c98bff','⬣');
+  for(const d of DUNGEONS){ if(!d.doorPos) continue; marker(d.doorPos.x,d.doorPos.z,'#c98bff','⬣');
     if(view.scale>=0.45){ const[s,t]=W2S(d.doorPos.x,d.doorPos.z); ctx.fillStyle='#d8b6ff'; ctx.font='10px ui-monospace'; ctx.fillText('⛓ '+d.name,s+6,t-4); } }
+  // Ground objects (quest items, collectibles, resources)
+  if(overlayState.groundObjects)for(const o of GROUND_OBJECTS)for(const p of o.positions||[]){circle(p.x,p.z,3,'rgba(180,255,180,.10)','rgba(140,230,140,.5)');}
+  // NPCs (quest givers, vendors)
+  if(overlayState.npcs)for(const n of Object.values(NPCS)){if(!n.pos||n.dynamic)continue;marker(n.pos.x,n.pos.z,'#7CFF9B','☉');
+    if(view.scale>=0.45){const[s,t]=W2S(n.pos.x,n.pos.z);ctx.fillStyle='#9affc0';ctx.font='10px ui-monospace';ctx.fillText(n.name,s+6,t+14);}}
   for(const e of edits)circle(e.x,e.z,e.radius,e.delta>=0?'rgba(255,90,90,.18)':'rgba(90,176,255,.18)',e.delta>=0?'rgba(255,90,90,.9)':'rgba(90,176,255,.9)');
   if(tool==='brush'&&lastWorld)circle(lastWorld[0],lastWorld[1],brush.radius,'rgba(255,255,255,.06)','rgba(255,255,255,.5)');
 }
@@ -448,9 +440,35 @@ function applyData(d){
   ZONES=d.zones.map((z,i)=>({...z,i}));
   CAMPS=d.camps.map(c=>({mobId:c.mobId,x:c.center.x,z:c.center.z,radius:c.radius,count:c.count,zid:c.zid}));
   BUILDINGS=d.buildings.map(b=>({kind:b.kind,x:b.x,z:b.z,w:b.w,d:b.d,rot:b.rot,zid:b.zid}));
-  ROADS=d.roads; PLAYER_START=d.playerStart;
+  ROADS=d.roads||[];
+  GROUND_OBJECTS=(d.groundObjects||[]).map(o=>({...o}));
+  DUNGEONS=(d.dungeons||[]).map(dn=>({...dn}));
+  MOBS=d.mobs||{};
+  NPCS=d.npcs||{};
+  QUESTS=d.quests||{};
+  QUEST_ORDER=d.questOrder||[];
+  ITEMS=d.items||{};
+  PLAYER_START=d.playerStart;
   edits=(d.terrainEdits||[]).map(e=>({x:e.x,z:e.z,radius:e.radius,delta:e.delta,hardness:e.hardness||0}));
   recompute(); selectBuilding(null); buildRelief(); $('fit').onclick(); refresh(); sync3D(true);
+  buildOverlayLegend(); updateSceneButtons();
+}
+function buildOverlayLegend(){
+  const c=$('overlayToggles'); if(c.dataset.init==='1')return; c.dataset.init='1';
+  const overlays=[
+    {key:'camps',label:'Camps',color:'#e8785a'},
+    {key:'buildings',label:'Buildings',color:'#b4966e'},
+    {key:'npcs',label:'NPCs',color:'#7CFF9B'},
+    {key:'groundObjects',label:'Objects',color:'#8ce68c'},
+  ];
+  for(const o of overlays){
+    const b=document.createElement('button');
+    b.textContent=o.label; b.dataset.key=o.key;
+    b.style.borderLeft='3px solid '+o.color;
+    b.classList.toggle('on',overlayState[o.key]!==false);
+    b.onclick=()=>{overlayState[o.key]=!overlayState[o.key];b.classList.toggle('on');draw();};
+    c.appendChild(b);
+  }
 }
 async function loadLive(attempt=0){
   try{
@@ -560,7 +578,7 @@ function rebuildMarkers3(){
     for(const l of zn.lakes){ const lk=new THREE.Mesh(new THREE.CylinderGeometry(l.radius,l.radius,0.6,24),
       new THREE.MeshLambertMaterial({color:0x3aa0ff,transparent:true,opacity:0.4})); lk.position.set(l.x,WATER_LEVEL+0.4,l.z); mGroup.add(lk); }
   }
-  for(const d of DUNGEONS){ const dm=new THREE.Mesh(new THREE.CylinderGeometry(4,4,7,8),new THREE.MeshLambertMaterial({color:0xc98bff}));
+  for(const d of DUNGEONS){ if(!d.doorPos) continue; const dm=new THREE.Mesh(new THREE.CylinderGeometry(4,4,7,8),new THREE.MeshLambertMaterial({color:0xc98bff}));
     dm.position.set(d.doorPos.x, terrainHeight(d.doorPos.x,d.doorPos.z,seed,edits)+3.5, d.doorPos.z); mGroup.add(dm); }
 }
 function updateCam(){ if(!cam) return; const sp=orbit.phi,st=orbit.theta;
@@ -627,10 +645,11 @@ function rectFill(x0,z0,x1,z1,col){ const[a,b]=W2S(x0,z0),[c,e]=W2S(x1,z1); ctx.
 const isBoss=(s,L)=>Math.hypot(s.x-L.dais.x,s.z-L.dais.z)<6;
 function drawDungeon2D(){
   const d=DUNGEONS.find(x=>x.id===curScene); if(!d){ curScene='world'; return draw(); }
-  const L=LAYOUTS[d.interior];
-  rectFill(-DWALL_X,L.zMin,DWALL_X,L.zMax,'#1b1622');                                       // floor
-  for(const sx of [-DWALL_X,DWALL_X]) rectFill(sx-DWALL_HW,L.zMin,sx+DWALL_HW,L.zMax,'#4a4450');   // side walls
-  for(const ez of [L.zMin,L.zMax]) rectFill(-DEND_HW,ez-DWALL_HW,DEND_HW,ez+DWALL_HW,'#4a4450');   // end walls
+  const L=d.layout; if(!L){ curScene='world'; return draw(); }
+  const wallX=L.wallX||DWALL_X, endHw=L.endWallHw||DEND_HW;
+  rectFill(-wallX,L.zMin,wallX,L.zMax,'#1b1622');                                             // floor
+  for(const sx of [-wallX,wallX]) rectFill(sx-DWALL_HW,L.zMin,sx+DWALL_HW,L.zMax,'#4a4450');   // side walls
+  for(const ez of [L.zMin,L.zMax]) rectFill(-endHw,ez-DWALL_HW,endHw,ez+DWALL_HW,'#4a4450');   // end walls
   for(const s of L.stubs) rectFill(s.x-s.hw,s.z-s.hd,s.x+s.hw,s.z+s.hd,'#5a5460');                 // waist stubs
   for(const t of L.tombs) rectFill(t.x-DTOMB_HW,t.z-DTOMB_HD,t.x+DTOMB_HW,t.z+DTOMB_HD,'#6a5a4a'); // tombs
   for(const p of L.pillars) circle(p.x,p.z,DPILLAR_R,'rgba(190,180,200,.9)','rgba(225,225,235,.85)'); // pillars
@@ -638,6 +657,8 @@ function drawDungeon2D(){
   marker(d.entry.x,d.entry.z,'#7CFF9B','▼');                                                       // arrival
   for(const s of d.spawns){ const boss=isBoss(s,L); circle(s.x,s.z,boss?2.6:1.3, boss?'rgba(255,70,70,.5)':'rgba(230,120,90,.45)', boss?'#ff5a5a':'#e8a070');
     if(view.scale>=2.2){ const[a,b]=W2S(s.x,s.z); ctx.fillStyle='rgba(240,205,200,.9)'; ctx.font='9px ui-monospace'; ctx.fillText(s.mobId,a+3,b+3); } }
+  for(const o of d.objects||[]){ marker(o.x,o.z,'#ffd24a','◆');
+    if(view.scale>=2.2){ const[a,b]=W2S(o.x,o.z); ctx.fillStyle='rgba(255,225,150,.9)'; ctx.font='9px ui-monospace'; ctx.fillText(o.name||o.itemId,a+3,b+3); } }
   ctx.fillStyle='#dce1ea'; ctx.font='bold 14px ui-monospace'; ctx.fillText('🏰 '+d.name+'  ['+d.interior+']',12,22);
 }
 function build3DScene(){
@@ -647,25 +668,28 @@ function build3DScene(){
   if(!dGroup){ dGroup=new THREE.Group(); scene.add(dGroup); }
   dGroup.visible=inD; while(dGroup.children.length) dGroup.remove(dGroup.children[0]);
   if(!inD) return;
-  const d=DUNGEONS.find(x=>x.id===curScene), L=LAYOUTS[d.interior], len=L.zMax-L.zMin, midz=(L.zMin+L.zMax)/2;
+  const d=DUNGEONS.find(x=>x.id===curScene), L=d.layout, len=L.zMax-L.zMin, midz=(L.zMin+L.zMax)/2;
+  const wallX=L.wallX||DWALL_X, endHw=L.endWallHw||DEND_HW;
   const wall=new THREE.MeshLambertMaterial({color:0x4a4450}), floorM=new THREE.MeshLambertMaterial({color:0x241f2b});
   const add=(geo,mat,x,y,z)=>{ const m=new THREE.Mesh(geo,mat); m.position.set(x,y,z); dGroup.add(m); return m; };
-  add(new THREE.PlaneGeometry(DWALL_X*2,len),floorM,0,0,midz).rotation.x=-Math.PI/2;
-  for(const sx of [-DWALL_X,DWALL_X]) add(new THREE.BoxGeometry(DWALL_HW*2,DWALL_H,len),wall,sx,DWALL_H/2,midz);
-  for(const ez of [L.zMin,L.zMax]) add(new THREE.BoxGeometry(DEND_HW*2,DWALL_H,DWALL_HW*2),wall,0,DWALL_H/2,ez);
+  add(new THREE.PlaneGeometry(wallX*2,len),floorM,0,0,midz).rotation.x=-Math.PI/2;
+  for(const sx of [-wallX,wallX]) add(new THREE.BoxGeometry(DWALL_HW*2,DWALL_H,len),wall,sx,DWALL_H/2,midz);
+  for(const ez of [L.zMin,L.zMax]) add(new THREE.BoxGeometry(endHw*2,DWALL_H,DWALL_HW*2),wall,0,DWALL_H/2,ez);
   for(const s of L.stubs) add(new THREE.BoxGeometry(s.hw*2,DWALL_H,s.hd*2),wall,s.x,DWALL_H/2,s.z);
   for(const p of L.pillars) add(new THREE.CylinderGeometry(DPILLAR_R,DPILLAR_R,DWALL_H,12),wall,p.x,DWALL_H/2,p.z);
   for(const t of L.tombs) add(new THREE.BoxGeometry(DTOMB_HW*2,2,DTOMB_HD*2),new THREE.MeshLambertMaterial({color:0x6a5a4a}),t.x,1,t.z);
   add(new THREE.CylinderGeometry(L.dais.r,L.dais.r,1,28),new THREE.MeshLambertMaterial({color:0xffd24a,transparent:true,opacity:0.5}),L.dais.x,0.5,L.dais.z);
   for(const s of d.spawns){ const boss=isBoss(s,L); add(new THREE.SphereGeometry(boss?2.2:1,12,12),new THREE.MeshLambertMaterial({color:boss?0xff5a5a:0xe89070}),s.x,1.4,s.z); }
   add(new THREE.ConeGeometry(1.5,3,4),new THREE.MeshLambertMaterial({color:0x7cff9b}),d.entry.x,2,d.entry.z);
-  target.x=0; target.y=0; target.z=midz; orbit.radius=Math.max(110,len*1.5); orbit.phi=0.7; orbit.theta=Math.PI/2;
+  target.x=0; target.y=0; target.z=midz; orbit.radius=Math.max(110,Math.max(len*1.5,wallX*3)); orbit.phi=0.7; orbit.theta=Math.PI/2;
 }
 function updateSceneButtons(){
   const c=$('sceneBtns');
-  if(c.dataset.init!=='1'){ c.innerHTML='';
+  // Rebuild buttons whenever DUNGEONS list changes (live data reload)
+  const sig=DUNGEONS.map(d=>d.id).join(',');
+  if(c.dataset.sig!==sig){ c.innerHTML=''; c.dataset.sig=sig;
     const mk=(id,label)=>{ const b=document.createElement('button'); b.textContent=label; b.dataset.scene=id; b.onclick=()=>setScene(id); c.appendChild(b); };
-    mk('world','🌍 World'); for(const d of DUNGEONS) mk(d.id, d.name.replace(/^The /,'')); c.dataset.init='1'; }
+    mk('world','🌍 World'); for(const d of DUNGEONS) mk(d.id, (d.name||d.id).replace(/^The /,'')); }
   for(const b of c.children) b.classList.toggle('on', b.dataset.scene===curScene);
 }
 function setScene(id){
@@ -675,9 +699,10 @@ function setScene(id){
     if(worldViewSaved){ Object.assign(view,worldViewSaved); worldViewSaved=null; }
     target.x=0; target.y=0; target.z=(WORLD.minZ+WORLD.maxZ)/2; orbit.radius=1100; orbit.phi=0.85; orbit.theta=Math.PI/2;
   } else {
-    const d=DUNGEONS.find(x=>x.id===id), L=LAYOUTS[d.interior];
+    const d=DUNGEONS.find(x=>x.id===id), L=d.layout;
+    const wallX=L.wallX||DWALL_X;
     view.cx=0; view.cz=(L.zMin+L.zMax)/2;
-    view.scale=Math.min((cv.clientWidth||800)/(DWALL_X*2.6),(cv.clientHeight||600)/(L.zMax-L.zMin+24))*0.9;
+    view.scale=Math.min((cv.clientWidth||800)/(wallX*2.6),(cv.clientHeight||600)/(L.zMax-L.zMin+24))*0.9;
   }
   if(viewMode==='3d'&&THREE){ build3DScene(); resize3(); updateCam(); } else draw();
 }
